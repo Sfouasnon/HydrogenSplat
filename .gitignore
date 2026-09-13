@@ -1,0 +1,22 @@
+# local runtimes and data — never committed
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+fixtures/*.h4v
+fixtures/*.mp4
+Projects/
+*.ply
+*.png
+**/frames/
+**/exports/
+**/images/
+**/sparse/
+**/stereo/
+**/database.db
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
