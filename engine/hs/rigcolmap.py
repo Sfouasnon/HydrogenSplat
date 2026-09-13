@@ -409,7 +409,7 @@ def write_rig_npz(rec, path):
     L,R,L,R in capture order, lengths in mm."""
     byname = {im.name: im for im in rec.images.values() if im.has_pose}
     caps = sorted({n.split("/", 1)[1] for n in byname})
-    names, K, R, t, C = [], [], [], [], []
+    names, K, R, t, C, WH = [], [], [], [], [], []
     for cap in caps:
         pair = [byname.get(e + "/" + cap) for e in ("L", "R")]
         if any(p is None for p in pair):
@@ -419,15 +419,22 @@ def write_rig_npz(rec, path):
             p = cam.params
             names.append(os.path.splitext(cap)[0] + "_" + im.name[0])
             K.append([[p[0], 0.0, p[2]], [0.0, p[1], p[3]], [0.0, 0.0, 1.0]])
+            WH.append([int(cam.width), int(cam.height)])
             w2c = im.cam_from_world()
             R.append(w2c.rotation.matrix())
             t.append(np.asarray(w2c.translation) * 1000.0)
             C.append(np.asarray(im.projection_center()) * 1000.0)
     pts = np.array([p.xyz for p in rec.points3D.values()]) * 1000.0
-    cam0 = rec.camera(rec.images[list(rec.images)[0]].camera_id)
+    # w/h must describe the views the path builders actually use. Undistortion crops each
+    # camera to its own valid region, so the two eyes differ (rig6: L 1913x1073, R 1909x1071),
+    # and taking the size from rec.images' arbitrary first entry handed the builders the wrong
+    # eye's canvas — the aim check's in-frame test and every path's output size were off by
+    # (4, 2) px. names/K/wh are interleaved L,R, so index 0 is the reference (left) eye; wh
+    # carries each view's own size for anything that needs the right eye's.
+    w, h = (WH[0] if WH else [0, 0])
     np.savez(path, names=np.array(names), K=np.array(K), R=np.array(R),
              t=np.array(t), C=np.array(C), pts=pts,
-             w=cam0.width, h=cam0.height, s_mm=1.0,
+             wh=np.array(WH, int).reshape(-1, 2), w=w, h=h, s_mm=1.0,
              photos=np.array([os.path.splitext(c)[0] for c in caps]))
     print(f"wrote {path}: {len(names)//2} captures interleaved L,R for the path builders")
 

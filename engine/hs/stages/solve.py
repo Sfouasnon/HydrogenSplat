@@ -187,6 +187,20 @@ def run(a, pj):
                on_line=lambda l: (lambda m: m and events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="export"))(RE_UNDIST.search(l)))
     if not os.path.exists(pj.rig_npz):
         raise events.StageError("export wrote no rig.npz")
+    # rig.npz's w/h drive the aim check's in-frame bounds and every path's output canvas, and
+    # the two eyes are undistorted to different sizes — so they must be the LEFT views' size.
+    # This caught write_rig_npz handing over the right eye's canvas (off by 4x2 px).
+    import cv2
+    G = np.load(pj.rig_npz, allow_pickle=True)
+    l_dir = os.path.join(pj.dataset_dir, "images", "L")
+    l_first = sorted(f for f in os.listdir(l_dir) if f.lower().endswith(".jpg"))[0]
+    im = cv2.imread(os.path.join(l_dir, l_first))
+    rig_wh, img_wh = (int(G["w"]), int(G["h"])), (im.shape[1], im.shape[0])
+    pj.metric(STAGE, "view_size_L", list(img_wh))
+    if "wh" in G.files and len(G["wh"]) > 1:
+        pj.metric(STAGE, "view_size_R", [int(x) for x in G["wh"][1]])
+    pj.check(STAGE, "rig_size_matches_L_views", rig_wh == img_wh,
+             value=f"rig.npz {rig_wh[0]}x{rig_wh[1]} vs {l_first} {img_wh[0]}x{img_wh[1]}")
     pj.artifact(STAGE, pj.dataset_dir, "dataset")
     pj.artifact(STAGE, pj.rig_npz, "rig")
     ply = os.path.join(pj.dataset_dir, "sparse", "points3D.ply")
