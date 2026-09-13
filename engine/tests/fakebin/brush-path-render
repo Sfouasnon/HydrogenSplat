@@ -1,0 +1,4 @@
+#!/bin/sh
+# stand-in for brush-path-render: same argv, same stdout lines, writes real PNG frames
+HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$HERE/../../.."
+exec "${HS_PYTHON:-$ROOT/.venv/bin/python}" "$HERE/../fake_brush_path_render.py" "$@"

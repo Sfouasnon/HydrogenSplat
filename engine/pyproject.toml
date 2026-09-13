@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hydrogensplat-engine"
+version = "0.1.0"
+description = "HydrogenSplat engine: one `hs` CLI, JSON-lines events, wrapping the rig6 pipeline scripts"
+requires-python = ">=3.10"
+dependencies = ["numpy>=2.0", "opencv-python-headless>=4.10", "pycolmap==4.2.0"]
+
+[project.scripts]
+hs = "hs.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hs*"]

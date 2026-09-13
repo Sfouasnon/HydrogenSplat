@@ -1,0 +1,4 @@
+#!/bin/sh
+# stand-in for the Brush trainer: same argv, same stdout lines, writes real PLY exports
+HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$HERE/../../.."
+exec "${HS_PYTHON:-$ROOT/.venv/bin/python}" "$HERE/../fake_brush.py" "$@"

@@ -1,3 +1,4 @@
-"""HydrogenSplat engine. M0: the six pipeline scripts vendored from REDHydrogenOne/mv,
-unchanged and runnable standalone. M0 deliverable: an `hs` CLI that wraps them with the
-JSON-lines event contract in docs/hydrogensplat-strategy-v1.md §2."""
+"""HydrogenSplat engine. The six pipeline scripts vendored from REDHydrogenOne/mv live here
+unchanged and still run standalone; ``hs`` (cli.py) wraps them with the JSON-lines event
+contract in docs/hydrogensplat-strategy-v1.md §2."""
+__version__ = "0.1.0"

@@ -1,0 +1,276 @@
+{"ev":"start","stage":"selftest","step":"fixture"}
+{"ev":"check","stage":"selftest","name":"fixture_md5","ok":true,"value":"6146431c32b9591bab33a3ee2a8be14f"}
+{"ev":"metric","stage":"selftest","name":"project","value":"/home/claude/HydrogenSplat/fixtures/selftest"}
+{"ev":"start","stage":"ingest","step":"copy"}
+{"ev":"start","stage":"ingest","step":"md5"}
+{"ev":"metric","stage":"ingest","name":"clip_md5","value":"6146431c32b9591bab33a3ee2a8be14f"}
+{"ev":"metric","stage":"ingest","name":"clip_bytes","value":36058235}
+{"ev":"start","stage":"ingest","step":"probe"}
+{"ev":"artifact","stage":"ingest","path":"source/probe.json","kind":"json"}
+{"ev":"metric","stage":"ingest","name":"width","value":3840}
+{"ev":"metric","stage":"ingest","name":"height","value":1080}
+{"ev":"metric","stage":"ingest","name":"fps","value":30.009}
+{"ev":"metric","stage":"ingest","name":"nb_frames","value":706}
+{"ev":"metric","stage":"ingest","name":"duration_s","value":23.542333}
+{"ev":"metric","stage":"ingest","name":"codec","value":"h264"}
+{"ev":"check","stage":"ingest","name":"clip_is_2x1_video","ok":true,"value":"3840x1080 2x1"}
+{"ev":"check","stage":"ingest","name":"profile_matched","ok":true,"value":"h1-video-1920x1080-holocam1.18.2-v1"}
+{"ev":"start","stage":"select","step":"select"}
+{"ev":"progress","stage":"select","done":17,"step":"select","total":706,"detail":"2 frames selected"}
+{"ev":"progress","stage":"select","done":45,"step":"select","total":706,"detail":"4 frames selected"}
+{"ev":"progress","stage":"select","done":74,"step":"select","total":706,"detail":"7 frames selected"}
+{"ev":"progress","stage":"select","done":95,"step":"select","total":706,"detail":"10 frames selected"}
+{"ev":"progress","stage":"select","done":111,"step":"select","total":706,"detail":"12 frames selected"}
+{"ev":"progress","stage":"select","done":140,"step":"select","total":706,"detail":"15 frames selected"}
+{"ev":"progress","stage":"select","done":182,"step":"select","total":706,"detail":"17 frames selected"}
+{"ev":"progress","stage":"select","done":203,"step":"select","total":706,"detail":"20 frames selected"}
+{"ev":"progress","stage":"select","done":226,"step":"select","total":706,"detail":"23 frames selected"}
+{"ev":"progress","stage":"select","done":250,"step":"select","total":706,"detail":"26 frames selected"}
+{"ev":"progress","stage":"select","done":269,"step":"select","total":706,"detail":"29 frames selected"}
+{"ev":"progress","stage":"select","done":293,"step":"select","total":706,"detail":"32 frames selected"}
+{"ev":"progress","stage":"select","done":376,"step":"select","total":706,"detail":"34 frames selected"}
+{"ev":"progress","stage":"select","done":397,"step":"select","total":706,"detail":"36 frames selected"}
+{"ev":"progress","stage":"select","done":411,"step":"select","total":706,"detail":"38 frames selected"}
+{"ev":"progress","stage":"select","done":435,"step":"select","total":706,"detail":"41 frames selected"}
+{"ev":"progress","stage":"select","done":451,"step":"select","total":706,"detail":"43 frames selected"}
+{"ev":"progress","stage":"select","done":473,"step":"select","total":706,"detail":"46 frames selected"}
+{"ev":"progress","stage":"select","done":507,"step":"select","total":706,"detail":"48 frames selected"}
+{"ev":"progress","stage":"select","done":523,"step":"select","total":706,"detail":"50 frames selected"}
+{"ev":"progress","stage":"select","done":553,"step":"select","total":706,"detail":"52 frames selected"}
+{"ev":"progress","stage":"select","done":568,"step":"select","total":706,"detail":"54 frames selected"}
+{"ev":"progress","stage":"select","done":611,"step":"select","total":706,"detail":"57 frames selected"}
+{"ev":"progress","stage":"select","done":628,"step":"select","total":706,"detail":"59 frames selected"}
+{"ev":"progress","stage":"select","done":650,"step":"select","total":706,"detail":"62 frames selected"}
+{"ev":"progress","stage":"select","done":668,"step":"select","total":706,"detail":"64 frames selected"}
+{"ev":"progress","stage":"select","done":706,"step":"select","total":706,"detail":"66 frames selected"}
+{"ev":"metric","stage":"select","name":"frames_total","value":706}
+{"ev":"metric","stage":"select","name":"frames_selected","value":66}
+{"ev":"metric","stage":"select","name":"gap_min","value":6}
+{"ev":"metric","stage":"select","name":"gap_max","value":71}
+{"ev":"metric","stage":"select","name":"gap_median","value":8.0}
+{"ev":"metric","stage":"select","name":"maxgap_fraction","value":0.0}
+{"ev":"metric","stage":"select","name":"residual_px","value":1.5}
+{"ev":"metric","stage":"select","name":"clip_fraction_median","value":0.0}
+{"ev":"metric","stage":"select","name":"sharpness_median","value":82.8}
+{"ev":"artifact","stage":"select","path":"select/frames/selection.json","kind":"json"}
+{"ev":"check","stage":"select","name":"frame_count_in_range","ok":true,"value":"66 (want 30–120; rig6 65)"}
+{"ev":"check","stage":"select","name":"median_gap_in_range","ok":true,"value":"8 (want 6–15)"}
+{"ev":"check","stage":"select","name":"maxgap_fraction_low","ok":true,"value":"0.0% of picks hit max-gap 90 (want < 15%; high = phone stood still)"}
+{"ev":"start","stage":"select","step":"contact"}
+{"ev":"artifact","stage":"select","path":"select/contact.jpg","kind":"image"}
+{"ev":"metric","stage":"select","name":"noise_median","value":1.31}
+{"ev":"metric","stage":"solve","name":"profile_baseline_mm","value":10.6421}
+{"ev":"start","stage":"solve","step":"prep"}
+{"ev":"metric","stage":"solve","name":"captures","value":66}
+{"ev":"start","stage":"solve","step":"sfm"}
+{"ev":"progress","stage":"solve","done":1,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":3,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":5,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":7,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":9,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":11,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":13,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":15,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":17,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":19,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":21,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":23,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":25,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":27,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":29,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":31,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":33,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":35,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":37,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":39,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":41,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":42,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":43,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":44,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":45,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":47,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":49,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":51,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":53,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":55,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":57,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":59,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":61,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":63,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":65,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":67,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":69,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":71,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":73,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":75,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":77,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":79,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":81,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":83,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":85,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":87,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":89,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":90,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":91,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":92,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":93,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":94,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":95,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":96,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":97,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":98,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":99,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":100,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":101,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":102,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":103,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":104,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":105,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":106,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":107,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":108,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":109,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":110,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":111,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":112,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":113,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":114,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":115,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":116,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":117,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":118,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":119,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":120,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":121,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":123,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":125,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":127,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":129,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":131,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":132,"step":"features","total":132}
+{"ev":"progress","stage":"solve","done":0,"step":"matching","total":9,"detail":"block 1/3,1/3"}
+{"ev":"progress","stage":"solve","done":1,"step":"matching","total":9,"detail":"block 1/3,2/3"}
+{"ev":"progress","stage":"solve","done":2,"step":"matching","total":9,"detail":"block 1/3,3/3"}
+{"ev":"progress","stage":"solve","done":3,"step":"matching","total":9,"detail":"block 2/3,1/3"}
+{"ev":"progress","stage":"solve","done":4,"step":"matching","total":9,"detail":"block 2/3,2/3"}
+{"ev":"progress","stage":"solve","done":5,"step":"matching","total":9,"detail":"block 2/3,3/3"}
+{"ev":"progress","stage":"solve","done":6,"step":"matching","total":9,"detail":"block 3/3,1/3"}
+{"ev":"progress","stage":"solve","done":7,"step":"matching","total":9,"detail":"block 3/3,2/3"}
+{"ev":"progress","stage":"solve","done":8,"step":"matching","total":9,"detail":"block 3/3,3/3"}
+{"ev":"metric","stage":"solve","name":"features_per_image_median","value":2706}
+{"ev":"metric","stage":"solve","name":"num_images","value":132}
+{"ev":"metric","stage":"solve","name":"num_frames","value":66}
+{"ev":"metric","stage":"solve","name":"num_points","value":22646}
+{"ev":"metric","stage":"solve","name":"mean_reproj_px","value":1.3433}
+{"ev":"metric","stage":"solve","name":"median_reproj_px","value":1.383}
+{"ev":"metric","stage":"solve","name":"eye_L_rms_px","value":1.758}
+{"ev":"metric","stage":"solve","name":"eye_R_rms_px","value":1.735}
+{"ev":"metric","stage":"solve","name":"ba_rig_rotation_shift_deg","value":0.4592}
+{"ev":"metric","stage":"solve","name":"rig_baseline_mm","value":10.642}
+{"ev":"metric","stage":"solve","name":"path_length_mm","value":1690}
+{"ev":"metric","stage":"solve","name":"capture_step_median_mm","value":24}
+{"ev":"metric","stage":"solve","name":"scene_depth_p5_mm","value":174}
+{"ev":"metric","stage":"solve","name":"scene_depth_median_mm","value":206}
+{"ev":"metric","stage":"solve","name":"scene_depth_p95_mm","value":1565}
+{"ev":"artifact","stage":"solve","path":"solve/sfm_report.json","kind":"json"}
+{"ev":"check","stage":"solve","name":"all_frames_registered","ok":true,"value":"66/66"}
+{"ev":"check","stage":"solve","name":"mean_reproj_ok","ok":true,"value":"1.343 px (want ≤ 1.8; rig6 1.394)"}
+{"ev":"start","stage":"solve","step":"per_image"}
+{"ev":"artifact","stage":"solve","path":"solve/per_image.json","kind":"json"}
+{"ev":"metric","stage":"solve","name":"worst_image_reproj_px","value":1.9608}
+{"ev":"check","stage":"solve","name":"no_image_over_3px","ok":true,"value":"worst L/cap033.jpg 1.96 px"}
+{"ev":"start","stage":"solve","step":"export"}
+{"ev":"progress","stage":"solve","done":1,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":4,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":8,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":12,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":16,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":20,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":24,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":28,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":32,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":36,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":40,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":44,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":47,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":50,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":53,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":56,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":59,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":63,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":67,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":71,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":75,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":79,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":83,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":87,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":91,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":95,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":99,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":103,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":107,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":111,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":115,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":119,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":123,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":127,"step":"export","total":132}
+{"ev":"progress","stage":"solve","done":131,"step":"export","total":132}
+{"ev":"artifact","stage":"solve","path":"train/dataset","kind":"dataset"}
+{"ev":"artifact","stage":"solve","path":"train/dataset/rig.npz","kind":"rig"}
+{"ev":"artifact","stage":"solve","path":"train/dataset/sparse/points3D.ply","kind":"pointcloud"}
+{"ev":"start","stage":"solve","step":"coverage"}
+{"ev":"artifact","stage":"solve","path":"solve/coverage.json","kind":"json"}
+{"ev":"metric","stage":"solve","name":"subject_mm","value":[-14.809,9.681,200.4]}
+{"ev":"metric","stage":"solve","name":"azimuth_range_deg","value":[-43.13,41.06]}
+{"ev":"metric","stage":"solve","name":"elevation_range_deg","value":[-12.35,25.23]}
+{"ev":"metric","stage":"solve","name":"distance_range_mm","value":[176.4,297.2]}
+{"ev":"metric","stage":"solve","name":"lr_separation_max_dev_mm","value":0.0}
+{"ev":"check","stage":"solve","name":"rig_constraint_held","ok":true,"value":"L–R separation 10.642–10.642 mm vs profile 10.642 mm"}
+{"ev":"start","stage":"move","step":"sweep"}
+{"ev":"metric","stage":"move","name":"sweep.window","value":"3:34"}
+{"ev":"artifact","stage":"move","path":"move/sweep.json","kind":"move"}
+{"ev":"metric","stage":"move","name":"sweep.frames","value":240}
+{"ev":"metric","stage":"move","name":"sweep.size","value":[1909,1071]}
+{"ev":"metric","stage":"move","name":"sweep.aim_mm","value":[-14.8,9.7,200.4]}
+{"ev":"metric","stage":"move","name":"sweep.path_length_mm","value":548}
+{"ev":"metric","stage":"move","name":"sweep.distance_to_subject_mm","value":[223,246]}
+{"ev":"metric","stage":"move","name":"sweep.hull_max_mm","value":17.0}
+{"ev":"check","stage":"move","name":"hull_within_25mm","ok":true,"value":"virtual camera never more than 17 mm from a real camera (median 6; pass ≤ 25)","move":"sweep"}
+{"ev":"metric","stage":"move","name":"sweep.aim_px","value":[982,458]}
+{"ev":"metric","stage":"move","name":"sweep.aim_view","value":"cap018_L"}
+{"ev":"metric","stage":"move","name":"sweep.aim_depth_mm","value":228}
+{"ev":"artifact","stage":"move","path":"move/sweep_aim_check.jpg","kind":"image"}
+{"ev":"check","stage":"move","name":"aim_in_frame","ok":true,"value":"(982,458) in cap018_L at 228 mm","needs_human":true,"move":"sweep","image":"move/sweep_aim_check.jpg"}
+{"ev":"start","stage":"move","step":"boom"}
+{"ev":"metric","stage":"move","name":"boom.keys","value":[51,56,58,60,62,64,14,61]}
+{"ev":"artifact","stage":"move","path":"move/boom.json","kind":"move"}
+{"ev":"metric","stage":"move","name":"boom.frames","value":360}
+{"ev":"metric","stage":"move","name":"boom.size","value":[1909,1071]}
+{"ev":"metric","stage":"move","name":"boom.aim_mm","value":[-14.8,9.7,200.4]}
+{"ev":"metric","stage":"move","name":"boom.path_length_mm","value":633}
+{"ev":"metric","stage":"move","name":"boom.peak_speed_mm_s","value":87}
+{"ev":"metric","stage":"move","name":"boom.distance_to_subject_mm","value":[204,241]}
+{"ev":"metric","stage":"move","name":"boom.hull_max_mm","value":21.0}
+{"ev":"check","stage":"move","name":"hull_within_25mm","ok":true,"value":"virtual camera never more than 21 mm from a real camera (median 8; pass ≤ 25)","move":"boom"}
+{"ev":"metric","stage":"move","name":"boom.aim_px","value":[876,320]}
+{"ev":"metric","stage":"move","name":"boom.aim_view","value":"cap062_L"}
+{"ev":"metric","stage":"move","name":"boom.aim_depth_mm","value":203}
+{"ev":"artifact","stage":"move","path":"move/boom_aim_check.jpg","kind":"image"}
+{"ev":"check","stage":"move","name":"aim_in_frame","ok":true,"value":"(876,320) in cap062_L at 203 mm","needs_human":true,"move":"boom","image":"move/boom_aim_check.jpg"}
+{"ev":"start","stage":"selftest","step":"assert"}
+{"ev":"check","stage":"selftest","name":"frames_selected_60_70","ok":true,"value":"66 (reference 65/66)"}
+{"ev":"check","stage":"selftest","name":"all_registered","ok":true,"value":"66/66"}
+{"ev":"check","stage":"selftest","name":"mean_reproj_1.2_1.6","ok":true,"value":"1.343 px (reference 1.394)"}
+{"ev":"check","stage":"selftest","name":"coverage_low_pass","ok":true,"value":"min elevation -12.3° (want < −5°)"}
+{"ev":"check","stage":"selftest","name":"coverage_high_pass","ok":true,"value":"max elevation 25.2° (want > +20°)"}
+{"ev":"check","stage":"selftest","name":"rig_constraint_held","ok":true,"value":"L–R separation within 0.0000 mm of the profile baseline"}
+{"ev":"check","stage":"selftest","name":"median_aim_near_reference","ok":true,"value":"(974, 512) in cap021_L at 225 mm — 43 px from (959, 552) (want ≤ 60)"}
+{"ev":"check","stage":"selftest","name":"sweep.aim_in_frame","ok":true,"value":"(982,458) in cap018_L at 228 mm"}
+{"ev":"check","stage":"selftest","name":"sweep.hull_within_25mm","ok":true,"value":"virtual camera never more than 17 mm from a real camera (median 6; pass ≤ 25)"}
+{"ev":"check","stage":"selftest","name":"boom.aim_in_frame","ok":true,"value":"(876,320) in cap062_L at 203 mm"}
+{"ev":"check","stage":"selftest","name":"boom.hull_within_25mm","ok":true,"value":"virtual camera never more than 21 mm from a real camera (median 8; pass ≤ 25)"}
+{"ev":"artifact","stage":"selftest","path":"selftest.json","kind":"json"}
+{"ev":"metric","stage":"selftest","name":"passed","value":12}
+{"ev":"metric","stage":"selftest","name":"total","value":12}
+{"ev":"metric","stage":"selftest","name":"elapsed_s","value":593.8}
+{"ev":"done","stage":"selftest","exit":0}

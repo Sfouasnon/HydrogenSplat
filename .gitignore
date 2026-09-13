@@ -20,3 +20,6 @@ build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+# engine
+fixtures/selftest/
+*.egg-info/
