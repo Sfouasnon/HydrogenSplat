@@ -66,6 +66,14 @@ def now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
 class Project:
     def __init__(self, root, create=False):
         self.root = os.path.abspath(os.path.expanduser(root))
@@ -90,6 +98,28 @@ class Project:
         self.m.setdefault("stages", {})
         for s in STAGES:
             self.m["stages"].setdefault(s, {"status": "pending"})
+        self.reconcile()
+
+    def reconcile(self):
+        """A stage left `running` by a crash, a ^C or a closed lid is not running any more.
+
+        Every begin() records its pid; if that process is gone, the stage failed and should
+        say so rather than blocking the next stage with "solve is running". Train is the one
+        that matters — 55 minutes, and the app offers resume-or-restart from this state."""
+        changed = False
+        for name, st in self.m["stages"].items():
+            if st.get("status") != "running":
+                continue
+            pid = st.get("pid")
+            if pid == os.getpid() or (pid and _pid_alive(pid)):
+                continue
+            st["status"] = "failed"
+            st["error"] = f"interrupted (process {pid} is no longer running)"
+            st["finished"] = now_iso()
+            st.pop("pid", None)
+            changed = True
+        if changed:
+            self.save()
 
     # ------------------------------------------------------------------ paths
     def path(self, *parts):

@@ -34,8 +34,7 @@ REF_VIEW, REF_UV, REF_TOL_PX = "cap021_L", (959.0, 552.0), 60.0
 def add_parser(sub):
     p = sub.add_parser("selftest", help="golden test: select → solve → paths on the rig6 clip, assert the fixture numbers")
     p.add_argument("--clip", default=DEFAULT_CLIP)
-    p.add_argument("--project", dest="selftest_project", default=DEFAULT_PROJECT,
-                   help=f"project folder to run in (default {DEFAULT_PROJECT})")
+    # --project comes from the shared flag cli.py adds to every stage; default below
     p.add_argument("--resume", action="store_true", help="skip stages the project manifest already shows done")
     p.add_argument("--fresh", action="store_true", help="delete the project folder first")
     return p
@@ -63,7 +62,7 @@ def run(a, _pj=None):
         got = md5_file(clip)
         assert_("fixture_md5", got == want, f"{got}" + ("" if got == want else f" != {want}"))
 
-    root = os.path.abspath(os.path.expanduser(a.selftest_project))
+    root = os.path.abspath(os.path.expanduser(getattr(a, "project", None) or DEFAULT_PROJECT))
     if a.fresh and os.path.isdir(root):
         import shutil
         shutil.rmtree(root)

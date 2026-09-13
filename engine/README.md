@@ -42,7 +42,7 @@ hs/
 ## Stages
 
 ```
-hs ingest  -p P --clip VID_..._2x1.h4v [--link]   copy, MD5, ffprobe, validate 2x1 video, match the calibration profile
+hs ingest  -p P --clip VID_..._2x1.h4v [--link]                       copy, MD5, ffprobe, validate 2x1 video, match the calibration profile
 hs select  -p P [--residual 1.5 --max-gap 90 --end N --dry-run]      frames + selection.json + contact.jpg
 hs solve   -p P                                                       prep → sfm --float-rig → export; per_image.json, coverage.json
 hs train   -p P [--brush PATH]                                        brush → train/exports/export_NNNNN.ply   (Mac only)
@@ -54,10 +54,15 @@ hs calib   --photos 'board/*.jpg' | --video board.h4v -o cal.npz      stereocal.
 hs selftest [--clip CLIP] [--project DIR] [--resume|--fresh]          golden test (below)
 ```
 
+`-p/--project` and `-v/--verbose` are accepted on either side of the stage name: `hs -p DIR
+solve` and `hs solve -p DIR` are the same command.
+
 Every stage: `pj.require()` checks its prerequisites are `done` in the manifest, wipes only its
 own folder, marks downstream stages `stale`, writes `logs/<stage>.log`, and records argv,
 metrics, checks and artifacts in `manifest.json`. `-v` also streams the child's output as
-`{"ev":"log"}` events.
+`{"ev":"log"}` events. Opening a project reconciles it first: a stage the manifest still calls
+`running` whose recorded pid is gone becomes `failed — interrupted`, so a ^C'd or crashed run
+reports that instead of blocking the next stage with "solve is running".
 
 ## Golden test
 
@@ -69,12 +74,25 @@ cp ~/Desktop/Apps/REDHydrogenOne/capture_video/VID_20260912_151351_2x1.h4v fixtu
 Runs ingest → select → solve → move (sweep, auto window) → move (boom, auto keys) into
 `fixtures/selftest/` (gitignored) and asserts the numbers in `fixtures/README.md`. A
 human-readable summary goes to stderr; the events go to stdout; `fixtures/selftest/selftest.json`
-keeps the verdict. Exit 0 only if every assertion holds. ~11 min on 2 cores, ~15 on the Mac.
+keeps the verdict. Exit 0 only if every assertion holds. ~3 min on the Mac, ~10 on 2 cores.
 
-Result on 2026-09-13 (x86_64 container, pycolmap 4.2.0, OpenCV 5.0.0):
-66 frames selected · 66/66 registered · mean reprojection 1.348 px · elevation −12.9° … +24.6° ·
-SfM median → (975, 496) in cap021_L at 226 mm, 59 px from the reference (959, 552) · rig held at 10.642 mm ·
-sweep auto window 3:34, hull 17 mm · boom keys 51,56,58,60,62,64,14,61, hull 21 mm.
+Results, 2026-09-13 — 12/12 on both platforms. COLMAP mapping is not deterministic and the
+two builds differ, so these are the spread to expect, not fixed numbers:
+
+| | Apple Silicon (python 3.14, numpy 2.5.3, cv2 5.0.0, pycolmap 4.2.0) | x86_64 container (python 3.11, numpy 2.4.6) |
+|---|---|---|
+| runtime | 3.1 min | 9.9 min |
+| frames selected | 65 (= frames4) | 66 |
+| registered | 65/65 | 66/66 |
+| mean reprojection | 1.352 px | 1.343 px |
+| elevation range | −11.9° … +26.0° | −12.3° … +25.2° |
+| median aim in cap021_L | (969, 532), 23 px from (959, 552) | (974, 512), 43 px |
+| rig baseline | 10.642 mm, zero spread | same |
+| sweep | window 2:33, hull 16 mm | window 3:34, hull 17 mm |
+| boom | keys 50,55,57,59,61,63,14,5, hull 22 mm | keys 51,56,58,60,62,64,14,61, hull 21 mm |
+
+The Mac is the reference platform and lands closer to rig6 on every number. The 60 px aim
+tolerance is the one with the least headroom (23–43 px observed).
 
 ## Brush facts the wrappers rely on (read from the fork's source, not yet exercised)
 

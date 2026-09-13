@@ -24,6 +24,13 @@ PROJECT_STAGES = {
 FREE_STAGES = {"tools": tools, "calib": calibrate, "selftest": selftest}
 
 
+# --project and --verbose are accepted on either side of the stage name: `hs -p DIR solve`
+# and `hs solve -p DIR` both work. argparse hands everything after the stage name to the
+# subparser, so the flags have to exist on both; SUPPRESS on the subparser's copy means an
+# omitted flag leaves the top-level value in place instead of overwriting it with None.
+GLOBAL_ON_SUBPARSER = set(PROJECT_STAGES) | {"tools", "selftest"}
+
+
 def build_parser():
     ap = argparse.ArgumentParser(prog="hs", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"hs {__version__}")
@@ -32,6 +39,16 @@ def build_parser():
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<stage>")
     for mod in (ingest, select, solve, train, move, prune, render, tools, calibrate, selftest):
         mod.add_parser(sub)
+    seen = set()
+    for name, sp in sub.choices.items():
+        if id(sp) in seen:      # aliases (paths -> move) share one parser object
+            continue
+        seen.add(id(sp))
+        if name in GLOBAL_ON_SUBPARSER:
+            sp.add_argument("-p", "--project", default=argparse.SUPPRESS,
+                            help="project folder (created by ingest)")
+        sp.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS,
+                        help="also emit child output as {\"ev\":\"log\"} events")
     return ap
 
 
