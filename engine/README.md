@@ -55,6 +55,7 @@ hs train   -p P [--brush PATH]                                        brush → 
 hs move    -p P --preset sweep|boom|custom [--keys ...] [--name N]    move/N.json + move/N_aim_check.jpg
 hs prune   -p P [--radius 0.3]                                        prune/<export>_pruned_r03.ply
 hs render  -p P --move N [--ply PATH] [--width 2400] [--keep-frames]  render/N_1920.mp4, N_1080x1350.mp4  (Mac only)
+hs views   -p P [--captures 5,15,55] [--ply PATH]                     grade the model against the photographs  (Mac only)
 hs tools                                                              versions of python packages, brush, brush-path-render, ffmpeg, adb
 hs calib   --photos 'board/*.jpg' | --video board.h4v -o cal.npz      stereocal.py + a profile JSON
 hs selftest [--clip CLIP] [--project DIR] [--resume|--fresh]          golden test (below)
@@ -99,6 +100,40 @@ two builds differ, so these are the spread to expect, not fixed numbers:
 
 The Mac is the reference platform and lands closer to rig6 on every number. The 60 px aim
 tolerance is the one with the least headroom (23–43 px observed).
+
+## Grading the model against the photographs
+
+```
+.venv/bin/hs views -p fixtures/selftest
+```
+
+Renders the trained `.ply` from real capture poses — by default both azimuth extremes, the
+most central view and the highest — at each capture's own K and canvas, so each render lands
+pixel-aligned on its training image. Per view it reports the edge energy the model retains
+from that photograph, PSNR and correlation against it, and a phase-correlation displacement
+field over 64 px patches; it writes a four-panel comparison (photograph, model, difference,
+patch map) per view plus `views/views_report.json`.
+
+The point is that every other number in the pipeline is the solver grading its own homework.
+The reprojection residual says how well the SfM fits the features it picked; the hull check
+says how far a virtual camera strays from a real one. Neither can say the model is wrong.
+This can, because the reference is the photograph.
+
+The two metrics separate failure modes that look identical in a rendered move: blur costs
+edge energy and leaves displacement alone, misregistration keeps edge energy and displaces
+patches. On the rig6 golden train:
+
+| view | az | edge energy kept | PSNR | displaced > 4 px | p90 |
+|---|---|---|---|---|---|
+| cap005 | +1° | 60% | 35.1 dB | 0% | 1.8 px |
+| cap015 | −42° | 60% | 29.3 dB | 1% | 1.6 px |
+| cap055 | +43° | 50% | 28.2 dB | **20%** | **10.2 px** |
+| cap061 | −11° | 61% | 27.8 dB | 6% | 2.3 px |
+
+Equal edge energy with 20× the displaced fraction is what identified the soft right side of
+that render as thin coverage and weak registration rather than the motion blur it resembled;
+10.2 px at 235 mm is 1.4 mm of world error. The displaced fraction is diluted by background
+inside the crop, so compare views within a capture, not across differently framed runs.
 
 ## Brush facts the wrappers rely on (read from the fork's source, not yet exercised)
 

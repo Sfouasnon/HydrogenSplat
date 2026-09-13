@@ -30,24 +30,25 @@ MANIFEST_VERSION = 1
 
 # Stage order for stale propagation. "prune" hangs off train and is optional; "render"
 # depends on train (the ply) and move (the path).
-STAGES = ["ingest", "select", "solve", "train", "move", "prune", "render"]
+STAGES = ["ingest", "select", "solve", "train", "move", "prune", "render", "views"]
 DOWNSTREAM = {
-    "ingest": ["select", "solve", "train", "move", "prune", "render"],
-    "select": ["solve", "train", "move", "prune", "render"],
-    "solve": ["train", "move", "prune", "render"],
-    "train": ["prune", "render"],
+    "ingest": ["select", "solve", "train", "move", "prune", "render", "views"],
+    "select": ["solve", "train", "move", "prune", "render", "views"],
+    "solve": ["train", "move", "prune", "render", "views"],
+    "train": ["prune", "render", "views"],
     "move": ["render"],
     "prune": ["render"],
     "render": [],
+    "views": [],
 }
 STAGE_DIR = {
     "ingest": "source", "select": "select", "solve": "solve", "train": "train",
-    "move": "move", "prune": "prune", "render": "render",
+    "move": "move", "prune": "prune", "render": "render", "views": "views",
 }
 # hard prerequisites checked before a stage starts
 REQUIRES = {
     "ingest": [], "select": ["ingest"], "solve": ["select"], "train": ["solve"],
-    "move": ["solve"], "prune": ["train"], "render": ["train", "move"],
+    "move": ["solve"], "prune": ["train"], "render": ["train", "move"], "views": ["solve", "train"],
 }
 
 
