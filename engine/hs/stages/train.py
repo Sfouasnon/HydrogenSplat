@@ -46,6 +46,7 @@ RE_EVAL = re.compile(r"Eval iter (\d+): PSNR ([\d.]+), ssim ([\d.]+)")
 RE_EXPORT = re.compile(r"export_(\d+)\.ply$")
 RE_ERR = re.compile(r"(❌|Error|error:|panicked)")
 SPLATS_PER_FRAME_REF = 170841 / 65.0
+HEARTBEAT_S = 15.0   # re-emit progress if the trainer has printed nothing for this long
 
 
 def add_parser(sub):
@@ -134,13 +135,14 @@ def run(a, pj):
 
     total = a.total_train_iters
     st = {"iter": start_iter, "splats": None, "t0": time.monotonic(), "iter0": start_iter,
-          "seen_exports": set(), "growth": [], "errors": []}
+          "seen_exports": set(), "growth": [], "errors": [], "last_emit": 0.0}
 
     def _progress(force=False):
         el = time.monotonic() - st["t0"]
         done = st["iter"]
         rate = (done - st["iter0"]) / el if el > 1 and done > st["iter0"] else None
         eta = (total - done) / rate if rate else None
+        st["last_emit"] = time.monotonic()
         events.progress(STAGE, done, total, rate=rate, eta_s=eta,
                         detail=f"{st['splats']} splats" if st["splats"] else None, step="train", force=force)
 
@@ -183,6 +185,12 @@ def run(a, pj):
             pj.artifact(STAGE, p, "ply")
             events.metric(STAGE, "export_splats", n, iter=it)
             st["iter"] = max(st["iter"], it)
+            _progress(force=True)
+        # Brush stops refining ~2,000 iterations before the end (rig6: last "Refine iter" at
+        # 37961 of 40000), so the step counter goes quiet for the last ~2.5 minutes. Re-emit
+        # the last known position as a heartbeat so a consumer can tell "still training" from
+        # "hung". `done` deliberately does not advance — we do not know the iteration.
+        if not final and time.monotonic() - st["last_emit"] > HEARTBEAT_S:
             _progress(force=True)
 
     events.start(STAGE, "brush")

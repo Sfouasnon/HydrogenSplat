@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-# fake Brush: same argv contract, same stdout lines, writes real binary plys into --export-path
-import sys, os, time, numpy as np, struct
+# Stand-in for the Brush trainer: same argv contract, same stdout lines (env_logger form),
+# writes real binary PLYs into --export-path. Lets hs train be exercised without a GPU.
+# Two env knobs reproduce what the real binary did on the rig6 golden train (2026-09-13):
+#   HS_FAKE_REFINE_STOP=N   print no "Refine iter" line in the last N iterations
+#                           (the real run's last was 37961 of 40000)
+#   HS_FAKE_QUIET_TAIL=S    then print nothing at all for S seconds before finishing
+#                           (the real tail was ~148 s of silence)
+import sys, os, time, numpy as np
 args = sys.argv[1:]
 def opt(name, default):
     return args[args.index(name)+1] if name in args else default
@@ -21,9 +27,13 @@ def write_ply(path, n):
     open(path, "wb").write(hdr.encode() + arr.tobytes())
 splats = 70000
 for it in range(start, total + 1):
-    if it % refine == 0 and it > 0:
+    refine_stop = total - int(os.environ.get("HS_FAKE_REFINE_STOP", "0"))
+    if it % refine == 0 and it > 0 and it <= refine_stop:
         if it <= growth_stop: splats += 400
         print(f"[.. INFO  brush_cli] Refine iter {it}, {splats} splats."); sys.stdout.flush()
     if it % every == 0 and it > 0:
         write_ply(os.path.join(exp, name.replace("{iter}", str(it).zfill(digits))), splats); time.sleep(0.05)
+quiet = float(os.environ.get("HS_FAKE_QUIET_TAIL", "0"))
+if quiet:
+    time.sleep(quiet)
 print("Training took 1s"); print("[.. INFO  brush_cli] Done training! Took 1s.")

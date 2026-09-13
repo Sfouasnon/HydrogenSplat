@@ -4,10 +4,11 @@ Stereo Gaussian splats from a RED Hydrogen One. A macOS app that takes a Holocam
 clip off the phone, selects frames by parallax, solves the two eyes as one rigid COLMAP rig,
 trains a splat in Brush, builds a camera move inside the captured hull, and renders it.
 
-Status: **M0 — engine CLI.** No app yet. `engine/` has the `hs` CLI: every pipeline stage as
-a subcommand speaking JSON-lines events, wrapping the six scripts unchanged; `hs selftest`
-reproduces the rig6 numbers from the terminal (see `engine/README.md`). `hs train` and
-`hs render` wrap Brush and are exercised only against stand-ins until one run on the Mac.
+Status: **M0 complete — engine CLI.** No app yet. `engine/` has the `hs` CLI: every pipeline
+stage as a subcommand speaking JSON-lines events, wrapping the six scripts unchanged.
+`hs selftest` reproduces the rig6 numbers from the terminal (12/12: 65 frames, 65/65
+registered, 1.346 px) and `hs train` / `hs render` have driven Brush end to end — 157,252
+splats in 48.5 min, 360 frames rendered and encoded. Numbers and caveats in `engine/README.md`.
 The pipeline is specified, with the numbers from the first successful capture, in
 `docs/capture-to-splat-spec-v1.md`. The build plan is `docs/hydrogensplat-strategy-v1.md`.
 Read those two first; then `docs/HANDOFF-2026-09-13-colmap-rig.md` §4 for the mistakes

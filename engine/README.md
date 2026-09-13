@@ -94,22 +94,54 @@ two builds differ, so these are the spread to expect, not fixed numbers:
 The Mac is the reference platform and lands closer to rig6 on every number. The 60 px aim
 tolerance is the one with the least headroom (23–43 px observed).
 
-## Brush facts the wrappers rely on (read from the fork's source, not yet exercised)
+## The Brush wrappers, verified 2026-09-13 on Apple Silicon
+
+`hs train` and `hs render` drove the real binaries end to end on the rig6 selftest project.
+What the wrappers assume, read from the fork's source and now confirmed by that run:
 
 * `brush <dataset> --total-train-iters 40000 --growth-stop-iter 30000 --refine-every 130
   --export-every 2500 --export-path <abs> --export-name export_{iter}.ply`. `--export-path`
-  is joined onto the dataset's *parent* directory (absolute paths pass through); `{iter}` is
-  zero-padded to the digit count of the total → `export_02500.ply` … `export_40000.ply`.
+  is joined onto the dataset's *parent* directory (absolute paths pass through) and
+  `--export-name` is a template whose `{iter}` is zero-padded to the digit count of the
+  total — confirmed: `export_02500.ply` … `export_40000.ply`.
 * The indicatif progress bar is hidden when stderr is not a TTY, so a piped `brush` never
-  shows `NNNN/40000 Steps`. `hs train` sets `RUST_LOG=info` and parses env_logger's
-  `Refine iter N, M splats.` (every `--refine-every` steps) for progress; export files on disk
-  are the ground truth. Both parsers exist in case the output changes.
-* Resume: `--start-iter N` only moves the loop; the init splats are whatever `.ply` the
-  dataset holds (`init.ply` wins). `hs train --resume-from export_NNNNN.ply` copies it in as
-  `init.ply` for the run and removes it after. Mechanically supported, quality unverified (M3).
+  prints `NNNN/40000 Steps`. With `RUST_LOG=info` (which `hs train` sets) env_logger's
+  `Refine iter N, M splats.` arrives every `--refine-every` steps and is what drives
+  progress — confirmed, ~9 s apart. Export files on disk remain the ground truth.
+* **Brush stops refining before the end.** The last `Refine iter` of the golden train was
+  37961 of 40000, so the step counter goes quiet for the final ~2,000 iterations (148 s at
+  the observed rate). `hs train` re-emits its last position every 15 s (`HEARTBEAT_S`) so a
+  consumer can tell "still training" from "hung"; `done` deliberately does not advance,
+  because the iteration is genuinely unknown. `engine/tests/fake_brush.py` reproduces this
+  tail via `HS_FAKE_REFINE_STOP` / `HS_FAKE_QUIET_TAIL`.
+* **The early ETA is optimistic.** Throughput falls as the model grows — 23.1 it/s at the
+  first refine, 13.8 it/s by the end — so the ETA at iteration 131 read 29 min against an
+  actual 48.5 min. Treat the first few minutes' ETA as a lower bound.
+* Resume: `--start-iter N` only moves the loop start; the init splats are whatever `.ply`
+  the dataset holds (`init.ply` wins). `hs train --resume-from export_NNNNN.ply` copies it
+  in as `init.ply` for the run and removes it after. Mechanically supported, quality
+  unverified — M3 decides whether the UI says "resume" or "restart".
 * `brush-path-render <ply> --path move.json -o DIR --width 2400` prints `path: N frames…`,
   `loaded N splats`, `  frame i/N  (t elapsed)` every 10 frames, `wrote N frames to …`.
 
-`hs train` and `hs render` were exercised end to end against stand-in binaries that print
-those exact lines and write real PLY/PNG files (`scratch/fakebin` in the M0 session). One run
-each on the Mac against the real binaries is what closes M0 for them.
+### The golden train and render (65 frames, M-series Mac)
+
+| | this run | rig6 reference |
+|---|---|---|
+| train wall clock | 48.5 min (40k iters, 13.76 it/s average) | ~55 min |
+| final splats | 157,252 | 170,841 (−8.0%) |
+| growth at 5k / 10k / 15k | 75,408 / 91,678 / 106,387 | 74,699 / 90,850 / 107,198 |
+| growth at 25k / 30k / 40k | 137,221 / 152,939 / 157,252 | 143,399 / 162,742 / 170,841 |
+| render | 360 frames at 2400×1346 in 21.9 s (16.4 fps) | ~14 fps |
+
+The growth curves track within 1% to 15k and then diverge, the deficit reaching 8% at 40k —
+consistent with a different seed and a slightly different solve, not with a wrapper problem.
+Both land inside the check's 0.6–1.4× band and inside the strategy's 170k ± 20k. Per spec §5
+the count is not what decides quality here; a visual comparison against
+`compare/rig6_boom_12s.mp4` is the open question this run does not answer.
+
+### Testing the wrappers without a GPU
+
+`engine/tests/run_fake_pipeline.sh [project]` runs train → prune → render against stand-ins
+(`engine/tests/fakebin/`) that print the same lines and write real PLY and PNG files, on top
+of a finished selftest project. ~95 s.
