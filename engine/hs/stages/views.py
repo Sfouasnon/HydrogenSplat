@@ -17,12 +17,18 @@ about a subject-centred crop:
                          structure from where the photograph puts it, and what fraction of
                          textured patches are off by more than --displaced-px.
 
-The pair separates the two failure modes that look alike in a video. Blur costs edge energy
-and leaves displacement alone. Misregistration keeps edge energy and shows up as displaced
-patches. On the rig6 golden train this stage reports 1% of patches displaced at az −42° and
-20% at az +43°, with the p90 going 1.6 px to 10.2 px (1.4 mm at that depth) — the thin side
-losing registration, not sharpness. That is the measurement that told us the soft right side
-was a coverage and registration problem rather than the motion blur it looked like.
+The pair separates two failure modes that look alike in a rendered move: blur costs edge
+energy and leaves displacement alone, misregistration displaces patches. On the rig6 golden
+train the two azimuth extremes come out at 3% of patches displaced (az −42°) against 24%
+(az +43°) — an 8× separation — while retained edge energy differs by only 1.24× (61% against
+49%). Both degrade on the bad side, but displacement is what distinguishes it, and 10.4 px
+at 238 mm is 1.46 mm of world error against 0.23 mm on the good side. That is what identified
+the soft right side of rig6_boom as thin coverage and weak registration rather than the
+motion blur it resembled — the source frames at the two extremes are equally sharp.
+
+Note the highest view (az −7°, el +25°) scores best of all at 69% and 1%, so a fast pass is
+not automatically a bad one. What failed at az +43° was density: 5 captures within 8° of it
+spread over 18° of elevation, against 9 within an 8° band at az −42°.
 
 The displaced fraction is diluted by whatever background falls inside the crop, so compare it
 between views of one capture, and between captures shot the same way — not against a number
@@ -53,7 +59,7 @@ def add_parser(sub):
                    help="world extent the comparison crop covers (default: measured from the point cloud)")
     p.add_argument("--displaced-px", type=float, default=4.0, help="a patch this far off counts as displaced")
     p.add_argument("--max-displaced-fraction", type=float, default=0.10,
-                   help="check threshold (rig6 golden: 0.01 on the well-covered side, 0.20 on the thin one)")
+                   help="check threshold (rig6 golden: 0.03 on the well-covered side, 0.24 on the thin one)")
     p.add_argument("--keep-frames", action="store_true", help="keep the raw renders as well as the comparisons")
     p.add_argument("--render-bin", default=os.environ.get("HS_PATH_RENDER", DEFAULT_RENDER))
     return p
@@ -273,12 +279,12 @@ def run(a, pj):
     pj.check(STAGE, "model_registers_to_photographs", max(frac) <= a.max_displaced_fraction,
              value=f"worst view {worst['view']} (az {worst['azimuth_deg']:+.0f}) has "
                    f"{100 * (worst['displaced_fraction'] or 0):.0f}% of patches over {a.displaced_px:g} px "
-                   f"(want ≤ {100 * a.max_displaced_fraction:.0f}%; rig6 golden: 1% at az −42, 20% at az +43)",
+                   f"(want ≤ {100 * a.max_displaced_fraction:.0f}%; rig6 golden: 3% at az −42, 24% at az +43)",
              needs_human=True)
     pj.check(STAGE, "edge_energy_consistent_across_views",
              (max(keep) - min(keep)) <= 0.25 if len(keep) > 1 else True,
              value=f"kept {100 * min(keep):.0f}–{100 * max(keep):.0f}% across {len(keep)} views "
-                   f"(a spread here means some views are blurrier than others; rig6 golden: 50–61%)")
+                   f"(a spread here means some views are blurrier than others; rig6 golden: 49–69%)")
     if not a.keep_frames:
         shutil.rmtree(out_dir, ignore_errors=True)
     pj.finish(STAGE, ok=True)

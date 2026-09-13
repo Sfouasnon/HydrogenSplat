@@ -123,17 +123,21 @@ The two metrics separate failure modes that look identical in a rendered move: b
 edge energy and leaves displacement alone, misregistration keeps edge energy and displaces
 patches. On the rig6 golden train:
 
-| view | az | edge energy kept | PSNR | displaced > 4 px | p90 |
-|---|---|---|---|---|---|
-| cap005 | +1° | 60% | 35.1 dB | 0% | 1.8 px |
-| cap015 | −42° | 60% | 29.3 dB | 1% | 1.6 px |
-| cap055 | +43° | 50% | 28.2 dB | **20%** | **10.2 px** |
-| cap061 | −11° | 61% | 27.8 dB | 6% | 2.3 px |
+| view | az | el | edge energy kept | PSNR | corr | displaced > 4 px | p90 |
+|---|---|---|---|---|---|---|---|
+| cap005 | +1° | −8° | 60% | 35.09 dB | 0.995 | 0% | 1.86 px (0.27 mm) |
+| cap039 | −7° | +25° | 69% | 29.59 dB | 0.980 | 1% | 1.28 px (0.14 mm) |
+| cap015 | −42° | −0° | 61% | 29.28 dB | 0.992 | 3% | 1.60 px (0.23 mm) |
+| cap055 | +43° | −3° | 49% | 28.09 dB | 0.974 | **24%** | **10.44 px (1.46 mm)** |
 
-Equal edge energy with 20× the displaced fraction is what identified the soft right side of
-that render as thin coverage and weak registration rather than the motion blur it resembled;
-10.2 px at 235 mm is 1.4 mm of world error. The displaced fraction is diluted by background
-inside the crop, so compare views within a capture, not across differently framed runs.
+Displacement separates the extremes by 8× while edge energy differs by 1.24×, which is what
+identified the soft right side of rig6_boom as thin coverage and weak registration rather
+than the motion blur it resembled — the source frames at ±42° are equally sharp (0.037 and
+0.036 on a scale-normalised subject crop). The highest view scores best of the four, so a
+fast pass is not automatically a bad one; what failed at az +43° was density, 5 captures
+within 8° spread over 18° of elevation against 9 within an 8° band at az −42°. The displaced
+fraction is diluted by background inside the crop, so compare views within a capture rather
+than across differently framed runs.
 
 ## Brush facts the wrappers rely on (read from the fork's source, not yet exercised)
 
