@@ -27,12 +27,14 @@ def case(name, src, ren, uv, half, expect):
     if r is None:
         print(f"{name:28s} -> crop too small")
         return
+    bd = r["bulk_shift_dir_px"] or [0.0, 0.0]
     med = r["displacement_median_px"] or 0.0
     p90 = r["displacement_p90_px"] or 0.0
     frac = r["displaced_fraction"] or 0.0
     print(f"{name:28s} n={r['patches']:4d}  median {med:6.2f}  p90 {p90:6.2f}  "
           f">4px {100 * frac:5.1f}%  det {100 * (r['displaced_fraction_detrended'] or 0):5.1f}%  "
-          f"bulk {r['bulk_shift_px'] or 0:5.2f}  coh {r['shift_coherence'] or 0:5.2f}  "
+          f"bulk {r['bulk_shift_px'] or 0:5.2f} @ {bd[0]:+6.2f},{bd[1]:+5.2f}  "
+          f"coh {r['shift_coherence'] or 0:5.2f}  dir {r['displaced_dir_deg'] if r['displaced_dir_deg'] is not None else 0:+6.1f}  "
           f"reg {100 * (r['registered_fraction'] or 0):5.1f}%  "
           f"edge {r['retained_edge_energy'] or 0:5.2f}  psnr {r['psnr_db']:5.1f}   expect {expect}")
 

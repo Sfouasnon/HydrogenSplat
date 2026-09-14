@@ -58,6 +58,10 @@ def add_parser(sub):
     p.add_argument("--subject-mm", type=float, default=None,
                    help="world extent the comparison crop covers (default: measured from the point cloud)")
     p.add_argument("--displaced-px", type=float, default=4.0, help="a patch this far off counts as displaced")
+    p.add_argument("--patch-step", type=int, default=PATCH_STEP,
+                   help=f"patch stride in px (default {PATCH_STEP}; 8 or 16 samples far denser, "
+                        "which the displaced-population direction needs -- patches overlap, so the "
+                        "extra samples are correlated and do not buy sqrt(n) on the mean)")
     p.add_argument("--max-displaced-fraction", type=float, default=0.10,
                    help="check threshold (rig6 golden: 0.03 on the well-covered side, 0.24 on the thin one)")
     p.add_argument("--keep-frames", action="store_true", help="keep the raw renders as well as the comparisons")
@@ -118,7 +122,7 @@ def build_path(pj, captures, out_path):
     return views, subject_extent_mm(pts, subject), float(K[int(L[0])][0, 0])
 
 
-def compare(src, ren, uv, half, displaced_px):
+def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP):
     """Edge energy, agreement and displacement on one subject-centred crop."""
     import cv2
     h, w = src.shape
@@ -135,8 +139,8 @@ def compare(src, ren, uv, half, displaced_px):
     mse = float(((s - r) ** 2).mean())
     win = cv2.createHanningWindow((PATCH, PATCH), cv2.CV_32F)
     mags = []
-    for yy in range(0, s.shape[0] - PATCH, PATCH_STEP):
-        for xx in range(0, s.shape[1] - PATCH, PATCH_STEP):
+    for yy in range(0, s.shape[0] - PATCH, step):
+        for xx in range(0, s.shape[1] - PATCH, step):
             a, b = s[yy:yy + PATCH, xx:xx + PATCH], r[yy:yy + PATCH, xx:xx + PATCH]
             if a.std() < PATCH_MIN_STD:
                 continue                                  # flat patch: phase correlation is noise
@@ -167,8 +171,12 @@ def compare(src, ren, uv, half, displaced_px):
     # Where does the displaced population actually go? If those patches all travel the same
     # way, the displacement is a second image-formation mode rather than scattered geometry
     # error -- and its bearing is then comparable against the stereo baseline in the image.
-    off = vec[m > displaced_px] - med_vec if len(vec) else np.zeros((0, 2))
-    off_mean = off.mean(axis=0) if len(off) else np.zeros(2)
+    # Select on the DETRENDED magnitude, not the raw one. Selecting raw and then subtracting
+    # the median picks every patch when the whole view is shifted, leaving near-zero residuals
+    # whose bearing is pure noise -- which is exactly what the uniform-shift harness case shows.
+    resid = (vec - med_vec) if len(vec) else np.zeros((0, 2))
+    off = resid[det > displaced_px] if len(resid) else np.zeros((0, 2))
+    off_mean = off.mean(axis=0) if len(off) else np.zeros(2)   # already detrended
     off_mag = np.hypot(*off.T) if len(off) else np.zeros(0)
     off_coh = float(np.hypot(*off_mean)) / float(off_mag.mean()) if len(off) and off_mag.mean() else None
     off_deg = float(np.degrees(np.arctan2(off_mean[1], off_mean[0]))) if len(off) else None
@@ -285,7 +293,7 @@ def run(a, pj):
         half = int(0.5 * fx * subj_mm / v["depth_mm"])
         res = compare(cv2.cvtColor(src_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32),
                       cv2.cvtColor(ren_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32),
-                      v["subject_px"], half, a.displaced_px)
+                      v["subject_px"], half, a.displaced_px, a.patch_step)
         if res is None:
             continue
         c = by_cap.get(v["capture"], {})
