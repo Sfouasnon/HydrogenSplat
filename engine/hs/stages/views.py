@@ -55,6 +55,9 @@ def add_parser(sub):
                    help="capture indices, e.g. 5,15,55 (default: the azimuth extremes, the centre and the highest view)")
     p.add_argument("--ply", default=None, help="default: the train stage's final export")
     p.add_argument("--name", default="views")
+    p.add_argument("--eye", choices=("L", "R"), default="L",
+                   help="which eye to render and grade against (default L). Run both and "
+                        "subtract: only eL - eR is a disparity, one eye alone is not.")
     p.add_argument("--subject-mm", type=float, default=None,
                    help="world extent the comparison crop covers (default: measured from the point cloud)")
     p.add_argument("--displaced-px", type=float, default=4.0, help="a patch this far off counts as displaced")
@@ -91,18 +94,23 @@ def subject_extent_mm(pts, subject):
     return float(2.0 * np.percentile(inner, 95)) if len(inner) else 100.0
 
 
-def build_path(pj, captures, out_path):
-    """One frame per capture at that capture's own left-eye pose, K and canvas."""
+def build_path(pj, captures, out_path, eye="L"):
+    """One frame per capture at that capture's own pose, K and canvas, for the chosen eye.
+
+    A photograph-to-render residual in ONE eye is not a disparity: a shift present in both
+    eyes with the same sign cancels in d = xL - xR, and only the difference eL - eR moves
+    apparent depth. Rendering R as well is what makes that subtraction possible."""
     G = np.load(pj.rig_npz, allow_pickle=True)
     names = [str(x) for x in G["names"]]
-    L = np.arange(0, len(names), 2)
+    L = np.arange(0, len(names), 2) + (1 if eye == "R" else 0)
     K, R, t, C = (G[k].astype(float) for k in ("K", "R", "t", "C"))
     pts = G["pts"].astype(float)
     subject = np.median(pts, axis=0)
     bad = [c for c in captures if not 0 <= c < len(L)]
     if bad:
         raise events.StageError(f"captures out of range 0..{len(L) - 1}: {bad}")
-    # the L views share one K and canvas; wh is per view for anything that needs the R eye's
+    # each eye has its own K and canvas -- cam 1 is 1913x1073, cam 2 is 1909x1071 -- so the
+    # path must be built with the K and size of the eye being rendered, not always the left's
     wh = G["wh"] if "wh" in G.files else None
     w, h = (int(wh[L[0]][0]), int(wh[L[0]][1])) if wh is not None else (int(G["w"]), int(G["h"]))
     frames, views = [], []
@@ -236,6 +244,8 @@ def comparison_image(src_bgr, ren_bgr, res, out_path, label, displaced_px):
 def run(a, pj):
     import cv2
     pj.require(STAGE)
+    if a.eye == "R" and a.name == "views":
+        a.name = "views_R"          # so an R pass cannot overwrite the L pass's report
     ply = os.path.abspath(a.ply) if a.ply else final_export(pj)
     if not ply or not os.path.exists(ply):
         raise events.StageError("no .ply to grade", hint="hs train first, or --ply PATH")
@@ -249,12 +259,14 @@ def run(a, pj):
     cov = json.load(open(cov_path))
     by_cap = {c["capture"]: c for c in cov["captures"]}
 
-    pj.begin(STAGE, argv=sys.argv)
+    # A named pass (the R eye, or any --name) must not wipe the folder: both eyes are the
+    # same stage, and eL - eR cannot be computed if running R deletes L's report.
+    pj.begin(STAGE, argv=sys.argv, clean=(a.name == "views"))
     captures = ([int(c) for c in a.captures.split(",")] if a.captures
                 else auto_captures(cov, cov["n_captures"]))
     events.start(STAGE, "path")
     path_json = pj.path("views", f"{a.name}.json")
-    views, subj_mm, fx = build_path(pj, captures, path_json)
+    views, subj_mm, fx = build_path(pj, captures, path_json, a.eye)
     subj_mm = a.subject_mm or subj_mm
     pj.metric(STAGE, "captures", captures)
     pj.metric(STAGE, "subject_extent_mm", round(subj_mm, 1))
@@ -285,7 +297,7 @@ def run(a, pj):
     report, worst = [], None
     for i, v in enumerate(views):
         frame = os.path.join(out_dir, f"frame_{i:04d}.png")
-        img = os.path.join(pj.dataset_dir, "images", "L", v["image"])
+        img = os.path.join(pj.dataset_dir, "images", a.eye, v["image"])
         if not (os.path.exists(frame) and os.path.exists(img)):
             events.log(STAGE, f"[hs] missing {frame if not os.path.exists(frame) else img}")
             continue
