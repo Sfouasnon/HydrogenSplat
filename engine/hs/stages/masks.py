@@ -97,7 +97,9 @@ def run(a, pj):
         src = "sparse SfM points"
     else:
         ply = a.ply
-        if not ply:
+        if not ply and pj.status("prune") == "done":
+            # a pruned cloud makes a tighter silhouette, but only while it belongs to this
+            # solve; a stale prune folder is geometry from a frame that no longer exists
             pdir = pj.path("prune")
             cands = sorted(f for f in os.listdir(pdir) if f.endswith(".ply")) if os.path.isdir(pdir) else []
             ply = os.path.join(pdir, cands[-1]) if cands else None
