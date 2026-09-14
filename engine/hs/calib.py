@@ -79,13 +79,26 @@ def match_profile(tags):
     return None
 
 
-def profile_to_npz(profile, out_path):
-    """Write the stereocal-style npz that rigcolmap.py --calib expects."""
+def profile_to_npz(profile, out_path, baseline_mm=None):
+    """Write the stereocal-style npz that rigcolmap.py --calib expects.
+
+    `baseline_mm` rescales T to a different separation without touching its direction. The
+    baseline is the weakest number in a short ChArUco session — this profile's own notes give a
+    best joint fit of 11.71 mm with a 1-sigma of 10.1-13.3 mm against the 10.595 mm it ships —
+    and it is not "pure gauge" in a rig solve: it fixes the relative pose of two cameras that
+    observe the scene at the same instant, so an error in it is a systematic, depth-dependent,
+    purely horizontal disagreement between the eyes, which no amount of bundle adjustment can
+    absorb while the scale is restored after BA."""
     s = profile["stereocal"]
+    T = np.array(s["T_mm"], float)
+    if baseline_mm:
+        n = float(np.linalg.norm(T))
+        if n > 1e-9:
+            T = T * (float(baseline_mm) / n)
     np.savez(out_path,
              KL=np.array(s["KL"], float), dL=np.array(s["dL"], float),
              KR=np.array(s["KR"], float), dR=np.array(s["dR"], float),
-             R=np.array(s["R"], float), T=np.array(s["T_mm"], float),
+             R=np.array(s["R"], float), T=T,
              size=np.array(s["size"], int))
     return out_path
 

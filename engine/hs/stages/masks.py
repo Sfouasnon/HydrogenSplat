@@ -43,6 +43,8 @@ def add_parser(sub):
     p.add_argument("--no-keep-largest", dest="keep_largest", action="store_false")
     p.add_argument("--preview", type=int, default=6, help="views in the preview sheet")
     p.add_argument("--from-points", action="store_true", help="use the sparse SfM points instead of a .ply")
+    p.add_argument("--point-mm", type=float, default=2.0,
+                   help="--from-points: world footprint drawn per SfM point. The sparse cloud is thin and\n                        scattered, so a large disc inflates the silhouette; the close step bridges the gaps")
     return p
 
 
@@ -91,7 +93,7 @@ def run(a, pj):
 
     events.start(STAGE, "cloud")
     if a.from_points:
-        xyz_mm, opa, scale_m = pts, np.ones(len(pts)), np.full(len(pts), 0.004)
+        xyz_mm, opa, scale_m = pts, np.ones(len(pts)), np.full(len(pts), a.point_mm / 1000.0)
         src = "sparse SfM points"
     else:
         ply = a.ply

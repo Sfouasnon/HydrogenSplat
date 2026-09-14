@@ -93,6 +93,16 @@ def run(a, pj):
         raise events.StageError("no train/dataset (undistorted COLMAP set)", hint="hs solve first")
     n_frames = int(pj.stage("solve").get("metrics", {}).get("num_frames") or 0)
 
+    # exposure and masks write into train/dataset and a re-solve wipes it; they are outside
+    # the STAGES chain so they cannot block, but training on a dataset whose normalisation or
+    # silhouettes were deleted underneath it is a silent wrong answer, not a warning.
+    for opt in ("exposure", "masks"):
+        st_opt = pj.status(opt)
+        if st_opt == "stale":
+            pj.check(STAGE, f"{opt}_still_applied", False,
+                     value=f"'{opt}' ran earlier but a later stage rewrote train/dataset; "
+                           f"re-run `hs {opt} --project {pj.root}` or accept a dataset without it")
+
     # train/ holds the dataset written by solve; wipe only exports + our own files
     pj.begin(STAGE, argv=sys.argv, clean=False)
     exports = pj.exports_dir

@@ -40,6 +40,9 @@ def add_parser(sub):
     p.add_argument("--peak-threshold", type=float, default=0.0025)
     p.add_argument("--features", type=int, default=16384)
     p.add_argument("--masks", default=None, help="mask dir mirroring images/ (wired, unverified)")
+    p.add_argument("--baseline-mm", type=float, default=None,
+                   help="override the profile's L-R separation (direction kept); the calibration's "
+                        "own best joint fit for this rig is 11.71 mm against the 10.595 it ships")
     p.add_argument("--no-float-rig", action="store_true", help="NOT recommended: keep sensor_from_rig fixed")
     p.add_argument("--reuse-matches", action="store_true", help="keep an existing database.db (skip features/matching)")
     p.add_argument("--max-reproj", type=float, default=1.8, help="check threshold, px")
@@ -69,11 +72,13 @@ def run(a, pj):
         shutil.rmtree(pj.dataset_dir)
     os.makedirs(pj.path("train"), exist_ok=True)
 
-    calib_npz = calib.profile_to_npz(prof, os.path.join(work, "calib.npz"))
+    calib_npz = calib.profile_to_npz(prof, os.path.join(work, "calib.npz"), a.baseline_mm)
     json.dump(prof, open(os.path.join(work, "profile.json"), "w"), indent=1)
     pj.m["profile_id"] = prof.get("profile_id")
     pj.m["profile_path"] = prof_path
-    baseline = calib.baseline_mm(prof)
+    baseline = a.baseline_mm or calib.baseline_mm(prof)
+    if a.baseline_mm:
+        pj.metric(STAGE, "baseline_override_mm", a.baseline_mm)
     pj.metric(STAGE, "profile_baseline_mm", round(baseline, 4))
     log = pj.log_path(STAGE)
 

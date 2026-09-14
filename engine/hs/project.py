@@ -31,10 +31,16 @@ MANIFEST_VERSION = 1
 # Stage order for stale propagation. "prune" hangs off train and is optional; "render"
 # depends on train (the ply) and move (the path).
 STAGES = ["ingest", "select", "solve", "train", "move", "prune", "render", "views"]
+# "exposure" and "masks" are not in STAGES — they are operations on the solve output rather
+# than steps in the chain — but they write into train/dataset, which `solve` deletes and
+# rewrites. Without them here a re-solve leaves both claiming `done` while their outputs are
+# gone, and the next train runs on unnormalised, unmasked images with a manifest that says
+# otherwise. Being outside STAGES means they never block a stage; it must not mean they can
+# lie about being current.
 DOWNSTREAM = {
-    "ingest": ["select", "solve", "train", "move", "prune", "render", "views"],
-    "select": ["solve", "train", "move", "prune", "render", "views"],
-    "solve": ["train", "move", "prune", "render", "views"],
+    "ingest": ["select", "solve", "exposure", "masks", "train", "move", "prune", "render", "views"],
+    "select": ["solve", "exposure", "masks", "train", "move", "prune", "render", "views"],
+    "solve": ["exposure", "masks", "train", "move", "prune", "render", "views"],
     "train": ["prune", "render", "views"],
     "move": ["render"],
     "prune": ["render"],
@@ -50,7 +56,7 @@ REQUIRES = {
     "ingest": [], "select": ["ingest"], "solve": ["select"], "train": ["solve"],
     "move": ["solve"], "prune": ["train"], "render": ["train", "move"], "views": ["solve", "train"],
     # not in STAGES: operations on the solve output that do not join the state machine
-    "masks": ["solve"], "exposure": ["solve"],
+    "masks": ["solve"], "exposure": ["solve"], "archive": ["solve"],
 }
 
 
