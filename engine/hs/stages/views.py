@@ -143,8 +143,35 @@ def compare(src, ren, uv, half, displaced_px):
             (dx, dy), resp = cv2.phaseCorrelate(a.copy(), b.copy(), win)
             if resp < PATCH_MIN_RESP:
                 continue
-            mags.append((xx + PATCH // 2, yy + PATCH // 2, float(np.hypot(dx, dy))))
+            mags.append((xx + PATCH // 2, yy + PATCH // 2, float(np.hypot(dx, dy)), float(dx), float(dy)))
     m = np.array([p[2] for p in mags]) if mags else np.zeros(0)
+
+    # A view can fail two different ways and the fraction over threshold cannot tell them
+    # apart: the whole crop can sit shifted (one bad frame pose), or the bulk can register
+    # while a subpopulation flies off (the bimodal residual). Detrend to separate them --
+    # but detrend on the MEDIAN vector, not the mean. When two populations sit at 0 and at
+    # some offset, the mean lands between them and subtracting it moves *both* off zero;
+    # that reads as the view getting worse. The component-wise median rides with whichever
+    # population holds the majority, so the registered bulk collapses and the displaced
+    # minority is left standing on its own.
+    vec = np.array([[p[3], p[4]] for p in mags], dtype=np.float64) if mags else np.zeros((0, 2))
+    med_vec = np.median(vec, axis=0) if len(vec) else np.zeros(2)
+    mean_vec = vec.mean(axis=0) if len(vec) else np.zeros(2)
+    bulk = float(np.hypot(*med_vec))
+    # Directional agreement, not uniformity: 1.0 means every patch moves the same way, which
+    # a two-population field along one axis also satisfies. Read it next to the detrended
+    # fraction -- high coherence with a high detrended fraction is two clusters, not a shift.
+    coherence = float(np.hypot(*mean_vec)) / float(m.mean()) if len(m) and m.mean() else None
+    det = np.hypot(*(vec - med_vec).T) if len(vec) else np.zeros(0)
+
+    # Where does the displaced population actually go? If those patches all travel the same
+    # way, the displacement is a second image-formation mode rather than scattered geometry
+    # error -- and its bearing is then comparable against the stereo baseline in the image.
+    off = vec[m > displaced_px] - med_vec if len(vec) else np.zeros((0, 2))
+    off_mean = off.mean(axis=0) if len(off) else np.zeros(2)
+    off_mag = np.hypot(*off.T) if len(off) else np.zeros(0)
+    off_coh = float(np.hypot(*off_mean)) / float(off_mag.mean()) if len(off) and off_mag.mean() else None
+    off_deg = float(np.degrees(np.arctan2(off_mean[1], off_mean[0]))) if len(off) else None
     ss, rs = sharp(s), sharp(r)
     return {
         "src_sharpness": round(ss, 4), "render_sharpness": round(rs, 4),
@@ -155,6 +182,16 @@ def compare(src, ren, uv, half, displaced_px):
         "displacement_median_px": round(float(np.median(m)), 2) if len(m) else None,
         "displacement_p90_px": round(float(np.percentile(m, 90)), 2) if len(m) else None,
         "displaced_fraction": round(float((m > displaced_px).mean()), 3) if len(m) else None,
+        "bulk_shift_px": round(bulk, 2) if len(m) else None,
+        "bulk_shift_dir_px": [round(float(med_vec[0]), 2), round(float(med_vec[1]), 2)] if len(m) else None,
+        "registered_fraction": round(float((m < 1.0).mean()), 3) if len(m) else None,
+        "displaced_dir_px": [round(float(off_mean[0]), 2), round(float(off_mean[1]), 2)] if len(off) else None,
+        "displaced_dir_deg": round(off_deg, 1) if off_deg is not None else None,
+        "displaced_dir_coherence": round(off_coh, 3) if off_coh is not None else None,
+        "displaced_mean_px": round(float(off_mag.mean()), 2) if len(off) else None,
+        "shift_coherence": round(coherence, 3) if coherence is not None else None,
+        "displaced_fraction_detrended": round(float((det > displaced_px).mean()), 3) if len(det) else None,
+        "displacement_p90_detrended_px": round(float(np.percentile(det, 90)), 2) if len(det) else None,
         "_patches": mags, "_box": (x0, y0, x1, y1),
     }
 
@@ -168,9 +205,14 @@ def comparison_image(src_bgr, ren_bgr, res, out_path, label, displaced_px):
                                               cv2.cvtColor(R, cv2.COLOR_BGR2GRAY)) * 4, 0, 255).astype(np.uint8),
                           cv2.COLORMAP_INFERNO)
     M = S.copy()
-    for x, y, mag in res["_patches"]:
+    mvx, mvy = res.get("bulk_shift_dir_px") or (0.0, 0.0)
+    for x, y, mag, dx, dy in res["_patches"]:
         col = (0, 200, 0) if mag < displaced_px / 2 else ((0, 200, 255) if mag < displaced_px else (0, 0, 255))
         cv2.circle(M, (x, y), 4, col, -1)
+        rx, ry = dx - mvx, dy - mvy          # what is left once the bulk shift is removed
+        if np.hypot(rx, ry) > displaced_px / 2:
+            cv2.arrowedLine(M, (x, y), (int(x + rx * 3), int(y + ry * 3)), (255, 255, 255), 1,
+                            cv2.LINE_AA, tipLength=0.3)
     tiles = []
     for a, t in ((S, "photograph"), (R, "model, same pose"), (D, "difference x4"),
                  (M, f"patches (red > {displaced_px:g} px)")):
@@ -250,7 +292,12 @@ def run(a, pj):
         label = (f"{v['view']}  az {c.get('azimuth_deg', 0):+.0f} el {c.get('elevation_deg', 0):+.0f}  "
                  f"{v['depth_mm']:.0f} mm  |  edge energy kept {100 * (res['retained_edge_energy'] or 0):.0f}%  "
                  f"PSNR {res['psnr_db']:.1f} dB  displaced {100 * (res['displaced_fraction'] or 0):.0f}% "
-                 f"(p90 {res['displacement_p90_px'] or 0:.1f} px = {(res['displacement_p90_px'] or 0) * v['depth_mm'] / fx:.2f} mm)")
+                 f"(p90 {res['displacement_p90_px'] or 0:.1f} px = {(res['displacement_p90_px'] or 0) * v['depth_mm'] / fx:.2f} mm)"
+                 f"  |  bulk {res['bulk_shift_px'] or 0:.1f} px coh {res['shift_coherence'] or 0:.2f}"
+                 f"  detrended {100 * (res['displaced_fraction_detrended'] or 0):.0f}%"
+                 f"  registered {100 * (res['registered_fraction'] or 0):.0f}%"
+                 f"  displaced pop {res['displaced_mean_px'] or 0:.1f} px at {res['displaced_dir_deg'] or 0:+.0f} deg"
+                 f" coh {res['displaced_dir_coherence'] or 0:.2f}")
         cmp_path = pj.path("views", f"{a.name}_{v['view']}.jpg")
         comparison_image(src_bgr, ren_bgr, res, cmp_path, label, a.displaced_px)
         pj.artifact(STAGE, cmp_path, "image")
@@ -260,6 +307,11 @@ def run(a, pj):
                     "displacement_p90_mm": round((res["displacement_p90_px"] or 0) * v["depth_mm"] / fx, 3)})
         report.append(row)
         events.metric(STAGE, "view", row["view"], displaced_fraction=row["displaced_fraction"],
+                      displaced_fraction_detrended=row["displaced_fraction_detrended"],
+                      bulk_shift_px=row["bulk_shift_px"], shift_coherence=row["shift_coherence"],
+                      registered_fraction=row["registered_fraction"],
+                      displaced_dir_deg=row["displaced_dir_deg"],
+                      displaced_dir_coherence=row["displaced_dir_coherence"],
                       retained_edge_energy=row["retained_edge_energy"], psnr_db=row["psnr_db"])
         if worst is None or (row["displaced_fraction"] or 0) > (worst["displaced_fraction"] or 0):
             worst = row

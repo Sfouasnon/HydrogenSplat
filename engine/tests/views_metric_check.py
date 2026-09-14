@@ -31,8 +31,10 @@ def case(name, src, ren, uv, half, expect):
     p90 = r["displacement_p90_px"] or 0.0
     frac = r["displaced_fraction"] or 0.0
     print(f"{name:28s} n={r['patches']:4d}  median {med:6.2f}  p90 {p90:6.2f}  "
-          f">4px {100 * frac:5.1f}%  edge {r['retained_edge_energy'] or 0:5.2f}  "
-          f"psnr {r['psnr_db']:5.1f}   expect {expect}")
+          f">4px {100 * frac:5.1f}%  det {100 * (r['displaced_fraction_detrended'] or 0):5.1f}%  "
+          f"bulk {r['bulk_shift_px'] or 0:5.2f}  coh {r['shift_coherence'] or 0:5.2f}  "
+          f"reg {100 * (r['registered_fraction'] or 0):5.1f}%  "
+          f"edge {r['retained_edge_energy'] or 0:5.2f}  psnr {r['psnr_db']:5.1f}   expect {expect}")
 
 
 def main(project):
@@ -68,6 +70,21 @@ def main(project):
          uv, half, "0 px, 0%")
     case("half the frame shifted 6 px", g,
          np.hstack([shift(g, 6, 0)[:, :w // 2], g[:, w // 2:]]), uv, half, "~6 px on half, ~50%")
+
+    # Two populations, one direction -- the shape the coin views actually show. Detrending on
+    # the median should collapse the majority population and leave the minority standing.
+    # At a 50/50 mix the median vector is undefined between the two clusters and the
+    # detrended number is not trustworthy; that is the point of running 25 and 75 as well.
+    # Cut inside the measured crop, not the full frame: compare() only ever looks at the
+    # central 2*half px, so a fraction of the image width is not the fraction of patches.
+    for pct in (25, 50, 75):
+        cut = int(uv[0] - half + 2 * half * pct / 100)
+        case(f"{pct}% of frame shifted 8 px", g,
+             np.hstack([shift(g, 8, 0)[:, :cut], g[:, cut:]]), uv, half,
+             f"~{pct}% >4px; det ~{min(pct, 100 - pct)}%, coh ~1.0"
+             + (", median vector degenerate" if pct == 50 else ""))
+    case("uniform 8 px shift (pose error)", g, shift(g, 8, 0), uv, half,
+         "100% >4px but det ~0%, bulk 8, coh 1.0")
     case("contrast x0.5", g, (g * 0.5).astype(np.float32), uv, half, "0 px, 0%")
     case("brightness +40", g, (g + 40).astype(np.float32), uv, half, "0 px, 0%")
 
