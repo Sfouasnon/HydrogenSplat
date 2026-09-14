@@ -49,6 +49,8 @@ STAGE_DIR = {
 REQUIRES = {
     "ingest": [], "select": ["ingest"], "solve": ["select"], "train": ["solve"],
     "move": ["solve"], "prune": ["train"], "render": ["train", "move"], "views": ["solve", "train"],
+    # not in STAGES: operations on the solve output that do not join the state machine
+    "masks": ["solve"], "exposure": ["solve"],
 }
 
 
@@ -165,7 +167,8 @@ class Project:
         os.replace(tmp, self.manifest_path)
 
     def stage(self, name):
-        return self.m["stages"][name]
+        """Stages outside STAGES (exposure) record here too, without joining the state machine."""
+        return self.m["stages"].setdefault(name, {"status": "pending"})
 
     def status(self, name):
         return self.stage(name).get("status", "pending")
@@ -216,7 +219,7 @@ class Project:
 
     # recorders that also emit the event
     def metric(self, stage, name, value, **extra):
-        self.m["stages"][stage].setdefault("metrics", {})[name] = value
+        self.stage(stage).setdefault("metrics", {})[name] = value
         events.metric(stage, name, value, **extra)
 
     def check(self, stage, name, ok, value=None, needs_human=False, **extra):
@@ -225,13 +228,13 @@ class Project:
             rec["value"] = value
         if needs_human:
             rec["needs_human"] = True
-        self.m["stages"][stage].setdefault("checks", []).append(rec)
+        self.stage(stage).setdefault("checks", []).append(rec)
         events.check(stage, name, ok, value, needs_human, **extra)
         return bool(ok)
 
     def artifact(self, stage, path, kind):
         rel = self.rel(path)
-        self.m["stages"][stage].setdefault("artifacts", []).append({"path": rel, "kind": kind})
+        self.stage(stage).setdefault("artifacts", []).append({"path": rel, "kind": kind})
         events.artifact(stage, rel, kind)
 
     def record_run(self, stage, name, **extra):

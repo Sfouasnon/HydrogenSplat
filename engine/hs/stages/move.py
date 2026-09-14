@@ -34,6 +34,8 @@ HULL_MAX_MM = 25.0
 def add_parser(sub):
     p = sub.add_parser("move", aliases=["paths"], help="build a camera move (spline_path.py / key_path.py) + aim check")
     p.add_argument("--preset", choices=["sweep", "boom", "custom"], default="sweep")
+    p.add_argument("--script", default=None,
+                   help="an .hsmove script in capture coordinates (grammar: engine/hs/movescript.py); overrides --preset")
     p.add_argument("--name", default=None, help="move name (default: the preset)")
     p.add_argument("--frames", type=int, default=None, help="default: sweep 240, boom/custom 360")
     p.add_argument("--fps", type=float, default=30.0)
@@ -57,14 +59,18 @@ def run(a, pj):
         cov = json.load(open(cov_path))
     else:
         cov = coverage.write(rig, cov_path)
-    name = a.name or a.preset
+    name = a.name or (os.path.splitext(os.path.basename(a.script))[0] if a.script else a.preset)
     out = pj.path("move", f"{name}.json")
     # a move folder holds several moves; don't wipe siblings
     pj.begin(STAGE, argv=sys.argv, clean=False)
     for f in (out, pj.path("move", f"{name}_aim_check.jpg")):
         if os.path.exists(f):
             os.remove(f)
-    events.start(STAGE, a.preset)
+    events.start(STAGE, "script" if a.script else a.preset)
+
+    if a.script:
+        _from_script(a, pj, rig, name, out)
+        return
 
     frames = a.frames or (240 if a.preset == "sweep" else 360)
     info = {}
@@ -188,3 +194,78 @@ def aim_check_image(pj, view_name, u, v, depth_mm, move_name):
     out = pj.path("move", f"{move_name}_aim_check.jpg")
     cv2.imwrite(out, im, [cv2.IMWRITE_JPEG_QUALITY, 90])
     return out
+
+
+def _from_script(a, pj, rig, name, out):
+    """hs move --script shot.hsmove — cues in capture coordinates, clamped to the captured hull."""
+    from .. import movescript
+    spath = os.path.abspath(os.path.expanduser(a.script))
+    if not os.path.exists(spath):
+        raise events.StageError(f"no script at {spath}", hint="hs move --script move/shot.hsmove")
+    aim = [float(x) for x in a.aim_point.split(",")] if a.aim_point else None
+    try:
+        rep = movescript.build(rig, open(spath).read(), out, fps=a.fps, aim_point=aim)
+    except movescript.ScriptError as e:
+        raise events.StageError(str(e), hint="cue grammar is at the top of engine/hs/movescript.py")
+    move = json.load(open(out))
+    pj.artifact(STAGE, out, "move")
+    pj.metric(STAGE, f"{name}.frames", rep["frames"])
+    pj.metric(STAGE, f"{name}.size", [move["width"], move["height"]])
+    pj.metric(STAGE, f"{name}.aim_mm", [round(x, 1) for x in rep["subject_mm"]])
+    pj.metric(STAGE, f"{name}.path_length_mm", int(round(rep["path_length_mm"])))
+    pj.metric(STAGE, f"{name}.peak_speed_mm_s", int(round(rep["peak_speed_mm_s"])))
+    pj.metric(STAGE, f"{name}.p90_speed_mm_s", int(round(rep["p90_speed_mm_s"])))
+    pj.metric(STAGE, f"{name}.distance_to_subject_mm", [int(round(x)) for x in rep["distance_mm"]])
+    pj.metric(STAGE, f"{name}.duration_s", round(rep["frames"] / rep["fps"], 2))
+    cues = [{"cue": c["cue"], "want": round(c["want"], 1), "got": round(c["got"], 1),
+             "unit": c["unit"], "secs": round(c["secs"], 2), "clamped": c["clamped"],
+             "r_mm": [round(c["r0"]), round(c["r1"])] if c.get("r0") == c.get("r0") else None}
+            for c in rep["cues"]]
+    pj.metric(STAGE, f"{name}.cues", cues)
+
+    hmin, hmax, hmed = rep["hull_mm"]
+    pj.metric(STAGE, f"{name}.hull_max_mm", round(hmax, 1))
+    pj.check(STAGE, "hull_within_25mm", hmax <= HULL_MAX_MM,
+             value=f"virtual camera never more than {hmax:.0f} mm from a real camera "
+                   f"(median {hmed:.0f}; pass \u2264 {HULL_MAX_MM:.0f})", move=name)
+
+    short = [c for c in rep["cues"] if c.get("clamped")]
+    pj.check(STAGE, "every_cue_completed", not short,
+             value="all cues ran to their target" if not short else
+                   "; ".join(f"{c['cue']} got {c['got']:.0f}{c['unit']} of {c['want']:.0f}{c['unit']} "
+                             f"(az {c['at']['az']:+.0f} el {c['at']['el']:+.0f})" for c in short),
+             move=name)
+    ran = len(rep["cues"])
+    if short and any(c["cue"] != "dolly" for c in short):
+        pj.metric(STAGE, f"{name}.cues_run", ran)
+
+    # the reachable band steps where the nearest real camera changes; a track that has to
+    # follow that step pops in one frame, which no amount of smoothing inside the hull removes
+    sp = rep.get("spike")
+    pj.check(STAGE, "no_speed_spike", sp is None,
+             value="speed stays under 3x its own 90th percentile" if sp is None else
+                   f"{sp['mm_s']:.0f} mm/s in one frame at {sp['t']:.2f} s (frame {sp['frame']}), "
+                   f"against a 90th percentile of {rep['p90_speed_mm_s']:.0f} \u2014 the reachable band "
+                   f"steps here; move the cue off this bearing or slow it through", move=name)
+
+    aimr = rep["aim"]
+    if aimr.get("behind"):
+        pj.check(STAGE, "aim_in_frame", False, value=f"aim point is BEHIND view {aimr['view']}",
+                 needs_human=True, move=name)
+        raise events.StageError("aim point is behind the check view — the path is aimed at nothing",
+                                hint="pass --aim-point x,y,z (mm), or an `aim x,y,z` line in the script")
+    u, v, depth = aimr["u"], aimr["v"], aimr["depth_mm"]
+    pj.metric(STAGE, f"{name}.aim_px", [round(u), round(v)])
+    pj.metric(STAGE, f"{name}.aim_view", aimr["view"])
+    pj.metric(STAGE, f"{name}.aim_depth_mm", round(depth))
+    img_path = aim_check_image(pj, aimr["view"], u, v, depth, name)
+    if img_path:
+        pj.artifact(STAGE, img_path, "image")
+    pj.check(STAGE, "aim_in_frame", aimr["inside"],
+             value=f"({u:.0f},{v:.0f}) in {aimr['view']} at {depth:.0f} mm"
+                   + ("" if aimr["inside"] else " \u2014 OUT OF FRAME"),
+             needs_human=True, move=name, image=pj.rel(img_path) if img_path else None)
+    pj.record_run(STAGE, name, preset="script", info={"script": pj.rel(spath) if spath.startswith(pj.root) else spath,
+                                                      "start": rep["start"], "cues": cues},
+                  path=pj.rel(out))
+    pj.finish(STAGE, ok=True)

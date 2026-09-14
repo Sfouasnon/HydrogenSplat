@@ -15,11 +15,12 @@ import traceback
 
 from . import __version__, events
 from .project import Project
-from .stages import calibrate, ingest, move, prune, render, select, selftest, solve, tools, train, views
+from .stages import calibrate, exposure, ingest, masks, move, prune, render, select, selftest, solve, tools, train, views
 
 PROJECT_STAGES = {
     "ingest": ingest, "select": select, "solve": solve, "train": train,
     "move": move, "paths": move, "prune": prune, "render": render, "views": views,
+    "exposure": exposure, "masks": masks,
 }
 FREE_STAGES = {"tools": tools, "calib": calibrate, "selftest": selftest}
 
@@ -37,7 +38,7 @@ def build_parser():
     ap.add_argument("-p", "--project", default=None, help="project folder (created by ingest)")
     ap.add_argument("-v", "--verbose", action="store_true", help="also emit child output as {\"ev\":\"log\"} events")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<stage>")
-    for mod in (ingest, select, solve, train, move, prune, render, views, tools, calibrate, selftest):
+    for mod in (ingest, select, solve, exposure, masks, train, move, prune, render, views, tools, calibrate, selftest):
         mod.add_parser(sub)
     seen = set()
     for name, sp in sub.choices.items():

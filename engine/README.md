@@ -41,7 +41,8 @@ hs/
   project.py    project folder + manifest.json (status per stage, argv, metrics, checks; stale propagation)
   calib.py      profile JSON <-> the stereocal npz rigcolmap.py reads; match keys
   coverage.py   azimuth / elevation / distance per capture from rig.npz; sweep-window and boom-key presets
-  stages/       ingest select solve train move prune render tools calibrate selftest
+  movescript.py the .hsmove cue language: boom / arc / dolly / hold in capture coordinates, clamped to the hull
+  stages/       ingest select solve exposure masks train move prune render tools calibrate selftest
   <six vendored scripts>
 ```
 
@@ -51,8 +52,11 @@ hs/
 hs ingest  -p P --clip VID_..._2x1.h4v [--link]                       copy, MD5, ffprobe, validate 2x1 video, match the calibration profile
 hs select  -p P [--residual 1.5 --max-gap 90 --end N --dry-run]      frames + selection.json + contact.jpg
 hs solve   -p P                                                       prep → sfm --float-rig → export; per_image.json, coverage.json
+hs exposure -p P [--mode rgb|luma] [--restore] [--dry-run]            match exposure + white balance across the training views
+hs masks   -p P [--radius 0.10] [--margin-mm 5] [--min-opacity 0.2]   per-view subject silhouettes for Brush's mask channel
 hs train   -p P [--brush PATH]                                        brush → train/exports/export_NNNNN.ply   (Mac only)
 hs move    -p P --preset sweep|boom|custom [--keys ...] [--name N]    move/N.json + move/N_aim_check.jpg
+hs move    -p P --script shot.hsmove [--name N]                      compile a cue sheet against the captured hull (movescript.py)
 hs prune   -p P [--radius 0.3]                                        prune/<export>_pruned_r03.ply
 hs render  -p P --move N [--ply PATH] [--width 2400] [--keep-frames]  render/N_1920.mp4, N_1080x1350.mp4  (Mac only)
 hs views   -p P [--captures 5,15,55] [--ply PATH]                     grade the model against the photographs  (Mac only)
@@ -158,3 +162,96 @@ than across differently framed runs.
 `hs train` and `hs render` were exercised end to end against stand-in binaries that print
 those exact lines and write real PLY/PNG files (`scratch/fakebin` in the M0 session). One run
 each on the Mac against the real binaries is what closes M0 for them.
+
+
+## Exposure, masks, and the .hsmove cue language (2026-09-14, coin capture)
+
+Three additions, each from a measured failure on `Projects/2026-09-13_coins` (70 captures of
+four challenge coins in a clear plastic case, shot against a backlit sliding door).
+
+### `hs exposure`
+
+The phone's auto-exposure walks during a capture, and the walk tracks camera position: on this
+set the 140 undistorted views spanned **2.49x in linear luma**, 2.74x in contrast and 8% in
+R/B ratio, with the five brightest at cap019–024 and the five darkest at cap064–069. Brush has
+no per-image exposure or appearance parameter — there is nothing for it in `ProcessConfig`,
+`TrainConfig`, `ModelConfig` or `LoadDatasetConfig` — so a brightness that varies with camera
+position can only be explained as a property of the object, and the spherical harmonics absorb
+it as shading.
+
+This decodes sRGB to linear, takes each channel's median per view, and scales it onto the
+dataset's own reference (the median of those medians). Medians, not means, so a blown window
+cannot drag the gain. It runs after `hs solve` and touches nothing the solver produced — the
+sparse model, poses and rig.npz are computed from the original frames — so a train before and
+after differs in one variable. Originals go to `solve/exposure_backup/`; `--restore` puts them
+back. 2.49x → **1.03x** on this set, gains 0.76–2.08x, 11 s for 140 views.
+
+Result on the golden four views: worst displaced fraction 40.5% → 28.3%,
+`edge_energy_consistent_across_views` flipped to pass. PSNR is *not* comparable across the two
+trains — the reference images changed too.
+
+### `hs masks`
+
+`3DGS_4DGS_Challenging_Materials_Guide.docx` §1: "duplicate or ghosted objects through glass →
+straight-ray model fits incompatible refracted correspondences → mask glass and retrain
+background". Masking is the one thing that guide recommends which Brush actually has: its
+loader finds a `masks/` tree mirroring `images/`, matches by file stem, takes white as keep and
+selects `AlphaMode::Masked` automatically; `match_alpha_weight` then puts an L1 on rendered
+alpha, so the model is pushed to be *empty* outside the silhouette rather than merely
+unsupervised there.
+
+No segmentation model is needed — the solve already knows where the subject is. Splats (or SfM
+points) within `--radius` of the subject centre are projected into every view at that view's own
+K, R, t, each drawn as a disc the size of its own projected footprint; then close, fill interior
+holes, keep the largest connected component (detached blobs are haze and table caught by the
+radius), and dilate by a world-space margin so the silhouette errs outward. A generous mask
+costs background supervision; a tight one deletes real observations.
+
+Verified with a 34-second control — same 1000 iterations, masks the only difference:
+
+| | splats | inside 120 mm | beyond 1 m |
+|---|---|---|---|
+| initialization | 14,033 | 82.0% | 14.8% |
+| masked, 1000 iters | 21,795 | 81.5% | 10.4% |
+| unmasked, 1000 iters | 24,712 | 67.8% | 18.9% |
+
+Full run: **245,351 splats against 408,807 unmasked**, and `splat_count_in_range` passes for the
+first time on this project. Displacement improved on five of seven graded views (cap007
+18.8 → 5.8%, cap040 2.6 → 1.3%) and worsened on two (cap009, cap050). PSNR rose on six of seven.
+
+The limit worth knowing: **a 2D mask constrains the silhouette, not depth.** A splat two metres
+behind the subject that projects inside the silhouette is fully supervised, and a transparent
+subject needs something back there to show through. 35.4% of the masked model still sits beyond
+a metre — though only 30% of that population projects into any sampled view at all.
+
+### `.hsmove` and `hs move --script`
+
+Presets build a path through real camera *indices*. A script describes the shot the way it is
+described on set, in the capture's own spherical coordinates:
+
+```
+start  az -15  el +16  dolly +0
+boom   to el +1        speed 4>1
+hold   0.4s
+dolly  back 20         speed 2
+arc    left 24         speed 2
+hold   0.5s
+arc    right 90        speed 3
+```
+
+Speed is tenths: 10/10 is 30°/s of orbit and 150 mm/s of dolly, and `4>1` ramps across the cue.
+Every cue is walked one frame at a time against the hull; a cue that runs out of capture is
+CLAMPED, keeps what it achieved, and the report says where and how much — on the coin set that
+last arc gets 46° of the 90° asked for, which is the capture's longest continuous arc.
+
+Two things the compiler had to get right that a 1°-quantised map gets wrong. The reachable
+radii along one bearing are **not a single interval** — two cameras at different depths leave an
+unreachable gap between them, and taking the outer bounds puts the camera in it. And the shell
+radius, taken as "the radius closest to a real camera", steps every time the nearest camera
+changes: up to 30 mm between consecutive frames, a 900 mm/s lurch. The shell is now a
+Gaussian-weighted mean over nearby captures (σ 8°), and the radius track is smoothed by
+alternating projection — smooth, clamp into the band, repeat — which is what guarantees the
+hull. p90 speed 48 mm/s against rig6's boom peaking at 87.
+
+`no_speed_spike` reports what smoothing cannot fix: where the band itself has a seam, the track
+jumps it in one frame, and the check names the time and the frame rather than hiding it.
