@@ -21,7 +21,14 @@ apps/brush-cli/src/lib.rs) — the "still open" items of strategy §9:
   whatever ``.ply`` the dataset folder holds (``init.ply`` wins, else the last one sorted).
   ``--resume-from PLY`` therefore copies that export in as ``init.ply`` for the run and
   removes it afterwards. Mechanically supported; its effect on quality is untested — M3
-  decides whether the UI says "resume" or "restart".
+  decides whether the UI says "resume" or "restart". The checkpoint is validated and
+  staged as init.ply *before* train/exports is cleared, and when it lives in train/exports
+  (the natural place) that folder keeps every export up to the checkpoint's iteration and
+  drops only the later ones — a resume must never delete the file it resumes from.
+* Lineage: before brush starts, the dataset it will train on is fingerprinted (rig.npz md5,
+  digest of the images and masks) into the train metrics as ``dataset_fingerprint``.
+  ``hs render`` compares the rig.npz md5 against the current solve, so a model that
+  survived a re-solve cannot render silently in a frame it does not belong to.
 
 Checks: final export present; ``element vertex`` within 0.6–1.4× of 2,628 splats per
 registered frame (rig6: 170,841 / 65); splat count monotone through growth.
@@ -34,7 +41,7 @@ import sys
 import time
 
 from .. import events, runner
-from ..project import md5_file
+from ..project import dir_digest, md5_file
 
 STAGE = "train"
 DEFAULT_BRUSH = "~/Desktop/Apps/brush/target/release/brush"
@@ -103,25 +110,57 @@ def run(a, pj):
                      value=f"'{opt}' ran earlier but a later stage rewrote train/dataset; "
                            f"re-run `hs {opt} --project {pj.root}` or accept a dataset without it")
 
+    # validate the checkpoint before anything is deleted: the natural place for it is
+    # train/exports, which this stage clears, and a resume that wipes its own checkpoint
+    # fails with "not found" after the damage is done
+    start_iter, src, src_md5 = 0, None, None
+    if a.resume_from:
+        src = os.path.abspath(a.resume_from)
+        if not os.path.isfile(src):
+            raise events.StageError(f"--resume-from not found: {src}")
+        if ply_vertex_count(src) is None:
+            raise events.StageError(f"--resume-from is not a PLY with a vertex element: {src}")
+        m = RE_EXPORT.search(os.path.basename(src))
+        start_iter = a.start_iter if a.start_iter is not None else (int(m.group(1)) if m else 0)
+        src_md5 = md5_file(src)
+
     # train/ holds the dataset written by solve; wipe only exports + our own files
     pj.begin(STAGE, argv=sys.argv, clean=False)
     exports = pj.exports_dir
-    if os.path.isdir(exports):
-        shutil.rmtree(exports)
-    os.makedirs(exports, exist_ok=True)
     init_ply = os.path.join(dataset, "init.ply")
     if os.path.exists(init_ply):
         os.remove(init_ply)  # a stale resume file would silently seed a fresh run
-    start_iter = 0
-    if a.resume_from:
-        src = os.path.abspath(a.resume_from)
-        if not os.path.exists(src):
-            raise events.StageError(f"--resume-from not found: {src}")
-        m = RE_EXPORT.search(os.path.basename(src))
-        start_iter = a.start_iter if a.start_iter is not None else (int(m.group(1)) if m else 0)
-        shutil.copy2(src, init_ply)
+    if src:
+        shutil.copy2(src, init_ply)   # staged before the clear, so the source may live in exports
+        if md5_file(init_ply) != src_md5:
+            raise events.StageError(f"copy of --resume-from does not match its source: {src}")
+    resuming_from_exports = bool(src) and os.path.dirname(src) == os.path.abspath(exports)
+    if os.path.isdir(exports):
+        if resuming_from_exports:
+            # keep the history this run continues (everything up to the checkpoint); drop
+            # only the exports the resumed run will supersede
+            for it, p in list_exports(exports):
+                if it > start_iter and p != src:
+                    os.remove(p)
+        else:
+            shutil.rmtree(exports)
+    os.makedirs(exports, exist_ok=True)
+    if src:
+        pj.metric(STAGE, "resume_from", pj.rel(src) if src.startswith(pj.root) else src)
+        pj.metric(STAGE, "resume_from_md5", src_md5)
+        pj.metric(STAGE, "start_iter", start_iter)
         pj.check(STAGE, "resume_experimental", False,
                  value=f"resuming from {os.path.basename(src)} at iter {start_iter}: mechanically supported, quality unverified")
+
+    # what this model is trained against — render checks the rig against the current solve
+    events.start(STAGE, "fingerprint")
+    img_d, img_n = dir_digest(os.path.join(dataset, "images"), (".jpg", ".jpeg", ".png"))
+    msk_d, msk_n = dir_digest(os.path.join(dataset, "masks"), (".png",))
+    fp = {"rig_npz_md5": md5_file(pj.rig_npz) if os.path.exists(pj.rig_npz) else None,
+          "images": {"digest": img_d, "count": img_n},
+          "masks": {"digest": msk_d, "count": msk_n} if msk_n else None,
+          "exposure": pj.status("exposure"), "masks_stage": pj.status("masks")}
+    pj.metric(STAGE, "dataset_fingerprint", fp)
 
     argv = [brush, dataset,
             "--total-train-iters", str(a.total_train_iters),
@@ -145,7 +184,8 @@ def run(a, pj):
 
     total = a.total_train_iters
     st = {"iter": start_iter, "splats": None, "t0": time.monotonic(), "iter0": start_iter,
-          "seen_exports": set(), "growth": [], "errors": [], "last_emit": 0.0}
+          "seen_exports": set(p for _, p in list_exports(exports)),   # retained pre-resume history
+          "growth": [], "errors": [], "last_emit": 0.0}
 
     def _progress(force=False):
         el = time.monotonic() - st["t0"]
@@ -209,6 +249,13 @@ def run(a, pj):
         res = runner.run(argv, STAGE, log_path=pj.log_path(STAGE), on_line=on_line, tick=tick,
                          tick_interval=3.0, pid_file=pid_file, env=env, check=False)
     finally:
+        # Brush may write an export AT the start iteration, i.e. over the checkpoint this run
+        # resumed from (the fake does: range(start, total + 1)). init.ply is a verified copy of
+        # it, so put the original back before init.ply goes.
+        if resuming_from_exports and os.path.exists(init_ply) and \
+                (not os.path.exists(src) or md5_file(src) != src_md5):
+            shutil.copy2(init_ply, src)
+            events.log(STAGE, f"[hs] brush overwrote the checkpoint {os.path.basename(src)}; restored it")
         if os.path.exists(init_ply):
             os.remove(init_ply)
     tick(final=True)

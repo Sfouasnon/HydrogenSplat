@@ -22,6 +22,11 @@ was already clipping still clips, and the report says how much.
 
 The originals are copied to solve/exposure_backup/ first, so `--restore` puts them back and
 a second run always starts from the untouched export.
+
+`--dry-run` measures the originals (the backup when one exists, else the current images) and
+writes nothing: not a pixel, not the stage's status. It records what it measured under
+stages.exposure.dry_run so the numbers are kept, but `exposure` stays whatever it was and
+`train` is not marked stale, because nothing it trained on changed.
 """
 import json
 import os
@@ -91,6 +96,11 @@ def run(a, pj):
         raise events.StageError("no train/dataset/images", hint="hs solve first")
     backup = pj.path("solve", "exposure_backup")
     report_path = os.path.join(pj.dataset_dir, "exposure.json")
+    if a.dry_run and a.restore:
+        raise events.StageError("--dry-run and --restore together: a dry run writes nothing, so there is nothing to restore")
+    if a.dry_run:
+        return _dry_run(a, pj, images, backup)
+    pj.acquire(STAGE)
     st = pj.stage(STAGE)
     st.update({"status": "running", "started": now_iso(), "finished": None, "argv": list(sys.argv),
                "metrics": {}, "checks": [], "artifacts": []})
@@ -118,37 +128,17 @@ def run(a, pj):
     if os.path.isdir(backup):
         shutil.rmtree(images)
         shutil.copytree(backup, images)
-    elif not a.dry_run:
+    else:
         shutil.copytree(images, backup)
 
     lut = _srgb_to_linear_lut()
-    events.start(STAGE, "measure")
-    med, clip = {}, {}
-    for i, (eye, f) in enumerate(views):
-        med[(eye, f)], clip[(eye, f)] = measure(os.path.join(images, eye, f), lut)
-        events.progress(STAGE, i + 1, len(views), step="measure")
-    M = np.array([med[k] for k in views])                        # (n, 3) B G R
-    ref = np.median(M, axis=0)
-    if a.mode == "luma":
-        y = M @ np.array([0.0722, 0.7152, 0.2126])               # BGR weights
-        gains = np.repeat((np.median(y) / y)[:, None], 3, axis=1)
-    else:
-        gains = ref[None, :] / M
-    gains = np.clip(gains, GAIN_MIN, GAIN_MAX)
-
-    luma = (M @ np.array([0.0722, 0.7152, 0.2126]))
+    views, med, clip, M, ref, gains, luma = _measure_set(a, images, views, lut)
     pj.metric(STAGE, "views", len(views))
     pj.metric(STAGE, "luma_spread_before", round(float(luma.max() / max(luma.min(), 1e-9)), 3))
     pj.metric(STAGE, "gain_min", round(float(gains.min()), 3))
     pj.metric(STAGE, "gain_max", round(float(gains.max()), 3))
     pj.metric(STAGE, "clipped_fraction_max", round(float(max(clip.values())), 4))
     events.metric(STAGE, "reference_linear_bgr", [round(float(x), 5) for x in ref])
-
-    if a.dry_run:
-        pj.check(STAGE, "gains_within_range", bool(gains.min() > GAIN_MIN and gains.max() < GAIN_MAX),
-                 value=f"{gains.min():.2f}-{gains.max():.2f}x (clamped outside {GAIN_MIN}-{GAIN_MAX})")
-        _done(pj)
-        return
 
     events.start(STAGE, "apply")
     after = []
@@ -192,11 +182,56 @@ def run(a, pj):
     _done(pj)
 
 
+def _measure_set(a, src_dir, views, lut):
+    """Per-view linear medians, clipped fraction and the gains that would centre them."""
+    med, clip = {}, {}
+    events.start(STAGE, "measure")
+    for i, (eye, f) in enumerate(views):
+        med[(eye, f)], clip[(eye, f)] = measure(os.path.join(src_dir, eye, f), lut)
+        events.progress(STAGE, i + 1, len(views), step="measure")
+    M = np.array([med[k] for k in views])                        # (n, 3) B G R
+    ref = np.median(M, axis=0)
+    if a.mode == "luma":
+        y = M @ np.array([0.0722, 0.7152, 0.2126])               # BGR weights
+        gains = np.repeat((np.median(y) / y)[:, None], 3, axis=1)
+    else:
+        gains = ref[None, :] / M
+    gains = np.clip(gains, GAIN_MIN, GAIN_MAX)
+    luma = (M @ np.array([0.0722, 0.7152, 0.2126]))
+    return views, med, clip, M, ref, gains, luma
+
+
+def _dry_run(a, pj, images, backup):
+    """Measure and report. Reads the originals (the backup if a run already happened) and
+    writes only stages.exposure.dry_run in the manifest: no pixels, no status, no stale marks."""
+    src_dir = backup if os.path.isdir(backup) else images
+    views = _views(src_dir)
+    if not views:
+        raise events.StageError(f"no images in {pj.rel(src_dir)}")
+    lut = _srgb_to_linear_lut()
+    views, med, clip, M, ref, gains, luma = _measure_set(a, src_dir, views, lut)
+    metrics = {"views": len(views),
+               "luma_spread_before": round(float(luma.max() / max(luma.min(), 1e-9)), 3),
+               "gain_min": round(float(gains.min()), 3), "gain_max": round(float(gains.max()), 3),
+               "clipped_fraction_max": round(float(max(clip.values())), 4),
+               "measured": pj.rel(src_dir)}
+    for k, v in metrics.items():
+        events.metric(STAGE, k, v)
+    events.metric(STAGE, "reference_linear_bgr", [round(float(x), 5) for x in ref])
+    ok = bool(gains.min() > GAIN_MIN and gains.max() < GAIN_MAX)
+    events.check(STAGE, "gains_within_range", ok,
+                 value=f"{gains.min():.2f}-{gains.max():.2f}x (clamped outside {GAIN_MIN}-{GAIN_MAX})")
+    pj.stage(STAGE)["dry_run"] = {"at": now_iso(), "mode": a.mode, "argv": list(sys.argv), "metrics": metrics,
+                                  "checks": [{"name": "gains_within_range", "ok": ok}]}
+    pj.save()
+
+
 def _done(pj):
     st = pj.stage(STAGE)
     st["status"] = "done"
     st["finished"] = now_iso()
     pj.save()
+    pj.release()
 
 
 def _mark_stale(pj):

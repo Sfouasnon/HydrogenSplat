@@ -9,6 +9,7 @@ import re
 import sys
 
 from .. import events, runner
+from ..project import md5_file
 
 STAGE = "prune"
 RE_WROTE = re.compile(r"wrote .*: (\d+) splats \(([\d.]+)% of the input\)")
@@ -75,6 +76,7 @@ def run(a, pj):
     runner.run(argv, STAGE, log_path=pj.log_path(STAGE), on_line=on_line)
     pj.metric(STAGE, "center_m", [float(v) for v in center.split(",")])
     pj.metric(STAGE, "input_ply", pj.rel(ply) if ply.startswith(pj.root) else ply)
+    pj.metric(STAGE, "input_ply_md5", md5_file(ply))   # render ties the pruned cloud back to train's export
     if "total" in st:
         pj.metric(STAGE, "splats_in", st["total"])
     if "kept" in st:

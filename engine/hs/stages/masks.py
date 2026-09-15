@@ -79,6 +79,7 @@ def run(a, pj):
     rig = pj.rig_npz
     if not os.path.exists(rig):
         raise events.StageError("no train/dataset/rig.npz", hint="hs solve first")
+    pj.acquire(STAGE)
     st = pj.stage(STAGE)
     st.update({"status": "running", "started": now_iso(), "finished": None, "argv": list(sys.argv),
                "metrics": {}, "checks": [], "artifacts": []})
@@ -197,3 +198,4 @@ def run(a, pj):
     st["status"] = "done"
     st["finished"] = now_iso()
     pj.save()
+    pj.release()

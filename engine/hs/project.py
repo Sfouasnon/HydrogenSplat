@@ -16,6 +16,11 @@ manifest.json holds, per stage: status (pending / running / done / failed / stal
 finished times, the exact argv, metrics, checks and artifacts. Re-running a stage marks every
 downstream stage ``stale``; the app offers to re-run them. Re-running deletes only that
 stage's own folder.
+
+``.hs.lock`` at the project root holds the pid and stage of the one run that may touch the
+project. Recording a pid per stage tells a later reader that a crash happened; it never
+stopped a second process from wiping a folder the first was still writing into. begin()
+takes the lock, finish() releases it, and a lock whose pid is dead is stale and reclaimed.
 """
 import hashlib
 import json
@@ -71,8 +76,38 @@ def md5_file(path, chunk=1 << 20):
     return h.hexdigest()
 
 
+def dir_digest(root, exts):
+    """md5 of (relative path, size, content md5) for every matching file, and the file count.
+    The same digest identifies a training image set in an archive manifest and in the train
+    stage's dataset fingerprint, so the two can be compared."""
+    h, n = hashlib.md5(), 0
+    if not os.path.isdir(root):
+        return None, 0
+    for dirpath, _, files in os.walk(root):
+        for f in sorted(files):
+            if not f.lower().endswith(exts):
+                continue
+            p = os.path.join(dirpath, f)
+            rel = os.path.relpath(p, root)
+            h.update(rel.encode()); h.update(str(os.path.getsize(p)).encode())
+            h.update(md5_file(p).encode())
+            n += 1
+    return h.hexdigest(), n
+
+
 def now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def parse_iso(s):
+    """Inverse of now_iso(); epoch seconds, or None."""
+    try:
+        return time.mktime(time.strptime(s, "%Y-%m-%dT%H:%M:%S%z"))
+    except (TypeError, ValueError):
+        return None
+
+
+LOCK_FILE = ".hs.lock"
 
 
 def _pid_alive(pid):
@@ -193,8 +228,69 @@ class Project:
             raise events.StageError(f"stage '{pre}' is {st}; '{stage}' needs it done",
                                     hint=f"run `hs {pre} --project {self.root}` first")
 
+    # ------------------------------------------------------------------ lock
+    @property
+    def lock_path(self):
+        return self.path(LOCK_FILE)
+
+    def lock_holder(self):
+        """{"pid", "stage", "started"} of the run holding the lock, or None."""
+        try:
+            with open(self.lock_path) as f:
+                info = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return info if isinstance(info, dict) else None
+
+    def acquire(self, stage):
+        """Take the project lock for this process, or raise if another live process holds it.
+
+        Every operation that writes into the project — the STAGES chain and the operations
+        outside it (exposure, masks, archive) — must hold this before touching a folder,
+        because begin() wipes the stage folder and solve rewrites train/dataset: a second
+        `hs` on the same project would otherwise erase work the first is still producing.
+        Re-entrant for the holding process (selftest runs several stages in one process)."""
+        os.makedirs(self.root, exist_ok=True)
+        info = {"pid": os.getpid(), "stage": stage, "started": now_iso()}
+        for _ in range(2):
+            try:
+                fd = os.open(self.lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            except FileExistsError:
+                holder = self.lock_holder()
+                pid = holder.get("pid") if holder else None
+                if pid == os.getpid():
+                    with open(self.lock_path, "w") as f:
+                        json.dump(info, f)
+                    return
+                if pid and _pid_alive(pid):
+                    raise events.StageError(
+                        f"project is busy: '{holder.get('stage')}' is running as pid {pid} "
+                        f"(since {holder.get('started')})",
+                        hint=f"wait for it, or if that process is not an hs run remove {self.lock_path}")
+                # stale (crashed / unreadable) lock: reclaim it
+                try:
+                    os.remove(self.lock_path)
+                except OSError:
+                    pass
+                continue
+            with os.fdopen(fd, "w") as f:
+                json.dump(info, f)
+            return
+        raise events.StageError(f"could not take the project lock at {self.lock_path}")
+
+    def release(self):
+        """Drop the lock if this process holds it. Safe to call when it does not."""
+        holder = self.lock_holder()
+        if holder and holder.get("pid") == os.getpid():
+            try:
+                os.remove(self.lock_path)
+            except OSError:
+                pass
+
     def begin(self, stage, argv, clean=True):
-        """Mark a stage running, wipe its folder (only its own), mark downstream stale."""
+        """Mark a stage running, wipe its folder (only its own), mark downstream stale.
+        Takes the project lock first; a second process gets a StageError, not a wiped folder."""
+        self.acquire(stage)
         d = self.stage_dir(stage)
         if clean and os.path.isdir(d):
             shutil.rmtree(d)
@@ -222,6 +318,7 @@ class Project:
         if error:
             st["error"] = error
         self.save()
+        self.release()
 
     # recorders that also emit the event
     def metric(self, stage, name, value, **extra):

@@ -106,6 +106,14 @@ def main(argv=None):
         events.error(ev_stage, f"{type(e).__name__}: {e}", hint="traceback on stderr and in logs/<stage>.log")
         events.done(ev_stage, 2)
         return 2
+    finally:
+        # finish() releases the project lock on the normal path; make sure an exception
+        # raised before finish (or a stage that never called it) does not leave it behind
+        if pj is not None:
+            try:
+                pj.release()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
