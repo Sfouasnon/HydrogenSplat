@@ -112,6 +112,7 @@ def main():
     ap.add_argument("--warn", type=float, default=2.0)
     ap.add_argument("--hard", type=float, default=4.0)
     a = ap.parse_args()
+    cv2.setRNGSeed(0)                       # RANSAC is random; a flag must not flip between runs
     sp = os.path.join(a.project, "train/dataset/sparse")
     cams, ref_cam, S, imgs, P = load(sp)
     other = [c for c in S if c != ref_cam]; assert len(other) == 1
