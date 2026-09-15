@@ -102,7 +102,7 @@ class TrainResume(Base):
     def train_args(self, **kw):
         base = dict(brush=os.path.join(FAKEBIN, "brush"), total_train_iters=self.TOTAL, growth_stop_iter=30,
                     refine_every=10, split_at_screen_size=None, export_every=10, resume_from=None,
-                    start_iter=None, no_caffeinate=True, brush_args="")
+                    start_iter=None, no_caffeinate=True, brush_args="", exclude="", no_masks=False)
         base.update(kw)
         return Namespace(**base)
 
@@ -161,6 +161,71 @@ class TrainResume(Base):
         train.run(self.train_args(), pj)
         self.assertFalse(os.path.exists(stale))
         self.assertTrue(os.path.exists(os.path.join(pj.exports_dir, self.exp(40))))
+
+
+class TrainView(TrainResume):
+    """--exclude / --no-masks hand brush a symlink view and never touch the dataset."""
+
+    def masked_project(self):
+        pj = self.solved_project()
+        for eye in ("L", "R"):
+            for c in ("cap000", "cap001"):
+                write_jpg(os.path.join(pj.dataset_dir, "images", eye, f"{c}.jpg"), 90)
+                d = os.path.join(pj.dataset_dir, "masks", eye)
+                os.makedirs(d, exist_ok=True)
+                open(os.path.join(d, f"{c}.png"), "wb").close()
+        return pj
+
+    def argv_root(self, pj):
+        argv = pj.stage("train")["brush_argv"]
+        return argv[argv.index(os.path.join(FAKEBIN, "brush")) + 1]
+
+    def test_exclude_and_no_masks(self):
+        pj = self.masked_project()
+        before = sorted(os.path.relpath(os.path.join(r, f), pj.dataset_dir)
+                        for r, _d, fs in os.walk(pj.dataset_dir) for f in fs)
+        train.run(self.train_args(exclude="L/cap001,cap000_R", no_masks=True), pj)
+        view = pj.path("train", "view")
+        self.assertEqual(self.argv_root(pj), view)
+        imgs = sorted(os.path.relpath(os.path.join(r, f), view)
+                      for r, _d, fs in os.walk(os.path.join(view, "images")) for f in fs)
+        self.assertNotIn("images/L/cap001.jpg", imgs)
+        self.assertNotIn("images/R/cap000.jpg", imgs)
+        self.assertIn("images/L/cap000.jpg", imgs)
+        self.assertFalse(os.path.exists(os.path.join(view, "masks")), "--no-masks left masks in the view")
+        self.assertTrue(os.path.islink(os.path.join(view, "sparse")))
+        after = sorted(os.path.relpath(os.path.join(r, f), pj.dataset_dir)
+                       for r, _d, fs in os.walk(pj.dataset_dir) for f in fs)
+        self.assertEqual(before, after, "the dataset itself must not change")
+        tm = pj.stage("train")["metrics"]
+        self.assertEqual(tm["excluded_views"], ["L/cap001", "R/cap000"])
+        self.assertFalse(tm["masks_used"])
+        checks = {c["name"]: c for c in pj.stage("train")["checks"]}
+        self.assertTrue(checks["view_count_matches"]["ok"], checks["view_count_matches"])
+
+    def test_masks_kept_minus_excluded(self):
+        pj = self.masked_project()
+        train.run(self.train_args(exclude="R/cap001"), pj)
+        view = pj.path("train", "view")
+        self.assertTrue(os.path.exists(os.path.join(view, "masks", "L", "cap001.png")))
+        self.assertFalse(os.path.exists(os.path.join(view, "masks", "R", "cap001.png")))
+        self.assertTrue(pj.stage("train")["metrics"]["masks_used"])
+
+    def test_unknown_view_is_refused_before_anything_runs(self):
+        pj = self.masked_project()
+        with self.assertRaises(events.StageError):
+            train.run(self.train_args(exclude="L/cap099"), pj)
+        with self.assertRaises(events.StageError):
+            train.run(self.train_args(exclude="left064"), pj)
+
+    def test_plain_run_trains_on_the_dataset_and_drops_a_stale_view(self):
+        pj = self.masked_project()
+        train.run(self.train_args(exclude="L/cap001"), pj)
+        pj.m["stages"]["train"]["status"] = "pending"
+        pj.save()
+        train.run(self.train_args(), pj)
+        self.assertEqual(self.argv_root(pj), pj.dataset_dir)
+        self.assertFalse(os.path.exists(pj.path("train", "view")))
 
 
 # ------------------------------------------------------------------ 2. exposure dry-run

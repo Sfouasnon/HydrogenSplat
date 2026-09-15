@@ -14,7 +14,10 @@ total = int(opt("--total-train-iters", 30000)); every = int(opt("--export-every"
 exp = opt("--export-path", "."); name = opt("--export-name", "export_{iter}.ply"); refine = int(opt("--refine-every", 200))
 growth_stop = int(opt("--growth-stop-iter", 15000)); start = int(opt("--start-iter", 0))
 print(f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ')} INFO  brush_cli] Compute backend: Metal"); sys.stdout.flush()
-print("[.. INFO  brush_cli] Loaded dataset with 132 training, 0 eval views"); sys.stdout.flush()
+# like brush: every image file under the dataset folder (symlinks followed), else the old 132
+_imgs = [f for r, _d, fs in os.walk(os.path.join(args[0], "images"), followlinks=True)
+         for f in fs if f.lower().endswith((".jpg", ".jpeg", ".png"))] if args and os.path.isdir(args[0]) else []
+print(f"[.. INFO  brush_cli] Loaded dataset with {len(_imgs) or 132} training, 0 eval views"); sys.stdout.flush()
 os.makedirs(exp, exist_ok=True)
 digits = len(str(total))
 props = ["x","y","z","nx","ny","nz"] + [f"f_dc_{i}" for i in range(3)] + [f"f_rest_{i}" for i in range(45)] + ["opacity","scale_0","scale_1","scale_2","rot_0","rot_1","rot_2","rot_3"]

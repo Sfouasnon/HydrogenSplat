@@ -30,6 +30,14 @@ apps/brush-cli/src/lib.rs) — the "still open" items of strategy §9:
   ``hs render`` compares the rig.npz md5 against the current solve, so a model that
   survived a re-solve cannot render silently in a frame it does not belong to.
 
+* Views: Brush trains on every image under the folder it is given, applies any ``masks/``
+  folder it finds, and SKIPS an image listed in ``sparse`` whose file is missing (a warning,
+  not an error). ``--exclude L/cap064,R/cap069`` and ``--no-masks`` therefore build
+  ``train/view/``: ``sparse`` symlinked, ``images/`` (and ``masks/`` unless ``--no-masks``)
+  as per-file symlinks minus the excluded views. The dataset itself is never touched, and
+  the init cloud is still ``sparse/points3D.ply``. The view is rebuilt on every run and the
+  loaded view count is checked against it.
+
 Checks: final export present; ``element vertex`` within 0.6–1.4× of 2,628 splats per
 registered frame (rig6: 170,841 / 65); splat count monotone through growth.
 """
@@ -68,6 +76,10 @@ def add_parser(sub):
     p.add_argument("--start-iter", type=int, default=None, help="with --resume-from; default: parsed from its name")
     p.add_argument("--no-caffeinate", action="store_true")
     p.add_argument("--brush-args", default="", help="extra arguments passed to brush verbatim")
+    p.add_argument("--exclude", default="",
+                   help="views to leave out, comma separated: L/cap064,R/cap069 (cap064_L also accepted)")
+    p.add_argument("--no-masks", action="store_true",
+                   help="train without train/dataset/masks even though it exists")
     return p
 
 
@@ -89,6 +101,50 @@ def list_exports(d):
     return sorted(out)
 
 
+def parse_exclude(text):
+    """'L/cap064, cap069_R, R/cap070.jpg' -> {'L/cap064', 'R/cap069', 'R/cap070'}"""
+    out = set()
+    for tok in (t.strip() for t in (text or "").split(",")):
+        if not tok:
+            continue
+        tok = os.path.splitext(tok)[0]
+        m = re.fullmatch(r"(cap\d+)_([LR])", tok)
+        if m:
+            tok = f"{m.group(2)}/{m.group(1)}"
+        if not re.fullmatch(r"[LR]/cap\d+", tok):
+            raise events.StageError(f"--exclude: cannot read '{tok}'", hint="write views as L/cap064,R/cap069")
+        out.add(tok)
+    return out
+
+
+def build_view(dataset, view, exclude, use_masks):
+    """train/view: the dataset as Brush should see it. -> {'images': n, 'masks': n}"""
+    if os.path.islink(view):
+        os.remove(view)
+    elif os.path.isdir(view):
+        shutil.rmtree(view)          # removes the links, never what they point at
+    os.makedirs(view)
+    os.symlink(os.path.join(dataset, "sparse"), os.path.join(view, "sparse"))
+    counts = {}
+    for top in ("images", "masks") if use_masks else ("images",):
+        src_top = os.path.join(dataset, top)
+        if not os.path.isdir(src_top):
+            continue
+        n = 0
+        for root, _dirs, files in os.walk(src_top):
+            rel = os.path.relpath(root, src_top)
+            for f in sorted(files):
+                key = os.path.normpath(os.path.join(rel, os.path.splitext(f)[0]))
+                if key in exclude:
+                    continue
+                dst_dir = os.path.normpath(os.path.join(view, top, rel))
+                os.makedirs(dst_dir, exist_ok=True)
+                os.symlink(os.path.join(root, f), os.path.join(dst_dir, f))
+                n += 1
+        counts[top] = n
+    return counts
+
+
 def run(a, pj):
     pj.require(STAGE)
     brush = runner.which(a.brush)
@@ -103,7 +159,9 @@ def run(a, pj):
     # exposure and masks write into train/dataset and a re-solve wipes it; they are outside
     # the STAGES chain so they cannot block, but training on a dataset whose normalisation or
     # silhouettes were deleted underneath it is a silent wrong answer, not a warning.
-    for opt in ("exposure", "masks"):
+    exclude = parse_exclude(getattr(a, "exclude", ""))
+    use_masks = not getattr(a, "no_masks", False)
+    for opt in ("exposure", "masks") if use_masks else ("exposure",):
         st_opt = pj.status(opt)
         if st_opt == "stale":
             pj.check(STAGE, f"{opt}_still_applied", False,
@@ -127,7 +185,26 @@ def run(a, pj):
     # train/ holds the dataset written by solve; wipe only exports + our own files
     pj.begin(STAGE, argv=sys.argv, clean=False)
     exports = pj.exports_dir
-    init_ply = os.path.join(dataset, "init.ply")
+    view = pj.path("train", "view")
+    view_counts = None
+    if exclude or not use_masks:
+        img_root = os.path.join(dataset, "images")
+        missing = sorted(e for e in exclude if not any(
+            os.path.exists(os.path.join(img_root, e + ext)) for ext in (".jpg", ".jpeg", ".png")))
+        if missing:
+            raise events.StageError(f"--exclude names views that are not in the dataset: {', '.join(missing)}")
+        view_counts = build_view(dataset, view, exclude, use_masks)
+        brush_root = view
+        pj.metric(STAGE, "excluded_views", sorted(exclude))
+        pj.metric(STAGE, "masks_used", use_masks and bool(view_counts.get("masks")))
+        pj.metric(STAGE, "view", {"path": pj.rel(view), **view_counts})
+    else:
+        if os.path.islink(view) or os.path.isdir(view):
+            (os.remove if os.path.islink(view) else shutil.rmtree)(view)   # a stale view must not linger
+        brush_root = dataset
+        pj.metric(STAGE, "excluded_views", [])
+        pj.metric(STAGE, "masks_used", os.path.isdir(os.path.join(dataset, "masks")))
+    init_ply = os.path.join(brush_root, "init.ply")
     if os.path.exists(init_ply):
         os.remove(init_ply)  # a stale resume file would silently seed a fresh run
     if src:
@@ -159,10 +236,11 @@ def run(a, pj):
     fp = {"rig_npz_md5": md5_file(pj.rig_npz) if os.path.exists(pj.rig_npz) else None,
           "images": {"digest": img_d, "count": img_n},
           "masks": {"digest": msk_d, "count": msk_n} if msk_n else None,
-          "exposure": pj.status("exposure"), "masks_stage": pj.status("masks")}
+          "exposure": pj.status("exposure"), "masks_stage": pj.status("masks"),
+          "excluded_views": sorted(exclude), "masks_used": use_masks and bool(msk_n)}
     pj.metric(STAGE, "dataset_fingerprint", fp)
 
-    argv = [brush, dataset,
+    argv = [brush, brush_root,
             "--total-train-iters", str(a.total_train_iters),
             "--growth-stop-iter", str(a.growth_stop_iter),
             "--refine-every", str(a.refine_every),
@@ -266,6 +344,11 @@ def run(a, pj):
         hint = " | ".join(st["errors"][-3:]) or " | ".join(res.lines[-3:])
         raise events.StageError(f"brush exited {res.returncode}", hint=hint)
 
+    if view_counts is not None:
+        got = pj.stage(STAGE).get("metrics", {}).get("train_views")
+        pj.check(STAGE, "view_count_matches", got == view_counts["images"],
+                 value=f"brush loaded {got} views; train/view holds {view_counts['images']} "
+                       f"({len(exclude)} excluded, masks {'on' if use_masks else 'off'})")
     ok_final = pj.check(STAGE, "final_export_present", bool(final),
                         value=os.path.basename(final[0]) if final else f"no export_{total:05d}.ply in train/exports")
     if final:
