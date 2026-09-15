@@ -23,10 +23,15 @@ BAR_H=${BAR_H:-56}
 
 # label|ply  — edit these three lines to compare something else
 MODELS=(
-  "exposure only   379,307 splats|$PROJ/archive/exposure-only/export_40000.ply"
+  "no L064/R069, opac-decay 0.008   282,914 splats|$PROJ/archive/exposure-excl-decay8/export_40000.ply"
   "exposure, no L064/R069   385,967 splats|$PROJ/archive/exposure-excl/export_40000.ply"
-  "exposure + masks   245,085 splats|$PROJ/archive/exposure-masks/export_40000.ply"
+  "no L064/R069, quality prune   298,703 splats|$PROJ/prune/export_40000_pruned_r100.ply"
 )
+
+# check every model before rendering any: a typo in the last path should not cost two renders
+for m in "${MODELS[@]}"; do
+  [ -f "${m##*|}" ] || { echo "missing: ${m##*|}" >&2; exit 1; }
+done
 
 inputs=(); filters=""; labels=""; texts=()
 for i in "${!MODELS[@]}"; do
