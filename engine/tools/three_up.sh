@@ -24,7 +24,7 @@ BAR_H=${BAR_H:-56}
 # label|ply  — edit these three lines to compare something else
 MODELS=(
   "exposure only   379,307 splats|$PROJ/archive/exposure-only/export_40000.ply"
-  "pruned   r 80 mm   50,119 splats|$PROJ/prune/export_40000_pruned_r008.ply"
+  "exposure, no L064/R069   385,967 splats|$PROJ/archive/exposure-excl/export_40000.ply"
   "exposure + masks   245,085 splats|$PROJ/archive/exposure-masks/export_40000.ply"
 )
 
