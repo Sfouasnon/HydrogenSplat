@@ -38,11 +38,13 @@ apps/brush-cli/src/lib.rs) — the "still open" items of strategy §9:
   the init cloud is still ``sparse/points3D.ply``. The view is rebuilt on every run and the
   loaded view count is checked against it.
 
-Checks: final export present; ``element vertex`` within 0.6–1.4× of 2,628 splats per
+Keep-awake: cli.py holds ``caffeinate -d -i -m -s`` for the whole ``hs`` process (keepawake.py);
+runner.py notices sleeps anyway (lid closed, Apple menu > Sleep) and train records ``slept_s``.
+
+Checks: no sleep over 60 s during the run; final export present; ``element vertex`` within 0.6–1.4× of 2,628 splats per
 registered frame (rig6: 170,841 / 65); splat count monotone through growth.
 """
 import os
-import platform
 import re
 import shutil
 import sys
@@ -74,7 +76,8 @@ def add_parser(sub):
     p.add_argument("--export-every", type=int, default=2500)
     p.add_argument("--resume-from", default=None, help="an export_NNNNN.ply to continue from (experimental)")
     p.add_argument("--start-iter", type=int, default=None, help="with --resume-from; default: parsed from its name")
-    p.add_argument("--no-caffeinate", action="store_true")
+    p.add_argument("--no-caffeinate", action="store_true",
+                   help="do not hold the Mac awake (also HS_NO_CAFFEINATE=1)")
     p.add_argument("--brush-args", default="", help="extra arguments passed to brush verbatim")
     p.add_argument("--exclude", default="",
                    help="views to leave out, comma separated: L/cap064,R/cap069 (cap064_L also accepted)")
@@ -253,8 +256,7 @@ def run(a, pj):
         argv += ["--start-iter", str(start_iter)]
     if a.brush_args:
         argv += a.brush_args.split()
-    if not a.no_caffeinate and platform.system() == "Darwin" and shutil.which("caffeinate"):
-        argv = ["caffeinate", "-i"] + argv
+    # keep-awake is held by cli.py for the whole stage (keepawake.py), not wrapped around brush
     pj.record_tool("brush", {"path": brush, "mtime": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(os.path.getmtime(brush)))})
     pj.m["stages"][STAGE]["brush_argv"] = argv
     pj.save()
@@ -338,6 +340,11 @@ def run(a, pj):
             os.remove(init_ply)
     tick(final=True)
     pj.metric(STAGE, "elapsed_s", round(res.elapsed, 1))
+    pj.metric(STAGE, "wall_s", round(res.wall_s, 1))
+    pj.metric(STAGE, "slept_s", round(res.slept_s, 1))
+    pj.check(STAGE, "no_sleep_during_run", res.slept_s <= 60,
+             value=(f"slept {res.slept_s / 60:.1f} min in {len(res.sleeps)} gaps over {res.wall_s / 60:.1f} min wall"
+                    if res.sleeps else f"awake for all {res.wall_s / 60:.1f} min"))
     exps = list_exports(exports)
     final = [p for it, p in exps if it == total]
     if res.returncode != 0 and not final:

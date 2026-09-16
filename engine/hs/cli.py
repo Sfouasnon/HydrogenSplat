@@ -13,7 +13,7 @@ import os
 import sys
 import traceback
 
-from . import __version__, events
+from . import __version__, events, keepawake
 from .project import Project
 from .stages import archive, calibrate, exposure, ingest, masks, move, prune, render, select, selftest, solve, tools, train, views
 
@@ -61,7 +61,11 @@ def main(argv=None):
     mod = PROJECT_STAGES.get(stage_name) or FREE_STAGES.get(stage_name)
     ev_stage = getattr(mod, "STAGE", stage_name)
     pj = None
+    awake = None
     try:
+        if stage_name in PROJECT_STAGES or stage_name == "selftest":
+            # hold the Mac awake for the whole stage, not just the child (keepawake.py)
+            awake = keepawake.hold(ev_stage, off=keepawake.disabled(a)).__enter__()
         if stage_name in PROJECT_STAGES:
             if not a.project:
                 ap.error(f"hs {stage_name} needs --project DIR")
@@ -107,6 +111,8 @@ def main(argv=None):
         events.done(ev_stage, 2)
         return 2
     finally:
+        if awake is not None:
+            awake.__exit__(None, None, None)
         # finish() releases the project lock on the normal path; make sure an exception
         # raised before finish (or a stage that never called it) does not leave it behind
         if pj is not None:

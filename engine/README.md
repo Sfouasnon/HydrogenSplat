@@ -143,6 +143,19 @@ within 8° spread over 18° of elevation against 9 within an 8° band at az −4
 fraction is diluted by background inside the crop, so compare views within a capture rather
 than across differently framed runs.
 
+## Keeping the Mac awake (2026-09-16)
+
+Every project stage and `hs selftest` holds `caffeinate -d -i -m -s -w <hs pid>` for its whole
+run (`hs/keepawake.py`); a `keep_awake` metric at the start reports AC/battery and whether the
+lid is closed. `HS_CAFFEINATE_FLAGS` overrides the flags; `HS_NO_CAFFEINATE=1` or
+`hs train --no-caffeinate` turns it off. caffeinate cannot stop a closed lid (no external
+display), Apple menu > Sleep or a battery shutdown, so `runner.py` also measures sleep (a clock
+that runs through sleep vs one that does not): any gap over 20 s is a live `sleep_detected`
+metric and a line in `logs/<stage>.log`, and `hs train` records `wall_s`, `slept_s` and the
+`no_sleep_during_run` check (fails above 60 s). Why: the 2026-09-15 head train had
+`caffeinate -i` around Brush only and took ~16 h for ~1.5 h of work, training ~30 s per
+~16 min overnight.
+
 ## Brush facts the wrappers rely on (read from the fork's source, not yet exercised)
 
 * `brush <dataset> --total-train-iters 40000 --growth-stop-iter 30000 --refine-every 130

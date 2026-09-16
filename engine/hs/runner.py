@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 
-from . import events
+from . import events, keepawake
 
 VENDORED = os.path.dirname(os.path.abspath(__file__))
 
@@ -37,6 +37,9 @@ class ChildResult:
         self.started = None
         self.finished = None
         self.pid = None
+        self.slept_s = 0.0       # seconds the machine slept while the child ran (keepawake.py)
+        self.sleeps = []
+        self.wall_s = 0.0        # wall-clock duration including sleep; elapsed stops during sleep
 
     @property
     def elapsed(self):
@@ -122,9 +125,18 @@ def run(argv, stage, log_path=None, on_line=None, cwd=None, env=None, tick=None,
 
     t = threading.Thread(target=reader, daemon=True)
     t.start()
+    watch = keepawake.SleepWatch()
     try:
         while True:
-            t.join(timeout=tick_interval if tick else None)
+            t.join(timeout=tick_interval if tick else 5.0)
+            gap = watch.poll()
+            if gap:
+                msg = f"[hs] the machine slept {gap / 60:.1f} min while {os.path.basename(argv[0])} ran"
+                events.metric(stage, "sleep_detected", round(gap, 1), total_s=round(watch.slept_s, 1))
+                events.log(stage, msg)
+                if log_f:
+                    log_f.write(msg + "\n")
+                    log_f.flush()
             if tick:
                 try:
                     tick()
@@ -143,10 +155,13 @@ def run(argv, stage, log_path=None, on_line=None, cwd=None, env=None, tick=None,
     finally:
         stop.set()
         res.finished = time.monotonic()
+        watch.poll()
+        res.slept_s, res.sleeps, res.wall_s = watch.slept_s, watch.sleeps, watch.wall_s
         if pid_file and os.path.exists(pid_file):
             os.remove(pid_file)
         if log_f:
-            log_f.write(f"### exit {res.returncode} after {res.elapsed:.1f}s\n")
+            slept = f", slept {res.slept_s:.0f}s ({len(res.sleeps)}x)" if res.sleeps else ""
+            log_f.write(f"### exit {res.returncode} after {res.elapsed:.1f}s{slept}\n")
             log_f.close()
 
     if check and res.returncode != 0:

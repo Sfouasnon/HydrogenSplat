@@ -26,7 +26,7 @@ sys.path.insert(0, ENGINE)
 
 import numpy as np  # noqa: E402
 
-from hs import events  # noqa: E402
+from hs import events, keepawake, runner  # noqa: E402
 from hs.project import LOCK_FILE, Project, md5_file, now_iso  # noqa: E402
 from hs.stages import archive, exposure, render, train  # noqa: E402
 
@@ -458,3 +458,88 @@ class ProjectLock(Base):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ------------------------------------------------------------------ 6. keep awake / sleep detection
+class FakeClocks:
+    """Stands in for keepawake.clocks(): sleep() advances only the through-sleep clock."""
+    def __init__(self):
+        self.through = self.awake = 1000.0
+
+    def __call__(self):
+        return self.through, self.awake
+
+    def run(self, s):
+        self.through += s
+        self.awake += s
+
+    def sleep(self, s):
+        self.through += s
+
+
+class KeepAwake(Base):
+    def setUp(self):
+        super().setUp()
+        self._real = keepawake.clocks
+        self.clk = FakeClocks()
+        keepawake.clocks = self.clk
+
+    def tearDown(self):
+        keepawake.clocks = self._real
+        super().tearDown()
+
+    def test_sleepwatch_counts_only_real_gaps(self):
+        w = keepawake.SleepWatch()
+        self.clk.run(3)
+        self.assertEqual(w.poll(), 0.0)
+        self.clk.run(30); self.clk.sleep(965)
+        self.assertEqual(w.poll(), 965.0)
+        self.clk.run(10); self.clk.sleep(5)          # under SLEEP_GAP_S: jitter, not sleep
+        self.assertEqual(w.poll(), 0.0)
+        self.assertEqual(w.summary(), {"slept_s": 965.0, "sleeps": 1, "wall_s": 1013.0})
+
+    def test_runner_reports_a_sleep_while_the_child_runs(self):
+        slept = []
+
+        def tick():
+            if not slept:
+                self.clk.sleep(600)
+                slept.append(1)
+
+        log = os.path.join(self.tmp, "x.log")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            res = runner.run([sys.executable, "-c", "import time; time.sleep(0.6)"], "train",
+                             log_path=log, tick=tick, tick_interval=0.1)
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(round(res.slept_s), 600)
+        self.assertEqual(len(res.sleeps), 1)
+        evs = [json.loads(l) for l in out.getvalue().splitlines()]
+        self.assertTrue(any(e.get("name") == "sleep_detected" and e["value"] == 600.0 for e in evs))
+        with open(log) as f:
+            text = f.read()
+        self.assertIn("the machine slept 10.0 min", text)
+        self.assertIn("slept 600s (1x)", text)
+
+    def test_disabled_by_flag_or_env(self):
+        self.assertTrue(keepawake.disabled(Namespace(no_caffeinate=True)))
+        self.assertFalse(keepawake.disabled(Namespace()))
+        os.environ["HS_NO_CAFFEINATE"] = "1"
+        try:
+            self.assertTrue(keepawake.disabled(Namespace()))
+            with keepawake.hold("train", off=keepawake.disabled(Namespace())) as h:
+                self.assertIsNone(h.proc)
+        finally:
+            del os.environ["HS_NO_CAFFEINATE"]
+
+
+class TrainKeepAwake(TrainResume):
+    def test_brush_is_not_wrapped_and_the_run_records_sleep(self):
+        pj = self.solved_project()
+        with contextlib.redirect_stdout(io.StringIO()):
+            train.run(self.train_args(), pj)
+        st = pj.stage("train")
+        self.assertNotIn("caffeinate", st["brush_argv"])
+        self.assertIn("slept_s", st["metrics"])
+        self.assertIn("wall_s", st["metrics"])
+        chk = {c["name"]: c for c in st["checks"]}
+        self.assertTrue(chk["no_sleep_during_run"]["ok"])
