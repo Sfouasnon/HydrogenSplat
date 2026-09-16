@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Launched with `swift run` there is no bundle; make it a normal foreground app.
         NSApp.setActivationPolicy(.regular)
+        if let icon = Brand.appIcon { NSApp.applicationIconImage = icon }
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -23,6 +24,7 @@ struct HydrogenSplatApp: App {
                 .environmentObject(model)
                 .environmentObject(model.store)
                 .frame(minWidth: 980, minHeight: 640)
+                .tint(Brand.tally)
         }
         .commands {
             CommandGroup(after: .newItem) {

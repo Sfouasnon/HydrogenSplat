@@ -26,3 +26,7 @@ fixtures/selftest/
 # SwiftPM
 app/.build/
 app/.swiftpm/
+# brand assets and app resources are source
+!app/Branding/**/*.png
+!app/Branding/*.png
+!app/Sources/HydrogenSplat/Resources/*.png

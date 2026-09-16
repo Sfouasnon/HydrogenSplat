@@ -12,7 +12,8 @@ let package = Package(
     targets: [
         // Everything that is not a view: event parsing, the process runner, manifests, projects.
         .target(name: "HSCore", path: "Sources/HSCore"),
-        .executableTarget(name: "HydrogenSplat", dependencies: ["HSCore"], path: "Sources/HydrogenSplat"),
+        .executableTarget(name: "HydrogenSplat", dependencies: ["HSCore"], path: "Sources/HydrogenSplat",
+                         resources: [.copy("Resources")]),
         .testTarget(name: "HSCoreTests", dependencies: ["HSCore"], path: "Tests/HSCoreTests",
                     resources: [.copy("Fixtures")]),
     ]

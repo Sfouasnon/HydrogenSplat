@@ -8,6 +8,7 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $model.selection) {
+                BrandHeader()
                 Section("App") {
                     Label("Setup", systemImage: model.config.problems.isEmpty ? "checkmark.seal" : "exclamationmark.triangle")
                         .tag(SidebarItem.setup)
