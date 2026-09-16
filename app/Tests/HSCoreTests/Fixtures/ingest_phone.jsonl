@@ -1,0 +1,33 @@
+{"t":0,"ev":"start","stage":"ingest","step":"pull"}
+{"t":0,"ev":"metric","stage":"ingest","name":"remote_bytes","value":105108436}
+{"t":0.5,"ev":"progress","stage":"ingest","done":7400000,"total":105108436,"rate":14800000.0,"eta_s":6,"detail":"7.4 / 105.1 MB","step":"pull"}
+{"t":1.0,"ev":"progress","stage":"ingest","done":14800000,"total":105108436,"rate":14800000.0,"eta_s":6,"detail":"14.8 / 105.1 MB","step":"pull"}
+{"t":1.5,"ev":"progress","stage":"ingest","done":22200000,"total":105108436,"rate":14800000.0,"eta_s":5,"detail":"22.2 / 105.1 MB","step":"pull"}
+{"t":2.0,"ev":"progress","stage":"ingest","done":29600000,"total":105108436,"rate":14800000.0,"eta_s":5,"detail":"29.6 / 105.1 MB","step":"pull"}
+{"t":2.5,"ev":"progress","stage":"ingest","done":37000000,"total":105108436,"rate":14800000.0,"eta_s":4,"detail":"37.0 / 105.1 MB","step":"pull"}
+{"t":3.0,"ev":"progress","stage":"ingest","done":44400000,"total":105108436,"rate":14800000.0,"eta_s":4,"detail":"44.4 / 105.1 MB","step":"pull"}
+{"t":3.5,"ev":"progress","stage":"ingest","done":51800000,"total":105108436,"rate":14800000.0,"eta_s":3,"detail":"51.8 / 105.1 MB","step":"pull"}
+{"t":4.0,"ev":"progress","stage":"ingest","done":59200000,"total":105108436,"rate":14800000.0,"eta_s":3,"detail":"59.2 / 105.1 MB","step":"pull"}
+{"t":4.5,"ev":"progress","stage":"ingest","done":66600000,"total":105108436,"rate":14800000.0,"eta_s":2,"detail":"66.6 / 105.1 MB","step":"pull"}
+{"t":5.0,"ev":"progress","stage":"ingest","done":74000000,"total":105108436,"rate":14800000.0,"eta_s":2,"detail":"74.0 / 105.1 MB","step":"pull"}
+{"t":5.5,"ev":"progress","stage":"ingest","done":81400000,"total":105108436,"rate":14800000.0,"eta_s":1,"detail":"81.4 / 105.1 MB","step":"pull"}
+{"t":6.0,"ev":"progress","stage":"ingest","done":88800000,"total":105108436,"rate":14800000.0,"eta_s":1,"detail":"88.8 / 105.1 MB","step":"pull"}
+{"t":6.5,"ev":"progress","stage":"ingest","done":96200000,"total":105108436,"rate":14800000.0,"eta_s":0,"detail":"96.2 / 105.1 MB","step":"pull"}
+{"t":7.0,"ev":"progress","stage":"ingest","done":103600000,"total":105108436,"rate":14800000.0,"eta_s":0,"detail":"103.6 / 105.1 MB","step":"pull"}
+{"t":7.5,"ev":"progress","stage":"ingest","done":105108436,"total":105108436,"rate":14800000.0,"eta_s":0,"detail":"105.1 / 105.1 MB","step":"pull"}
+{"t":7.8,"ev":"start","stage":"ingest","step":"phone_md5"}
+{"t":8.6,"ev":"start","stage":"ingest","step":"md5"}
+{"t":9.0,"ev":"check","stage":"ingest","name":"pull_matches_phone","ok":true,"value":"md5 e40705de2b5c1e0b0d3c8a1a7f6c9e11 on both"}
+{"t":9.0,"ev":"metric","stage":"ingest","name":"clip_md5","value":"e40705de2b5c1e0b0d3c8a1a7f6c9e11"}
+{"t":9.0,"ev":"metric","stage":"ingest","name":"clip_bytes","value":105108436}
+{"t":9.1,"ev":"start","stage":"ingest","step":"probe"}
+{"t":9.3,"ev":"artifact","stage":"ingest","path":"source/probe.json","kind":"json"}
+{"t":9.3,"ev":"metric","stage":"ingest","name":"width","value":3840}
+{"t":9.3,"ev":"metric","stage":"ingest","name":"height","value":1080}
+{"t":9.3,"ev":"metric","stage":"ingest","name":"fps","value":29.852}
+{"t":9.3,"ev":"metric","stage":"ingest","name":"nb_frames","value":2071}
+{"t":9.3,"ev":"metric","stage":"ingest","name":"duration_s","value":69.4}
+{"t":9.3,"ev":"metric","stage":"ingest","name":"codec","value":"h264"}
+{"t":9.3,"ev":"check","stage":"ingest","name":"clip_is_2x1_video","ok":true,"value":"3840x1080 2x1"}
+{"t":9.4,"ev":"check","stage":"ingest","name":"profile_matched","ok":true,"value":"h1-video-1920x1080-holocam1.18.2-v1"}
+{"t":9.4,"ev":"done","stage":"ingest","exit":0}

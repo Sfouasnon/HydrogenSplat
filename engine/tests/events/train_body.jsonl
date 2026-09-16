@@ -1,0 +1,337 @@
+{"t":0,"ev":"metric","stage":"train","name":"excluded_views","value":[]}
+{"t":0,"ev":"metric","stage":"train","name":"masks_used","value":false}
+{"t":0,"ev":"start","stage":"train","step":"fingerprint"}
+{"t":1,"ev":"metric","stage":"train","name":"dataset_fingerprint","value":{"rig_npz_md5":"8210ee46cab5da636839d33cc61e5675","images":{"digest":"95acb29fcbd4f01f1dc223d2f2a093fa","count":168},"masks":null,"exposure":"pending","masks_stage":"pending","excluded_views":[],"masks_used":false}}
+{"t":1,"ev":"start","stage":"train","step":"brush"}
+{"t":4,"ev":"metric","stage":"train","name":"train_views","value":168}
+{"t":22.49,"ev":"progress","stage":"train","done":131,"total":40000,"rate":7.49,"eta_s":5323,"detail":"116046 splats","step":"train"}
+{"t":39.85,"ev":"progress","stage":"train","done":261,"total":40000,"rate":7.49,"eta_s":5305,"detail":"118283 splats","step":"train"}
+{"t":57.2,"ev":"progress","stage":"train","done":391,"total":40000,"rate":7.49,"eta_s":5288,"detail":"124040 splats","step":"train"}
+{"t":74.56,"ev":"progress","stage":"train","done":521,"total":40000,"rate":7.49,"eta_s":5271,"detail":"133580 splats","step":"train"}
+{"t":91.92,"ev":"progress","stage":"train","done":651,"total":40000,"rate":7.49,"eta_s":5253,"detail":"146018 splats","step":"train"}
+{"t":109.28,"ev":"progress","stage":"train","done":781,"total":40000,"rate":7.49,"eta_s":5236,"detail":"159920 splats","step":"train"}
+{"t":126.63,"ev":"progress","stage":"train","done":911,"total":40000,"rate":7.49,"eta_s":5219,"detail":"174936 splats","step":"train"}
+{"t":143.99,"ev":"progress","stage":"train","done":1041,"total":40000,"rate":7.49,"eta_s":5201,"detail":"190299 splats","step":"train"}
+{"t":161.35,"ev":"progress","stage":"train","done":1171,"total":40000,"rate":7.49,"eta_s":5184,"detail":"205493 splats","step":"train"}
+{"t":178.7,"ev":"progress","stage":"train","done":1301,"total":40000,"rate":7.49,"eta_s":5166,"detail":"220497 splats","step":"train"}
+{"t":196.06,"ev":"progress","stage":"train","done":1431,"total":40000,"rate":7.49,"eta_s":5149,"detail":"235376 splats","step":"train"}
+{"t":213.42,"ev":"progress","stage":"train","done":1561,"total":40000,"rate":7.49,"eta_s":5132,"detail":"249376 splats","step":"train"}
+{"t":230.78,"ev":"progress","stage":"train","done":1691,"total":40000,"rate":7.49,"eta_s":5114,"detail":"263744 splats","step":"train"}
+{"t":248.13,"ev":"progress","stage":"train","done":1821,"total":40000,"rate":7.49,"eta_s":5097,"detail":"278159 splats","step":"train"}
+{"t":265.49,"ev":"progress","stage":"train","done":1951,"total":40000,"rate":7.49,"eta_s":5080,"detail":"291980 splats","step":"train"}
+{"t":282.85,"ev":"progress","stage":"train","done":2081,"total":40000,"rate":7.49,"eta_s":5062,"detail":"306108 splats","step":"train"}
+{"t":300.2,"ev":"progress","stage":"train","done":2211,"total":40000,"rate":7.49,"eta_s":5045,"detail":"320011 splats","step":"train"}
+{"t":317.56,"ev":"progress","stage":"train","done":2341,"total":40000,"rate":7.49,"eta_s":5028,"detail":"333522 splats","step":"train"}
+{"t":334.92,"ev":"progress","stage":"train","done":2471,"total":40000,"rate":7.49,"eta_s":5010,"detail":"347472 splats","step":"train"}
+{"t":338.79,"ev":"artifact","stage":"train","path":"train/exports/export_02500.ply","kind":"ply"}
+{"t":338.79,"ev":"metric","stage":"train","name":"export_splats","value":360248,"iter":2500}
+{"t":352.28,"ev":"progress","stage":"train","done":2601,"total":40000,"rate":7.49,"eta_s":4993,"detail":"360248 splats","step":"train"}
+{"t":369.63,"ev":"progress","stage":"train","done":2731,"total":40000,"rate":7.49,"eta_s":4976,"detail":"371852 splats","step":"train"}
+{"t":386.99,"ev":"progress","stage":"train","done":2861,"total":40000,"rate":7.49,"eta_s":4958,"detail":"383235 splats","step":"train"}
+{"t":404.35,"ev":"progress","stage":"train","done":2991,"total":40000,"rate":7.49,"eta_s":4941,"detail":"394508 splats","step":"train"}
+{"t":421.7,"ev":"progress","stage":"train","done":3121,"total":40000,"rate":7.49,"eta_s":4923,"detail":"405106 splats","step":"train"}
+{"t":439.06,"ev":"progress","stage":"train","done":3251,"total":40000,"rate":7.49,"eta_s":4906,"detail":"414863 splats","step":"train"}
+{"t":456.42,"ev":"progress","stage":"train","done":3381,"total":40000,"rate":7.49,"eta_s":4889,"detail":"425288 splats","step":"train"}
+{"t":473.77,"ev":"progress","stage":"train","done":3511,"total":40000,"rate":7.49,"eta_s":4871,"detail":"435657 splats","step":"train"}
+{"t":491.13,"ev":"progress","stage":"train","done":3641,"total":40000,"rate":7.49,"eta_s":4854,"detail":"445429 splats","step":"train"}
+{"t":508.49,"ev":"progress","stage":"train","done":3771,"total":40000,"rate":7.49,"eta_s":4837,"detail":"454747 splats","step":"train"}
+{"t":525.85,"ev":"progress","stage":"train","done":3901,"total":40000,"rate":7.49,"eta_s":4819,"detail":"462039 splats","step":"train"}
+{"t":543.2,"ev":"progress","stage":"train","done":4031,"total":40000,"rate":7.49,"eta_s":4802,"detail":"470421 splats","step":"train"}
+{"t":560.56,"ev":"progress","stage":"train","done":4161,"total":40000,"rate":7.49,"eta_s":4785,"detail":"478127 splats","step":"train"}
+{"t":577.92,"ev":"progress","stage":"train","done":4291,"total":40000,"rate":7.49,"eta_s":4767,"detail":"485861 splats","step":"train"}
+{"t":595.27,"ev":"progress","stage":"train","done":4421,"total":40000,"rate":7.49,"eta_s":4750,"detail":"493352 splats","step":"train"}
+{"t":612.63,"ev":"progress","stage":"train","done":4551,"total":40000,"rate":7.49,"eta_s":4733,"detail":"501454 splats","step":"train"}
+{"t":629.99,"ev":"progress","stage":"train","done":4681,"total":40000,"rate":7.49,"eta_s":4715,"detail":"507601 splats","step":"train"}
+{"t":647.35,"ev":"progress","stage":"train","done":4811,"total":40000,"rate":7.49,"eta_s":4698,"detail":"514679 splats","step":"train"}
+{"t":664.7,"ev":"progress","stage":"train","done":4941,"total":40000,"rate":7.49,"eta_s":4680,"detail":"519355 splats","step":"train"}
+{"t":672.58,"ev":"artifact","stage":"train","path":"train/exports/export_05000.ply","kind":"ply"}
+{"t":672.58,"ev":"metric","stage":"train","name":"export_splats","value":525915,"iter":5000}
+{"t":682.06,"ev":"progress","stage":"train","done":5071,"total":40000,"rate":7.49,"eta_s":4663,"detail":"525915 splats","step":"train"}
+{"t":699.42,"ev":"progress","stage":"train","done":5201,"total":40000,"rate":7.49,"eta_s":4646,"detail":"532393 splats","step":"train"}
+{"t":716.77,"ev":"progress","stage":"train","done":5331,"total":40000,"rate":7.49,"eta_s":4628,"detail":"538365 splats","step":"train"}
+{"t":734.13,"ev":"progress","stage":"train","done":5461,"total":40000,"rate":7.49,"eta_s":4611,"detail":"544742 splats","step":"train"}
+{"t":751.49,"ev":"progress","stage":"train","done":5591,"total":40000,"rate":7.49,"eta_s":4594,"detail":"549094 splats","step":"train"}
+{"t":768.84,"ev":"progress","stage":"train","done":5721,"total":40000,"rate":7.49,"eta_s":4576,"detail":"554037 splats","step":"train"}
+{"t":786.2,"ev":"progress","stage":"train","done":5851,"total":40000,"rate":7.49,"eta_s":4559,"detail":"559530 splats","step":"train"}
+{"t":803.56,"ev":"progress","stage":"train","done":5981,"total":40000,"rate":7.49,"eta_s":4542,"detail":"565235 splats","step":"train"}
+{"t":820.92,"ev":"progress","stage":"train","done":6111,"total":40000,"rate":7.49,"eta_s":4524,"detail":"570342 splats","step":"train"}
+{"t":838.27,"ev":"progress","stage":"train","done":6241,"total":40000,"rate":7.49,"eta_s":4507,"detail":"574655 splats","step":"train"}
+{"t":855.63,"ev":"progress","stage":"train","done":6371,"total":40000,"rate":7.49,"eta_s":4490,"detail":"580234 splats","step":"train"}
+{"t":872.99,"ev":"progress","stage":"train","done":6501,"total":40000,"rate":7.49,"eta_s":4472,"detail":"585296 splats","step":"train"}
+{"t":890.34,"ev":"progress","stage":"train","done":6631,"total":40000,"rate":7.49,"eta_s":4455,"detail":"588374 splats","step":"train"}
+{"t":907.7,"ev":"progress","stage":"train","done":6761,"total":40000,"rate":7.49,"eta_s":4437,"detail":"592039 splats","step":"train"}
+{"t":925.06,"ev":"progress","stage":"train","done":6891,"total":40000,"rate":7.49,"eta_s":4420,"detail":"596371 splats","step":"train"}
+{"t":942.42,"ev":"progress","stage":"train","done":7021,"total":40000,"rate":7.49,"eta_s":4403,"detail":"600686 splats","step":"train"}
+{"t":959.77,"ev":"progress","stage":"train","done":7151,"total":40000,"rate":7.49,"eta_s":4385,"detail":"604007 splats","step":"train"}
+{"t":977.13,"ev":"progress","stage":"train","done":7281,"total":40000,"rate":7.49,"eta_s":4368,"detail":"607098 splats","step":"train"}
+{"t":994.49,"ev":"progress","stage":"train","done":7411,"total":40000,"rate":7.49,"eta_s":4351,"detail":"611378 splats","step":"train"}
+{"t":1006.37,"ev":"artifact","stage":"train","path":"train/exports/export_07500.ply","kind":"ply"}
+{"t":1006.37,"ev":"metric","stage":"train","name":"export_splats","value":615788,"iter":7500}
+{"t":1011.84,"ev":"progress","stage":"train","done":7541,"total":40000,"rate":7.49,"eta_s":4333,"detail":"615788 splats","step":"train"}
+{"t":1029.2,"ev":"progress","stage":"train","done":7671,"total":40000,"rate":7.49,"eta_s":4316,"detail":"620588 splats","step":"train"}
+{"t":1046.56,"ev":"progress","stage":"train","done":7801,"total":40000,"rate":7.49,"eta_s":4299,"detail":"625326 splats","step":"train"}
+{"t":1063.92,"ev":"progress","stage":"train","done":7931,"total":40000,"rate":7.49,"eta_s":4281,"detail":"629385 splats","step":"train"}
+{"t":1081.27,"ev":"progress","stage":"train","done":8061,"total":40000,"rate":7.49,"eta_s":4264,"detail":"633536 splats","step":"train"}
+{"t":1098.63,"ev":"progress","stage":"train","done":8191,"total":40000,"rate":7.49,"eta_s":4247,"detail":"637490 splats","step":"train"}
+{"t":1115.99,"ev":"progress","stage":"train","done":8321,"total":40000,"rate":7.49,"eta_s":4229,"detail":"641515 splats","step":"train"}
+{"t":1133.34,"ev":"progress","stage":"train","done":8451,"total":40000,"rate":7.49,"eta_s":4212,"detail":"643851 splats","step":"train"}
+{"t":1150.7,"ev":"progress","stage":"train","done":8581,"total":40000,"rate":7.49,"eta_s":4194,"detail":"647240 splats","step":"train"}
+{"t":1168.06,"ev":"progress","stage":"train","done":8711,"total":40000,"rate":7.49,"eta_s":4177,"detail":"651422 splats","step":"train"}
+{"t":1185.41,"ev":"progress","stage":"train","done":8841,"total":40000,"rate":7.49,"eta_s":4160,"detail":"655154 splats","step":"train"}
+{"t":1202.77,"ev":"progress","stage":"train","done":8971,"total":40000,"rate":7.49,"eta_s":4142,"detail":"657985 splats","step":"train"}
+{"t":1220.13,"ev":"progress","stage":"train","done":9101,"total":40000,"rate":7.49,"eta_s":4125,"detail":"661261 splats","step":"train"}
+{"t":1237.49,"ev":"progress","stage":"train","done":9231,"total":40000,"rate":7.49,"eta_s":4108,"detail":"663723 splats","step":"train"}
+{"t":1254.84,"ev":"progress","stage":"train","done":9361,"total":40000,"rate":7.49,"eta_s":4090,"detail":"666637 splats","step":"train"}
+{"t":1272.2,"ev":"progress","stage":"train","done":9491,"total":40000,"rate":7.49,"eta_s":4073,"detail":"669682 splats","step":"train"}
+{"t":1289.56,"ev":"progress","stage":"train","done":9621,"total":40000,"rate":7.49,"eta_s":4056,"detail":"672964 splats","step":"train"}
+{"t":1306.91,"ev":"progress","stage":"train","done":9751,"total":40000,"rate":7.49,"eta_s":4038,"detail":"676446 splats","step":"train"}
+{"t":1324.27,"ev":"progress","stage":"train","done":9881,"total":40000,"rate":7.49,"eta_s":4021,"detail":"678965 splats","step":"train"}
+{"t":1340.16,"ev":"artifact","stage":"train","path":"train/exports/export_10000.ply","kind":"ply"}
+{"t":1340.16,"ev":"metric","stage":"train","name":"export_splats","value":681731,"iter":10000}
+{"t":1341.63,"ev":"progress","stage":"train","done":10011,"total":40000,"rate":7.49,"eta_s":4004,"detail":"681731 splats","step":"train"}
+{"t":1358.99,"ev":"progress","stage":"train","done":10141,"total":40000,"rate":7.49,"eta_s":3986,"detail":"684430 splats","step":"train"}
+{"t":1376.34,"ev":"progress","stage":"train","done":10271,"total":40000,"rate":7.49,"eta_s":3969,"detail":"687648 splats","step":"train"}
+{"t":1393.7,"ev":"progress","stage":"train","done":10401,"total":40000,"rate":7.49,"eta_s":3951,"detail":"690274 splats","step":"train"}
+{"t":1411.06,"ev":"progress","stage":"train","done":10531,"total":40000,"rate":7.49,"eta_s":3934,"detail":"692662 splats","step":"train"}
+{"t":1428.41,"ev":"progress","stage":"train","done":10661,"total":40000,"rate":7.49,"eta_s":3917,"detail":"695454 splats","step":"train"}
+{"t":1445.77,"ev":"progress","stage":"train","done":10791,"total":40000,"rate":7.49,"eta_s":3899,"detail":"698108 splats","step":"train"}
+{"t":1463.13,"ev":"progress","stage":"train","done":10921,"total":40000,"rate":7.49,"eta_s":3882,"detail":"701506 splats","step":"train"}
+{"t":1480.49,"ev":"progress","stage":"train","done":11051,"total":40000,"rate":7.49,"eta_s":3865,"detail":"705138 splats","step":"train"}
+{"t":1497.84,"ev":"progress","stage":"train","done":11181,"total":40000,"rate":7.49,"eta_s":3847,"detail":"708169 splats","step":"train"}
+{"t":1515.2,"ev":"progress","stage":"train","done":11311,"total":40000,"rate":7.49,"eta_s":3830,"detail":"712136 splats","step":"train"}
+{"t":1532.56,"ev":"progress","stage":"train","done":11441,"total":40000,"rate":7.49,"eta_s":3813,"detail":"715113 splats","step":"train"}
+{"t":1549.91,"ev":"progress","stage":"train","done":11571,"total":40000,"rate":7.49,"eta_s":3795,"detail":"719103 splats","step":"train"}
+{"t":1567.27,"ev":"progress","stage":"train","done":11701,"total":40000,"rate":7.49,"eta_s":3778,"detail":"722608 splats","step":"train"}
+{"t":1584.63,"ev":"progress","stage":"train","done":11831,"total":40000,"rate":7.49,"eta_s":3761,"detail":"726379 splats","step":"train"}
+{"t":1601.98,"ev":"progress","stage":"train","done":11961,"total":40000,"rate":7.49,"eta_s":3743,"detail":"729257 splats","step":"train"}
+{"t":1619.34,"ev":"progress","stage":"train","done":12091,"total":40000,"rate":7.49,"eta_s":3726,"detail":"731574 splats","step":"train"}
+{"t":1636.7,"ev":"progress","stage":"train","done":12221,"total":40000,"rate":7.49,"eta_s":3708,"detail":"733935 splats","step":"train"}
+{"t":1654.06,"ev":"progress","stage":"train","done":12351,"total":40000,"rate":7.49,"eta_s":3691,"detail":"736816 splats","step":"train"}
+{"t":1671.41,"ev":"progress","stage":"train","done":12481,"total":40000,"rate":7.49,"eta_s":3674,"detail":"740202 splats","step":"train"}
+{"t":1673.95,"ev":"artifact","stage":"train","path":"train/exports/export_12500.ply","kind":"ply"}
+{"t":1673.95,"ev":"metric","stage":"train","name":"export_splats","value":743280,"iter":12500}
+{"t":1688.77,"ev":"progress","stage":"train","done":12611,"total":40000,"rate":7.49,"eta_s":3656,"detail":"743280 splats","step":"train"}
+{"t":1706.13,"ev":"progress","stage":"train","done":12741,"total":40000,"rate":7.49,"eta_s":3639,"detail":"745577 splats","step":"train"}
+{"t":1723.48,"ev":"progress","stage":"train","done":12871,"total":40000,"rate":7.49,"eta_s":3622,"detail":"748788 splats","step":"train"}
+{"t":1740.84,"ev":"progress","stage":"train","done":13001,"total":40000,"rate":7.49,"eta_s":3604,"detail":"752319 splats","step":"train"}
+{"t":1758.2,"ev":"progress","stage":"train","done":13131,"total":40000,"rate":7.49,"eta_s":3587,"detail":"754426 splats","step":"train"}
+{"t":1775.56,"ev":"progress","stage":"train","done":13261,"total":40000,"rate":7.49,"eta_s":3570,"detail":"757724 splats","step":"train"}
+{"t":1792.91,"ev":"progress","stage":"train","done":13391,"total":40000,"rate":7.49,"eta_s":3552,"detail":"761265 splats","step":"train"}
+{"t":1810.27,"ev":"progress","stage":"train","done":13521,"total":40000,"rate":7.49,"eta_s":3535,"detail":"765058 splats","step":"train"}
+{"t":1827.63,"ev":"progress","stage":"train","done":13651,"total":40000,"rate":7.49,"eta_s":3518,"detail":"768272 splats","step":"train"}
+{"t":1844.98,"ev":"progress","stage":"train","done":13781,"total":40000,"rate":7.49,"eta_s":3500,"detail":"771444 splats","step":"train"}
+{"t":1862.34,"ev":"progress","stage":"train","done":13911,"total":40000,"rate":7.49,"eta_s":3483,"detail":"774904 splats","step":"train"}
+{"t":1879.7,"ev":"progress","stage":"train","done":14041,"total":40000,"rate":7.49,"eta_s":3465,"detail":"778229 splats","step":"train"}
+{"t":1897.05,"ev":"progress","stage":"train","done":14171,"total":40000,"rate":7.49,"eta_s":3448,"detail":"781124 splats","step":"train"}
+{"t":1914.41,"ev":"progress","stage":"train","done":14301,"total":40000,"rate":7.49,"eta_s":3431,"detail":"783752 splats","step":"train"}
+{"t":1931.77,"ev":"progress","stage":"train","done":14431,"total":40000,"rate":7.49,"eta_s":3413,"detail":"787075 splats","step":"train"}
+{"t":1949.13,"ev":"progress","stage":"train","done":14561,"total":40000,"rate":7.49,"eta_s":3396,"detail":"789483 splats","step":"train"}
+{"t":1966.48,"ev":"progress","stage":"train","done":14691,"total":40000,"rate":7.49,"eta_s":3379,"detail":"793023 splats","step":"train"}
+{"t":1983.84,"ev":"progress","stage":"train","done":14821,"total":40000,"rate":7.49,"eta_s":3361,"detail":"795846 splats","step":"train"}
+{"t":2001.2,"ev":"progress","stage":"train","done":14951,"total":40000,"rate":7.49,"eta_s":3344,"detail":"799056 splats","step":"train"}
+{"t":2007.74,"ev":"artifact","stage":"train","path":"train/exports/export_15000.ply","kind":"ply"}
+{"t":2007.74,"ev":"metric","stage":"train","name":"export_splats","value":802137,"iter":15000}
+{"t":2018.55,"ev":"progress","stage":"train","done":15081,"total":40000,"rate":7.49,"eta_s":3327,"detail":"802137 splats","step":"train"}
+{"t":2035.91,"ev":"progress","stage":"train","done":15211,"total":40000,"rate":7.49,"eta_s":3309,"detail":"804579 splats","step":"train"}
+{"t":2053.27,"ev":"progress","stage":"train","done":15341,"total":40000,"rate":7.49,"eta_s":3292,"detail":"806773 splats","step":"train"}
+{"t":2070.63,"ev":"progress","stage":"train","done":15471,"total":40000,"rate":7.49,"eta_s":3275,"detail":"808733 splats","step":"train"}
+{"t":2087.98,"ev":"progress","stage":"train","done":15601,"total":40000,"rate":7.49,"eta_s":3257,"detail":"812236 splats","step":"train"}
+{"t":2105.34,"ev":"progress","stage":"train","done":15731,"total":40000,"rate":7.49,"eta_s":3240,"detail":"814336 splats","step":"train"}
+{"t":2122.7,"ev":"progress","stage":"train","done":15861,"total":40000,"rate":7.49,"eta_s":3222,"detail":"816457 splats","step":"train"}
+{"t":2140.05,"ev":"progress","stage":"train","done":15991,"total":40000,"rate":7.49,"eta_s":3205,"detail":"820094 splats","step":"train"}
+{"t":2157.41,"ev":"progress","stage":"train","done":16121,"total":40000,"rate":7.49,"eta_s":3188,"detail":"823410 splats","step":"train"}
+{"t":2174.77,"ev":"progress","stage":"train","done":16251,"total":40000,"rate":7.49,"eta_s":3170,"detail":"826213 splats","step":"train"}
+{"t":2192.13,"ev":"progress","stage":"train","done":16381,"total":40000,"rate":7.49,"eta_s":3153,"detail":"828135 splats","step":"train"}
+{"t":2209.48,"ev":"progress","stage":"train","done":16511,"total":40000,"rate":7.49,"eta_s":3136,"detail":"831556 splats","step":"train"}
+{"t":2226.84,"ev":"progress","stage":"train","done":16641,"total":40000,"rate":7.49,"eta_s":3118,"detail":"834004 splats","step":"train"}
+{"t":2244.2,"ev":"progress","stage":"train","done":16771,"total":40000,"rate":7.49,"eta_s":3101,"detail":"836949 splats","step":"train"}
+{"t":2261.55,"ev":"progress","stage":"train","done":16901,"total":40000,"rate":7.49,"eta_s":3084,"detail":"840245 splats","step":"train"}
+{"t":2278.91,"ev":"progress","stage":"train","done":17031,"total":40000,"rate":7.49,"eta_s":3066,"detail":"843294 splats","step":"train"}
+{"t":2296.27,"ev":"progress","stage":"train","done":17161,"total":40000,"rate":7.49,"eta_s":3049,"detail":"846705 splats","step":"train"}
+{"t":2313.62,"ev":"progress","stage":"train","done":17291,"total":40000,"rate":7.49,"eta_s":3032,"detail":"849183 splats","step":"train"}
+{"t":2330.98,"ev":"progress","stage":"train","done":17421,"total":40000,"rate":7.49,"eta_s":3014,"detail":"851058 splats","step":"train"}
+{"t":2341.53,"ev":"artifact","stage":"train","path":"train/exports/export_17500.ply","kind":"ply"}
+{"t":2341.53,"ev":"metric","stage":"train","name":"export_splats","value":853657,"iter":17500}
+{"t":2348.34,"ev":"progress","stage":"train","done":17551,"total":40000,"rate":7.49,"eta_s":2997,"detail":"853657 splats","step":"train"}
+{"t":2365.7,"ev":"progress","stage":"train","done":17681,"total":40000,"rate":7.49,"eta_s":2979,"detail":"857369 splats","step":"train"}
+{"t":2383.05,"ev":"progress","stage":"train","done":17811,"total":40000,"rate":7.49,"eta_s":2962,"detail":"859850 splats","step":"train"}
+{"t":2400.41,"ev":"progress","stage":"train","done":17941,"total":40000,"rate":7.49,"eta_s":2945,"detail":"862813 splats","step":"train"}
+{"t":2417.77,"ev":"progress","stage":"train","done":18071,"total":40000,"rate":7.49,"eta_s":2927,"detail":"866176 splats","step":"train"}
+{"t":2435.12,"ev":"progress","stage":"train","done":18201,"total":40000,"rate":7.49,"eta_s":2910,"detail":"869719 splats","step":"train"}
+{"t":2452.48,"ev":"progress","stage":"train","done":18331,"total":40000,"rate":7.49,"eta_s":2893,"detail":"872216 splats","step":"train"}
+{"t":2469.84,"ev":"progress","stage":"train","done":18461,"total":40000,"rate":7.49,"eta_s":2875,"detail":"874769 splats","step":"train"}
+{"t":2487.2,"ev":"progress","stage":"train","done":18591,"total":40000,"rate":7.49,"eta_s":2858,"detail":"877663 splats","step":"train"}
+{"t":2504.55,"ev":"progress","stage":"train","done":18721,"total":40000,"rate":7.49,"eta_s":2841,"detail":"880934 splats","step":"train"}
+{"t":2521.91,"ev":"progress","stage":"train","done":18851,"total":40000,"rate":7.49,"eta_s":2823,"detail":"884150 splats","step":"train"}
+{"t":2539.27,"ev":"progress","stage":"train","done":18981,"total":40000,"rate":7.49,"eta_s":2806,"detail":"887748 splats","step":"train"}
+{"t":2556.62,"ev":"progress","stage":"train","done":19111,"total":40000,"rate":7.49,"eta_s":2789,"detail":"890934 splats","step":"train"}
+{"t":2573.98,"ev":"progress","stage":"train","done":19241,"total":40000,"rate":7.49,"eta_s":2771,"detail":"894729 splats","step":"train"}
+{"t":2591.34,"ev":"progress","stage":"train","done":19371,"total":40000,"rate":7.49,"eta_s":2754,"detail":"898248 splats","step":"train"}
+{"t":2608.7,"ev":"progress","stage":"train","done":19501,"total":40000,"rate":7.49,"eta_s":2736,"detail":"900555 splats","step":"train"}
+{"t":2626.05,"ev":"progress","stage":"train","done":19631,"total":40000,"rate":7.49,"eta_s":2719,"detail":"902157 splats","step":"train"}
+{"t":2643.41,"ev":"progress","stage":"train","done":19761,"total":40000,"rate":7.49,"eta_s":2702,"detail":"904465 splats","step":"train"}
+{"t":2660.77,"ev":"progress","stage":"train","done":19891,"total":40000,"rate":7.49,"eta_s":2684,"detail":"907712 splats","step":"train"}
+{"t":2675.32,"ev":"artifact","stage":"train","path":"train/exports/export_20000.ply","kind":"ply"}
+{"t":2675.32,"ev":"metric","stage":"train","name":"export_splats","value":910888,"iter":20000}
+{"t":2678.12,"ev":"progress","stage":"train","done":20021,"total":40000,"rate":7.49,"eta_s":2667,"detail":"910888 splats","step":"train"}
+{"t":2695.48,"ev":"progress","stage":"train","done":20151,"total":40000,"rate":7.49,"eta_s":2650,"detail":"914159 splats","step":"train"}
+{"t":2712.84,"ev":"progress","stage":"train","done":20281,"total":40000,"rate":7.49,"eta_s":2632,"detail":"917346 splats","step":"train"}
+{"t":2730.19,"ev":"progress","stage":"train","done":20411,"total":40000,"rate":7.49,"eta_s":2615,"detail":"920517 splats","step":"train"}
+{"t":2747.55,"ev":"progress","stage":"train","done":20541,"total":40000,"rate":7.49,"eta_s":2598,"detail":"923450 splats","step":"train"}
+{"t":2764.91,"ev":"progress","stage":"train","done":20671,"total":40000,"rate":7.49,"eta_s":2580,"detail":"926705 splats","step":"train"}
+{"t":2782.27,"ev":"progress","stage":"train","done":20801,"total":40000,"rate":7.49,"eta_s":2563,"detail":"929568 splats","step":"train"}
+{"t":2799.62,"ev":"progress","stage":"train","done":20931,"total":40000,"rate":7.49,"eta_s":2546,"detail":"932635 splats","step":"train"}
+{"t":2816.98,"ev":"progress","stage":"train","done":21061,"total":40000,"rate":7.49,"eta_s":2528,"detail":"934982 splats","step":"train"}
+{"t":2834.34,"ev":"progress","stage":"train","done":21191,"total":40000,"rate":7.49,"eta_s":2511,"detail":"938090 splats","step":"train"}
+{"t":2851.69,"ev":"progress","stage":"train","done":21321,"total":40000,"rate":7.49,"eta_s":2493,"detail":"940712 splats","step":"train"}
+{"t":2869.05,"ev":"progress","stage":"train","done":21451,"total":40000,"rate":7.49,"eta_s":2476,"detail":"943579 splats","step":"train"}
+{"t":2886.41,"ev":"progress","stage":"train","done":21581,"total":40000,"rate":7.49,"eta_s":2459,"detail":"946722 splats","step":"train"}
+{"t":2903.77,"ev":"progress","stage":"train","done":21711,"total":40000,"rate":7.49,"eta_s":2441,"detail":"949057 splats","step":"train"}
+{"t":2921.12,"ev":"progress","stage":"train","done":21841,"total":40000,"rate":7.49,"eta_s":2424,"detail":"951199 splats","step":"train"}
+{"t":2938.48,"ev":"progress","stage":"train","done":21971,"total":40000,"rate":7.49,"eta_s":2407,"detail":"953905 splats","step":"train"}
+{"t":2955.84,"ev":"progress","stage":"train","done":22101,"total":40000,"rate":7.49,"eta_s":2389,"detail":"957581 splats","step":"train"}
+{"t":2973.19,"ev":"progress","stage":"train","done":22231,"total":40000,"rate":7.49,"eta_s":2372,"detail":"960095 splats","step":"train"}
+{"t":2990.55,"ev":"progress","stage":"train","done":22361,"total":40000,"rate":7.49,"eta_s":2355,"detail":"962576 splats","step":"train"}
+{"t":3007.91,"ev":"progress","stage":"train","done":22491,"total":40000,"rate":7.49,"eta_s":2337,"detail":"964901 splats","step":"train"}
+{"t":3009.11,"ev":"artifact","stage":"train","path":"train/exports/export_22500.ply","kind":"ply"}
+{"t":3009.11,"ev":"metric","stage":"train","name":"export_splats","value":968689,"iter":22500}
+{"t":3025.26,"ev":"progress","stage":"train","done":22621,"total":40000,"rate":7.49,"eta_s":2320,"detail":"968689 splats","step":"train"}
+{"t":3042.62,"ev":"progress","stage":"train","done":22751,"total":40000,"rate":7.49,"eta_s":2303,"detail":"970775 splats","step":"train"}
+{"t":3059.98,"ev":"progress","stage":"train","done":22881,"total":40000,"rate":7.49,"eta_s":2285,"detail":"973595 splats","step":"train"}
+{"t":3077.34,"ev":"progress","stage":"train","done":23011,"total":40000,"rate":7.49,"eta_s":2268,"detail":"977120 splats","step":"train"}
+{"t":3094.69,"ev":"progress","stage":"train","done":23141,"total":40000,"rate":7.49,"eta_s":2250,"detail":"979778 splats","step":"train"}
+{"t":3112.05,"ev":"progress","stage":"train","done":23271,"total":40000,"rate":7.49,"eta_s":2233,"detail":"981921 splats","step":"train"}
+{"t":3129.41,"ev":"progress","stage":"train","done":23401,"total":40000,"rate":7.49,"eta_s":2216,"detail":"985367 splats","step":"train"}
+{"t":3146.76,"ev":"progress","stage":"train","done":23531,"total":40000,"rate":7.49,"eta_s":2198,"detail":"988917 splats","step":"train"}
+{"t":3164.12,"ev":"progress","stage":"train","done":23661,"total":40000,"rate":7.49,"eta_s":2181,"detail":"991726 splats","step":"train"}
+{"t":3181.48,"ev":"progress","stage":"train","done":23791,"total":40000,"rate":7.49,"eta_s":2164,"detail":"993653 splats","step":"train"}
+{"t":3198.84,"ev":"progress","stage":"train","done":23921,"total":40000,"rate":7.49,"eta_s":2146,"detail":"996741 splats","step":"train"}
+{"t":3216.19,"ev":"progress","stage":"train","done":24051,"total":40000,"rate":7.49,"eta_s":2129,"detail":"1000006 splats","step":"train"}
+{"t":3233.55,"ev":"progress","stage":"train","done":24181,"total":40000,"rate":7.49,"eta_s":2112,"detail":"1002868 splats","step":"train"}
+{"t":3250.91,"ev":"progress","stage":"train","done":24311,"total":40000,"rate":7.49,"eta_s":2094,"detail":"1005401 splats","step":"train"}
+{"t":3268.26,"ev":"progress","stage":"train","done":24441,"total":40000,"rate":7.49,"eta_s":2077,"detail":"1008584 splats","step":"train"}
+{"t":3285.62,"ev":"progress","stage":"train","done":24571,"total":40000,"rate":7.49,"eta_s":2060,"detail":"1012215 splats","step":"train"}
+{"t":3302.98,"ev":"progress","stage":"train","done":24701,"total":40000,"rate":7.49,"eta_s":2042,"detail":"1015123 splats","step":"train"}
+{"t":3320.34,"ev":"progress","stage":"train","done":24831,"total":40000,"rate":7.49,"eta_s":2025,"detail":"1017982 splats","step":"train"}
+{"t":3337.69,"ev":"progress","stage":"train","done":24961,"total":40000,"rate":7.49,"eta_s":2007,"detail":"1019640 splats","step":"train"}
+{"t":3342.9,"ev":"artifact","stage":"train","path":"train/exports/export_25000.ply","kind":"ply"}
+{"t":3342.9,"ev":"metric","stage":"train","name":"export_splats","value":1022421,"iter":25000}
+{"t":3355.05,"ev":"progress","stage":"train","done":25091,"total":40000,"rate":7.49,"eta_s":1990,"detail":"1022421 splats","step":"train"}
+{"t":3372.41,"ev":"progress","stage":"train","done":25221,"total":40000,"rate":7.49,"eta_s":1973,"detail":"1025407 splats","step":"train"}
+{"t":3389.76,"ev":"progress","stage":"train","done":25351,"total":40000,"rate":7.49,"eta_s":1955,"detail":"1027640 splats","step":"train"}
+{"t":3407.12,"ev":"progress","stage":"train","done":25481,"total":40000,"rate":7.49,"eta_s":1938,"detail":"1030291 splats","step":"train"}
+{"t":3424.48,"ev":"progress","stage":"train","done":25611,"total":40000,"rate":7.49,"eta_s":1921,"detail":"1033746 splats","step":"train"}
+{"t":3441.83,"ev":"progress","stage":"train","done":25741,"total":40000,"rate":7.49,"eta_s":1903,"detail":"1036554 splats","step":"train"}
+{"t":3459.19,"ev":"progress","stage":"train","done":25871,"total":40000,"rate":7.49,"eta_s":1886,"detail":"1039579 splats","step":"train"}
+{"t":3476.55,"ev":"progress","stage":"train","done":26001,"total":40000,"rate":7.49,"eta_s":1869,"detail":"1042214 splats","step":"train"}
+{"t":3493.91,"ev":"progress","stage":"train","done":26131,"total":40000,"rate":7.49,"eta_s":1851,"detail":"1045171 splats","step":"train"}
+{"t":3511.26,"ev":"progress","stage":"train","done":26261,"total":40000,"rate":7.49,"eta_s":1834,"detail":"1048583 splats","step":"train"}
+{"t":3528.62,"ev":"progress","stage":"train","done":26391,"total":40000,"rate":7.49,"eta_s":1817,"detail":"1051887 splats","step":"train"}
+{"t":3545.98,"ev":"progress","stage":"train","done":26521,"total":40000,"rate":7.49,"eta_s":1799,"detail":"1055374 splats","step":"train"}
+{"t":3563.33,"ev":"progress","stage":"train","done":26651,"total":40000,"rate":7.49,"eta_s":1782,"detail":"1059218 splats","step":"train"}
+{"t":3580.69,"ev":"progress","stage":"train","done":26781,"total":40000,"rate":7.49,"eta_s":1764,"detail":"1061967 splats","step":"train"}
+{"t":3598.05,"ev":"progress","stage":"train","done":26911,"total":40000,"rate":7.49,"eta_s":1747,"detail":"1064716 splats","step":"train"}
+{"t":3615.41,"ev":"progress","stage":"train","done":27041,"total":40000,"rate":7.49,"eta_s":1730,"detail":"1068481 splats","step":"train"}
+{"t":3632.76,"ev":"progress","stage":"train","done":27171,"total":40000,"rate":7.49,"eta_s":1712,"detail":"1071959 splats","step":"train"}
+{"t":3650.12,"ev":"progress","stage":"train","done":27301,"total":40000,"rate":7.49,"eta_s":1695,"detail":"1075336 splats","step":"train"}
+{"t":3667.48,"ev":"progress","stage":"train","done":27431,"total":40000,"rate":7.49,"eta_s":1678,"detail":"1079333 splats","step":"train"}
+{"t":3676.69,"ev":"artifact","stage":"train","path":"train/exports/export_27500.ply","kind":"ply"}
+{"t":3676.69,"ev":"metric","stage":"train","name":"export_splats","value":1082808,"iter":27500}
+{"t":3684.83,"ev":"progress","stage":"train","done":27561,"total":40000,"rate":7.49,"eta_s":1660,"detail":"1082808 splats","step":"train"}
+{"t":3702.19,"ev":"progress","stage":"train","done":27691,"total":40000,"rate":7.49,"eta_s":1643,"detail":"1086447 splats","step":"train"}
+{"t":3719.55,"ev":"progress","stage":"train","done":27821,"total":40000,"rate":7.49,"eta_s":1626,"detail":"1089885 splats","step":"train"}
+{"t":3736.91,"ev":"progress","stage":"train","done":27951,"total":40000,"rate":7.49,"eta_s":1608,"detail":"1093303 splats","step":"train"}
+{"t":3754.26,"ev":"progress","stage":"train","done":28081,"total":40000,"rate":7.49,"eta_s":1591,"detail":"1095555 splats","step":"train"}
+{"t":3771.62,"ev":"progress","stage":"train","done":28211,"total":40000,"rate":7.49,"eta_s":1574,"detail":"1098652 splats","step":"train"}
+{"t":3788.98,"ev":"progress","stage":"train","done":28341,"total":40000,"rate":7.49,"eta_s":1556,"detail":"1101800 splats","step":"train"}
+{"t":3806.33,"ev":"progress","stage":"train","done":28471,"total":40000,"rate":7.49,"eta_s":1539,"detail":"1105289 splats","step":"train"}
+{"t":3823.69,"ev":"progress","stage":"train","done":28601,"total":40000,"rate":7.49,"eta_s":1521,"detail":"1107159 splats","step":"train"}
+{"t":3841.05,"ev":"progress","stage":"train","done":28731,"total":40000,"rate":7.49,"eta_s":1504,"detail":"1109517 splats","step":"train"}
+{"t":3858.4,"ev":"progress","stage":"train","done":28861,"total":40000,"rate":7.49,"eta_s":1487,"detail":"1111362 splats","step":"train"}
+{"t":3875.76,"ev":"progress","stage":"train","done":28991,"total":40000,"rate":7.49,"eta_s":1469,"detail":"1114228 splats","step":"train"}
+{"t":3893.12,"ev":"progress","stage":"train","done":29121,"total":40000,"rate":7.49,"eta_s":1452,"detail":"1116669 splats","step":"train"}
+{"t":3910.48,"ev":"progress","stage":"train","done":29251,"total":40000,"rate":7.49,"eta_s":1435,"detail":"1119612 splats","step":"train"}
+{"t":3927.83,"ev":"progress","stage":"train","done":29381,"total":40000,"rate":7.49,"eta_s":1417,"detail":"1123023 splats","step":"train"}
+{"t":3945.19,"ev":"progress","stage":"train","done":29511,"total":40000,"rate":7.49,"eta_s":1400,"detail":"1125829 splats","step":"train"}
+{"t":3962.55,"ev":"progress","stage":"train","done":29641,"total":40000,"rate":7.49,"eta_s":1383,"detail":"1129612 splats","step":"train"}
+{"t":3979.9,"ev":"progress","stage":"train","done":29771,"total":40000,"rate":7.49,"eta_s":1365,"detail":"1133326 splats","step":"train"}
+{"t":3997.26,"ev":"progress","stage":"train","done":29901,"total":40000,"rate":7.49,"eta_s":1348,"detail":"1136574 splats","step":"train"}
+{"t":4010.48,"ev":"artifact","stage":"train","path":"train/exports/export_30000.ply","kind":"ply"}
+{"t":4010.48,"ev":"metric","stage":"train","name":"export_splats","value":1136626,"iter":30000}
+{"t":4014.62,"ev":"progress","stage":"train","done":30031,"total":40000,"rate":7.49,"eta_s":1331,"detail":"1136626 splats","step":"train"}
+{"t":4031.98,"ev":"progress","stage":"train","done":30161,"total":40000,"rate":7.49,"eta_s":1313,"detail":"1136671 splats","step":"train"}
+{"t":4049.33,"ev":"progress","stage":"train","done":30291,"total":40000,"rate":7.49,"eta_s":1296,"detail":"1136736 splats","step":"train"}
+{"t":4066.69,"ev":"progress","stage":"train","done":30421,"total":40000,"rate":7.49,"eta_s":1278,"detail":"1136798 splats","step":"train"}
+{"t":4084.05,"ev":"progress","stage":"train","done":30551,"total":40000,"rate":7.49,"eta_s":1261,"detail":"1136846 splats","step":"train"}
+{"t":4101.4,"ev":"progress","stage":"train","done":30681,"total":40000,"rate":7.49,"eta_s":1244,"detail":"1136892 splats","step":"train"}
+{"t":4118.76,"ev":"progress","stage":"train","done":30811,"total":40000,"rate":7.49,"eta_s":1226,"detail":"1136961 splats","step":"train"}
+{"t":4136.12,"ev":"progress","stage":"train","done":30941,"total":40000,"rate":7.49,"eta_s":1209,"detail":"1137017 splats","step":"train"}
+{"t":4153.47,"ev":"progress","stage":"train","done":31071,"total":40000,"rate":7.49,"eta_s":1192,"detail":"1137064 splats","step":"train"}
+{"t":4170.83,"ev":"progress","stage":"train","done":31201,"total":40000,"rate":7.49,"eta_s":1174,"detail":"1137114 splats","step":"train"}
+{"t":4188.19,"ev":"progress","stage":"train","done":31331,"total":40000,"rate":7.49,"eta_s":1157,"detail":"1137165 splats","step":"train"}
+{"t":4205.55,"ev":"progress","stage":"train","done":31461,"total":40000,"rate":7.49,"eta_s":1140,"detail":"1137215 splats","step":"train"}
+{"t":4222.9,"ev":"progress","stage":"train","done":31591,"total":40000,"rate":7.49,"eta_s":1122,"detail":"1137281 splats","step":"train"}
+{"t":4240.26,"ev":"progress","stage":"train","done":31721,"total":40000,"rate":7.49,"eta_s":1105,"detail":"1137345 splats","step":"train"}
+{"t":4257.62,"ev":"progress","stage":"train","done":31851,"total":40000,"rate":7.49,"eta_s":1088,"detail":"1137386 splats","step":"train"}
+{"t":4274.97,"ev":"progress","stage":"train","done":31981,"total":40000,"rate":7.49,"eta_s":1070,"detail":"1137432 splats","step":"train"}
+{"t":4292.33,"ev":"progress","stage":"train","done":32111,"total":40000,"rate":7.49,"eta_s":1053,"detail":"1137487 splats","step":"train"}
+{"t":4309.69,"ev":"progress","stage":"train","done":32241,"total":40000,"rate":7.49,"eta_s":1035,"detail":"1137544 splats","step":"train"}
+{"t":4327.05,"ev":"progress","stage":"train","done":32371,"total":40000,"rate":7.49,"eta_s":1018,"detail":"1137608 splats","step":"train"}
+{"t":4344.27,"ev":"artifact","stage":"train","path":"train/exports/export_32500.ply","kind":"ply"}
+{"t":4344.27,"ev":"metric","stage":"train","name":"export_splats","value":1137661,"iter":32500}
+{"t":4344.4,"ev":"progress","stage":"train","done":32501,"total":40000,"rate":7.49,"eta_s":1001,"detail":"1137661 splats","step":"train"}
+{"t":4361.76,"ev":"progress","stage":"train","done":32631,"total":40000,"rate":7.49,"eta_s":983,"detail":"1137706 splats","step":"train"}
+{"t":4379.12,"ev":"progress","stage":"train","done":32761,"total":40000,"rate":7.49,"eta_s":966,"detail":"1137758 splats","step":"train"}
+{"t":4396.47,"ev":"progress","stage":"train","done":32891,"total":40000,"rate":7.49,"eta_s":949,"detail":"1137803 splats","step":"train"}
+{"t":4413.83,"ev":"progress","stage":"train","done":33021,"total":40000,"rate":7.49,"eta_s":931,"detail":"1137859 splats","step":"train"}
+{"t":4431.19,"ev":"progress","stage":"train","done":33151,"total":40000,"rate":7.49,"eta_s":914,"detail":"1137888 splats","step":"train"}
+{"t":4448.55,"ev":"progress","stage":"train","done":33281,"total":40000,"rate":7.49,"eta_s":897,"detail":"1137945 splats","step":"train"}
+{"t":4465.9,"ev":"progress","stage":"train","done":33411,"total":40000,"rate":7.49,"eta_s":879,"detail":"1137976 splats","step":"train"}
+{"t":4483.26,"ev":"progress","stage":"train","done":33541,"total":40000,"rate":7.49,"eta_s":862,"detail":"1138014 splats","step":"train"}
+{"t":4500.62,"ev":"progress","stage":"train","done":33671,"total":40000,"rate":7.49,"eta_s":845,"detail":"1138074 splats","step":"train"}
+{"t":4517.97,"ev":"progress","stage":"train","done":33801,"total":40000,"rate":7.49,"eta_s":827,"detail":"1138126 splats","step":"train"}
+{"t":4535.33,"ev":"progress","stage":"train","done":33931,"total":40000,"rate":7.49,"eta_s":810,"detail":"1138163 splats","step":"train"}
+{"t":4552.69,"ev":"progress","stage":"train","done":34061,"total":40000,"rate":7.49,"eta_s":792,"detail":"1138196 splats","step":"train"}
+{"t":4570.04,"ev":"progress","stage":"train","done":34191,"total":40000,"rate":7.49,"eta_s":775,"detail":"1138260 splats","step":"train"}
+{"t":4587.4,"ev":"progress","stage":"train","done":34321,"total":40000,"rate":7.49,"eta_s":758,"detail":"1138319 splats","step":"train"}
+{"t":4604.76,"ev":"progress","stage":"train","done":34451,"total":40000,"rate":7.49,"eta_s":740,"detail":"1138355 splats","step":"train"}
+{"t":4622.12,"ev":"progress","stage":"train","done":34581,"total":40000,"rate":7.49,"eta_s":723,"detail":"1138402 splats","step":"train"}
+{"t":4639.47,"ev":"progress","stage":"train","done":34711,"total":40000,"rate":7.49,"eta_s":706,"detail":"1138434 splats","step":"train"}
+{"t":4656.83,"ev":"progress","stage":"train","done":34841,"total":40000,"rate":7.49,"eta_s":688,"detail":"1138480 splats","step":"train"}
+{"t":4674.19,"ev":"progress","stage":"train","done":34971,"total":40000,"rate":7.49,"eta_s":671,"detail":"1138532 splats","step":"train"}
+{"t":4678.06,"ev":"artifact","stage":"train","path":"train/exports/export_35000.ply","kind":"ply"}
+{"t":4678.06,"ev":"metric","stage":"train","name":"export_splats","value":1138575,"iter":35000}
+{"t":4691.54,"ev":"progress","stage":"train","done":35101,"total":40000,"rate":7.49,"eta_s":654,"detail":"1138575 splats","step":"train"}
+{"t":4708.9,"ev":"progress","stage":"train","done":35231,"total":40000,"rate":7.49,"eta_s":636,"detail":"1138629 splats","step":"train"}
+{"t":4726.26,"ev":"progress","stage":"train","done":35361,"total":40000,"rate":7.49,"eta_s":619,"detail":"1138687 splats","step":"train"}
+{"t":4743.62,"ev":"progress","stage":"train","done":35491,"total":40000,"rate":7.49,"eta_s":602,"detail":"1138732 splats","step":"train"}
+{"t":4760.97,"ev":"progress","stage":"train","done":35621,"total":40000,"rate":7.49,"eta_s":584,"detail":"1138775 splats","step":"train"}
+{"t":4778.33,"ev":"progress","stage":"train","done":35751,"total":40000,"rate":7.49,"eta_s":567,"detail":"1138837 splats","step":"train"}
+{"t":4795.69,"ev":"progress","stage":"train","done":35881,"total":40000,"rate":7.49,"eta_s":549,"detail":"1138893 splats","step":"train"}
+{"t":4813.04,"ev":"progress","stage":"train","done":36011,"total":40000,"rate":7.49,"eta_s":532,"detail":"1138942 splats","step":"train"}
+{"t":4830.4,"ev":"progress","stage":"train","done":36141,"total":40000,"rate":7.49,"eta_s":515,"detail":"1138999 splats","step":"train"}
+{"t":4847.76,"ev":"progress","stage":"train","done":36271,"total":40000,"rate":7.49,"eta_s":497,"detail":"1139048 splats","step":"train"}
+{"t":4865.12,"ev":"progress","stage":"train","done":36401,"total":40000,"rate":7.49,"eta_s":480,"detail":"1139104 splats","step":"train"}
+{"t":4882.47,"ev":"progress","stage":"train","done":36531,"total":40000,"rate":7.49,"eta_s":463,"detail":"1139157 splats","step":"train"}
+{"t":4899.83,"ev":"progress","stage":"train","done":36661,"total":40000,"rate":7.49,"eta_s":445,"detail":"1139205 splats","step":"train"}
+{"t":4917.19,"ev":"progress","stage":"train","done":36791,"total":40000,"rate":7.49,"eta_s":428,"detail":"1139249 splats","step":"train"}
+{"t":4934.54,"ev":"progress","stage":"train","done":36921,"total":40000,"rate":7.49,"eta_s":411,"detail":"1139284 splats","step":"train"}
+{"t":4951.9,"ev":"progress","stage":"train","done":37051,"total":40000,"rate":7.49,"eta_s":393,"detail":"1139329 splats","step":"train"}
+{"t":4969.26,"ev":"progress","stage":"train","done":37181,"total":40000,"rate":7.49,"eta_s":376,"detail":"1139366 splats","step":"train"}
+{"t":4986.61,"ev":"progress","stage":"train","done":37311,"total":40000,"rate":7.49,"eta_s":359,"detail":"1139404 splats","step":"train"}
+{"t":5003.97,"ev":"progress","stage":"train","done":37441,"total":40000,"rate":7.49,"eta_s":341,"detail":"1139441 splats","step":"train"}
+{"t":5011.85,"ev":"artifact","stage":"train","path":"train/exports/export_37500.ply","kind":"ply"}
+{"t":5011.85,"ev":"metric","stage":"train","name":"export_splats","value":1139484,"iter":37500}
+{"t":5021.33,"ev":"progress","stage":"train","done":37571,"total":40000,"rate":7.49,"eta_s":324,"detail":"1139484 splats","step":"train"}
+{"t":5038.69,"ev":"progress","stage":"train","done":37701,"total":40000,"rate":7.49,"eta_s":306,"detail":"1139527 splats","step":"train"}
+{"t":5056.04,"ev":"progress","stage":"train","done":37831,"total":40000,"rate":7.49,"eta_s":289,"detail":"1139568 splats","step":"train"}
+{"t":5073.4,"ev":"progress","stage":"train","done":37961,"total":40000,"rate":7.49,"eta_s":272,"detail":"1139613 splats","step":"train"}
+{"t":5073.4,"ev":"artifact","stage":"train","path":"train/exports/export_40000.ply","kind":"ply"}
+{"t":5073.4,"ev":"metric","stage":"train","name":"export_splats","value":1139613,"iter":40000}
+{"t":5073.4,"ev":"progress","stage":"train","done":40000,"total":40000,"detail":"1139613 splats","step":"train"}
+{"t":5073.4,"ev":"metric","stage":"train","name":"elapsed_s","value":5068.4}
+{"t":5073.4,"ev":"check","stage":"train","name":"final_export_present","ok":true,"value":"export_40000.ply"}
+{"t":5073.4,"ev":"check","stage":"train","name":"splat_count_in_range","ok":false,"value":"1,139,613 splats for 84 frames (want 132,467\u2013309,091; rig6 170,841/65)"}
+{"t":5073.4,"ev":"check","stage":"train","name":"splat_count_monotone_through_growth","ok":true,"value":"116046 \u2192 1136574 splats over 230 refine steps"}
+{"t":5073.4,"ev":"metric","stage":"train","name":"final_splats","value":1139613}
+{"t":5073.4,"ev":"done","stage":"train","exit":0}

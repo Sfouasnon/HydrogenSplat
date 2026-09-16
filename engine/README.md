@@ -156,6 +156,23 @@ metric and a line in `logs/<stage>.log`, and `hs train` records `wall_s`, `slept
 `caffeinate -i` around Brush only and took ~16 h for ~1.5 h of work, training ~30 s per
 ~16 min overnight.
 
+## Framing a person and grading (2026-09-16)
+
+`move/subject.json` holds the subject's crown (`{"crown_mm": [x, y, z]}`, solve coordinates).
+`hs move ... --headroom-mm 25.4 [--frame-aspect 2.35]` then solves the aim height, straight below
+the crown, so a full-width crop of that aspect keeps the crown 25.4 mm (one inch) below its top
+edge on every frame while cutting as much ceiling as the aspect allows; the per-frame crown row
+goes to `move/<name>_frame.json` and the `headroom_fits_every_frame` check reports the range.
+On the 2026-09-15 body arc the fixed 220 px crop cut the head off entirely (the arc pushes in to
+728 mm); framed, the crop row follows the head from 102 to 259 px down.
+
+`hs grade -p P --move NAME` applies lift / gamma / gain (master plus per-channel), contrast-adaptive
+sharpening and that head-following crop (ffmpeg `lutrgb`, `cas`, `sendcmd` + `crop`) to
+`render/NAME_1920.mp4` → `render/NAME_graded.mp4`, and keeps the settings in `grade/NAME.json`.
+`--still N` writes one cropped frame for the app, which previews the grade with the identical
+256-entry table (`out = clip(gain·x + lift·(1−x), 0, 1)^(1/gamma)` on code values; tested equal to
+lutrgb). Note for ffmpeg ≥ 8: `selectivecolor` values must be quoted and space-separated.
+
 ## Brush facts the wrappers rely on (read from the fork's source, not yet exercised)
 
 * `brush <dataset> --total-train-iters 40000 --growth-stop-iter 30000 --refine-every 130

@@ -28,7 +28,8 @@ import numpy as np  # noqa: E402
 
 from hs import events, keepawake, runner  # noqa: E402
 from hs.project import LOCK_FILE, Project, md5_file, now_iso  # noqa: E402
-from hs.stages import archive, exposure, render, train  # noqa: E402
+from hs.stages import archive, exposure, grade, ingest, phone, render, replay, train  # noqa: E402
+from hs import framing  # noqa: E402
 
 FAKEBIN = os.path.join(HERE, "fakebin")
 
@@ -102,7 +103,8 @@ class TrainResume(Base):
     def train_args(self, **kw):
         base = dict(brush=os.path.join(FAKEBIN, "brush"), total_train_iters=self.TOTAL, growth_stop_iter=30,
                     refine_every=10, split_at_screen_size=None, export_every=10, resume_from=None,
-                    start_iter=None, no_caffeinate=True, brush_args="", exclude="", no_masks=False)
+                    start_iter=None, no_caffeinate=True, brush_args="", exclude="", no_masks=False,
+                    min_scale_factor=None)
         base.update(kw)
         return Namespace(**base)
 
@@ -543,3 +545,182 @@ class TrainKeepAwake(TrainResume):
         self.assertIn("wall_s", st["metrics"])
         chk = {c["name"]: c for c in st["checks"]}
         self.assertTrue(chk["no_sleep_during_run"]["ok"])
+
+
+# ------------------------------------------------------------------ 7. phone listing, pull, replay (M1)
+class PhoneIngest(Base):
+    def setUp(self):
+        super().setUp()
+        os.environ["HS_PYTHON"] = sys.executable
+        self.clip = os.path.join(self.tmp, "VID_20260915_145235_2x1.h4v")
+        with open(self.clip, "wb") as f:
+            f.write(os.urandom(300_000))
+        os.environ["HS_FAKE_ADB_CLIP"] = self.clip
+        os.environ.pop("HS_FAKE_ADB_MD5", None)
+        self.adb = os.path.join(FAKEBIN, "adb")
+
+    def events(self):
+        return [json.loads(l) for l in self.out.getvalue().splitlines() if l.startswith("{")]
+
+    def ingest_args(self, **kw):
+        base = dict(clip=None, link=False, profile=None, ffprobe=os.path.join(FAKEBIN, "ffprobe"),
+                    phone="FAKE01", remote="/sdcard/DCIM/Camera/" + os.path.basename(self.clip), adb=self.adb)
+        base.update(kw)
+        return Namespace(**base)
+
+    def test_list_devices_and_clips(self):
+        phone.run(Namespace(adb=self.adb, serial=None))
+        ev = self.events()
+        devs = next(e["value"] for e in ev if e.get("name") == "devices")
+        self.assertEqual(devs[0]["serial"], "FAKE01")
+        self.assertEqual(devs[0]["model"], "H1A1000")
+        clips = next(e for e in ev if e.get("name") == "clips")
+        self.assertEqual(clips["serial"], "FAKE01")
+        self.assertEqual([c["name"] for c in clips["value"]], [os.path.basename(self.clip)])
+        self.assertEqual(clips["value"][0]["bytes"], 300_000)
+
+    def test_pull_lands_in_source_with_matching_md5(self):
+        pj = Project(self.root, create=True)
+        ingest.run(self.ingest_args(), pj)
+        dst = pj.path("source", os.path.basename(self.clip))
+        self.assertEqual(md5_file(dst), md5_file(self.clip))
+        st = pj.stage("ingest")
+        self.assertEqual(st["status"], "done")
+        chk = {c["name"]: c for c in st["checks"]}
+        self.assertTrue(chk["pull_matches_phone"]["ok"])
+        self.assertTrue(chk["clip_is_2x1_video"]["ok"])
+        self.assertEqual(pj.m["source"]["original_path"], "adb:FAKE01:" + self.ingest_args().remote)
+        prog = [e for e in self.events() if e["ev"] == "progress" and e.get("step") == "pull"]
+        self.assertEqual(prog[-1]["done"], 300_000)
+        self.assertEqual(prog[-1]["total"], 300_000)
+
+    def test_md5_mismatch_is_refused(self):
+        os.environ["HS_FAKE_ADB_MD5"] = "0" * 32
+        pj = Project(self.root, create=True)
+        with self.assertRaises(events.StageError):
+            ingest.run(self.ingest_args(), pj)
+        chk = {c["name"]: c for c in pj.stage("ingest")["checks"]}
+        self.assertFalse(chk["pull_matches_phone"]["ok"])
+
+    def test_missing_remote_and_both_sources_are_refused(self):
+        pj = Project(self.root, create=True)
+        with self.assertRaises(events.StageError):
+            ingest.run(self.ingest_args(remote="/sdcard/DCIM/Camera/nope.h4v"), pj)
+        pj.release()
+        with self.assertRaises(events.StageError):
+            ingest.run(self.ingest_args(clip=self.clip), pj)
+
+    def test_replay_strips_t_and_can_fail(self):
+        f = os.path.join(self.tmp, "ev.jsonl")
+        with open(f, "w") as fh:
+            fh.write('{"t":0,"ev":"start","stage":"train"}\n{"t":0.2,"ev":"progress","stage":"train","done":5}\n')
+        replay.run(Namespace(file=f, speed=100.0, gap=0.0, max_wait=0.01, fail_at=None))
+        ev = self.events()
+        self.assertEqual(ev, [{"ev": "start", "stage": "train"}, {"ev": "progress", "stage": "train", "done": 5}])
+        with self.assertRaises(events.StageError):
+            replay.run(Namespace(file=f, speed=100.0, gap=0.0, max_wait=0.01, fail_at=1))
+
+
+# ------------------------------------------------------------------ 8. framing + grade
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
+class Grade(Base):
+    W, H, N, FPS = 320, 180, 10, 10
+
+    def graded_project(self, track=True):
+        import cv2
+        pj = self.solved_project()
+        os.makedirs(pj.path("render"))
+        w = cv2.VideoWriter(pj.path("render", "arc_src.avi"), cv2.VideoWriter_fourcc(*"MJPG"), self.FPS, (self.W, self.H))
+        ramp = np.tile(np.arange(self.H, dtype=np.uint8)[:, None], (1, self.W))
+        for _ in range(self.N):
+            w.write(cv2.cvtColor(ramp, cv2.COLOR_GRAY2BGR))
+        w.release()
+        subprocess_run(["ffmpeg", "-loglevel", "error", "-y", "-i", pj.path("render", "arc_src.avi"),
+                        "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv444p", pj.path("render", "arc_1920.mp4")])
+        if track:
+            os.makedirs(pj.path("move"), exist_ok=True)
+            # crown row climbs 0..90 px; depth 1000 mm, fy 1000 -> headroom 25.4 mm = 25.4 px
+            rec = {"aspect": 4.0, "headroom_mm": 25.4, "native": [self.W, self.H], "fy": 1000.0, "fps": self.FPS,
+                   "crown_row": [25.4 + 10 * k for k in range(self.N)], "depth_mm": [1000.0] * self.N}
+            json.dump(rec, open(pj.path("move", "arc_frame.json"), "w"))
+        return pj
+
+    def args(self, **kw):
+        base = dict(move="arc", lift=None, gamma=None, gain=None, lift_rgb=None, gamma_rgb=None, gain_rgb=None,
+                    sharpen=0.0, aspect=4.0, headroom_mm=None, still=None, graded=False, reset=False,
+                    ffmpeg="ffmpeg", crf=0)
+        base.update(kw)
+        return Namespace(**base)
+
+    def test_lut_matches_ffmpeg_lutrgb(self):
+        import cv2
+        g = np.tile(np.arange(256, dtype=np.uint8), (2, 1))
+        src, dst = os.path.join(self.tmp, "g.png"), os.path.join(self.tmp, "o.png")
+        cv2.imwrite(src, np.dstack([g, g, g]))
+        s = dict(grade.DEFAULTS, lift=0.03, gamma=1.2, gain=0.9, gain_rgb=[1.05, 1, 0.9], lift_rgb=[0, 0.01, -0.02], sharpen=0)
+        subprocess_run(["ffmpeg", "-loglevel", "error", "-y", "-i", src, "-vf", ",".join(grade.grade_filter(s)), dst])
+        o = cv2.imread(dst)
+        for c, bgr in ((0, 2), (1, 1), (2, 0)):
+            np.testing.assert_array_equal(o[0, :, bgr], grade.lut(*grade.channel_params(s)[c]))
+
+    def test_crop_follows_the_crown(self):
+        pj = self.graded_project()
+        grade.run(self.args(), pj)
+        out = pj.path("render", "arc_graded.mp4")
+        raw = subprocess_run(["ffmpeg", "-loglevel", "error", "-i", out, "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+        ch = framing.even(self.W / 4.0)
+        frames = np.frombuffer(raw, np.uint8).reshape(-1, ch, self.W)
+        self.assertEqual(len(frames), self.N)
+        tops = [int(f[:, 5].astype(int).min()) for f in frames]    # ramp value = source row
+        # crown_row - headroom = 10k, smoothed with edge padding; must rise monotonically and cover the range
+        self.assertTrue(all(b >= a for a, b in zip(tops, tops[1:])), tops)
+        self.assertLessEqual(abs(tops[0] - 0), 12)
+        self.assertLessEqual(abs(tops[-1] - 90), 12)
+        saved = json.load(open(pj.path("grade", "arc.json")))
+        self.assertEqual(saved["aspect"], 4.0)
+
+    def test_still_and_saved_settings_are_reused(self):
+        pj = self.graded_project(track=False)
+        grade.run(self.args(gain=1.2, still=None), pj)
+        grade.run(self.args(still=3, graded=True), pj)
+        ev = [json.loads(l) for l in self.out.getvalue().splitlines() if l.startswith("{")]
+        crop = [e["value"] for e in ev if e.get("name") == "crop"][-1]
+        self.assertEqual(crop["mode"], "centred")
+        self.assertTrue(os.path.exists(pj.path("grade", "arc_still_graded.png")))
+        self.assertEqual(json.load(open(pj.path("grade", "arc.json")))["gain"], 1.2)
+        s = grade.settings(self.args(), json.load(open(pj.path("grade", "arc.json"))))
+        self.assertEqual(s["gain"], 1.2)
+        self.assertEqual(grade.settings(self.args(reset=True), {"gain": 1.2})["gain"], 1.0)
+
+
+def subprocess_run(argv):
+    import subprocess
+    return subprocess.run(argv, check=True, capture_output=True).stdout
+
+
+# ------------------------------------------------------------------ 9. brush config recorded
+class BrushConfig(TrainResume):
+    def test_min_scale_factor_follows_the_binary(self):
+        pj = self.solved_project()
+        # the fake brush prints no --help flags: an old binary -> not passed, recorded as 0
+        train.run(self.train_args(), pj)
+        st = pj.stage("train")
+        self.assertNotIn("--min-scale-factor", st["brush_argv"])
+        self.assertEqual(st["metrics"]["brush_config"]["min_scale_factor"], 0.0)
+        with self.assertRaises(events.StageError):
+            train.run(self.train_args(min_scale_factor=0.03), pj)
+
+    def test_new_binary_gets_it_explicitly(self):
+        pj = self.solved_project()
+        real = train.brush_info
+        train.brush_info = lambda b: {**real(b), "flags": ["--min-scale-factor", "--total-train-iters"]}
+        try:
+            train.run(self.train_args(), pj)
+            argv = pj.stage("train")["brush_argv"]
+            self.assertEqual(argv[argv.index("--min-scale-factor") + 1], "0.1")
+            train.run(self.train_args(min_scale_factor=0.0), pj)
+            argv = pj.stage("train")["brush_argv"]
+            self.assertEqual(argv[argv.index("--min-scale-factor") + 1], "0.0")
+            self.assertEqual(pj.stage("train")["metrics"]["brush_config"]["min_scale_factor"], 0.0)
+        finally:
+            train.brush_info = real

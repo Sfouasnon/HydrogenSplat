@@ -1,17 +1,20 @@
 """hs ingest — bring a clip into a project and validate it (strategy §4.1, file-drop path).
 
-M0 covers the "clip dropped onto the window" route: copy (or link) the .h4v into
-``source/``, MD5 it, ffprobe it, and refuse anything that is not one 3840x1080 video stream
+Two routes: a clip file (``--clip``, the "dropped onto the window" path; copied or linked), or
+a clip on the phone (``--phone SERIAL --remote /sdcard/DCIM/Camera/VID_…``) pulled over adb
+straight into ``source/`` with byte progress and an MD5 compared against the phone's own.
+Then MD5 it, ffprobe it, and refuse anything that is not one 3840x1080 video stream
 whose comment tag says ``leia3d_layout=2x1`` / ``leia3d_width_per_view=1920``. The matching
 calibration profile is chosen by the clip's match keys and recorded in the manifest; no
-match blocks with "no calibration for this mode". adb listing / pulling is M1.
+match blocks with "no calibration for this mode". Listing the phone is ``hs phone``.
 """
 import json
 import os
 import shutil
 import subprocess
+import time
 
-from .. import calib, events
+from .. import calib, events, runner
 from ..project import md5_file, tool_versions
 
 STAGE = "ingest"
@@ -19,7 +22,10 @@ STAGE = "ingest"
 
 def add_parser(sub):
     p = sub.add_parser("ingest", help="copy a clip into the project, MD5 + ffprobe + validate, pick the profile")
-    p.add_argument("--clip", required=True, help="VID_*_2x1.h4v (a plain MP4)")
+    p.add_argument("--clip", default=None, help="VID_*_2x1.h4v (a plain MP4)")
+    p.add_argument("--phone", default=None, metavar="SERIAL", help="pull from this adb device instead of --clip")
+    p.add_argument("--remote", default=None, help="with --phone: the clip's path on the phone")
+    p.add_argument("--adb", default=os.environ.get("HS_ADB", "adb"))
     p.add_argument("--link", action="store_true", help="symlink instead of copying (golden test on a big clip)")
     p.add_argument("--profile", default=None, help="force a calibration profile id/path instead of matching")
     p.add_argument("--ffprobe", default=os.environ.get("HS_FFPROBE", "ffprobe"))
@@ -68,19 +74,68 @@ def validate_probe(probe):
     return not problems, problems, info
 
 
+def pull(a, pj, dst):
+    """adb pull into dst with byte progress; returns the phone's md5 (or None if it has no md5sum)."""
+    from .phone import adb, adb_exe
+    exe = adb_exe(a.adb)
+    r = adb(exe, "shell", f"stat -c %s '{a.remote}'", serial=a.phone)
+    try:
+        total = int(r.stdout.strip())
+    except ValueError:
+        raise events.StageError(f"not on the phone: {a.remote}", hint=(r.stdout + r.stderr).strip()[-200:])
+    pj.metric(STAGE, "remote_bytes", total)
+    t0 = time.monotonic()
+
+    def tick():
+        n = os.path.getsize(dst) if os.path.exists(dst) else 0
+        el = time.monotonic() - t0
+        rate = n / el if el > 0.5 and n else None
+        events.progress(STAGE, n, total, rate=rate, eta_s=(total - n) / rate if rate else None,
+                        detail=f"{n / 1e6:.1f} / {total / 1e6:.1f} MB", step="pull")
+
+    events.start(STAGE, "pull")
+    runner.run([exe, "-s", a.phone, "pull", a.remote, dst], STAGE, log_path=pj.log_path(STAGE),
+               tick=tick, tick_interval=0.5)
+    events.progress(STAGE, total, total, detail=f"{total / 1e6:.1f} MB", step="pull", force=True)
+    got = os.path.getsize(dst)
+    if got != total:
+        raise events.StageError(f"pulled {got} bytes, phone has {total}", hint="replug the phone and ingest again")
+    events.start(STAGE, "phone_md5")
+    r = adb(exe, "shell", f"md5sum '{a.remote}'", serial=a.phone, timeout=120)
+    m = r.stdout.strip().split()
+    return m[0] if m and len(m[0]) == 32 else None
+
+
 def run(a, pj):
-    src = os.path.abspath(os.path.expanduser(a.clip))
-    if not os.path.isfile(src):
-        raise events.StageError(f"clip not found: {src}")
-    pj.begin(STAGE, argv=_argv(a))
-    events.start(STAGE, "copy")
-    dst = pj.path("source", os.path.basename(src))
-    if a.link:
-        os.symlink(src, dst)
+    if bool(a.clip) == bool(a.phone):
+        raise events.StageError("give exactly one of --clip or --phone SERIAL --remote PATH")
+    if a.phone:
+        if not a.remote:
+            raise events.StageError("--phone needs --remote /sdcard/DCIM/Camera/VID_…_2x1.h4v")
+        src = f"adb:{a.phone}:{a.remote}"
+        pj.begin(STAGE, argv=_argv(a))
+        dst = pj.path("source", os.path.basename(a.remote))
+        phone_md5 = pull(a, pj, dst)
     else:
-        shutil.copy2(src, dst)
+        src = os.path.abspath(os.path.expanduser(a.clip))
+        if not os.path.isfile(src):
+            raise events.StageError(f"clip not found: {src}")
+        pj.begin(STAGE, argv=_argv(a))
+        events.start(STAGE, "copy")
+        dst = pj.path("source", os.path.basename(src))
+        if a.link:
+            os.symlink(src, dst)
+        else:
+            shutil.copy2(src, dst)
+        phone_md5 = None
     events.start(STAGE, "md5")
     digest = md5_file(dst)
+    if a.phone:
+        pj.check(STAGE, "pull_matches_phone", phone_md5 in (None, digest),
+                 value=f"md5 {digest}" + (" (phone has no md5sum; size matched)" if phone_md5 is None
+                                          else " on both" if phone_md5 == digest else f" vs phone {phone_md5}"))
+        if phone_md5 not in (None, digest):
+            raise events.StageError("the pulled clip differs from the phone's", hint="ingest again")
     with open(dst + ".md5", "w") as f:
         f.write(f"{digest}  {os.path.basename(dst)}\n")
     pj.metric(STAGE, "clip_md5", digest)

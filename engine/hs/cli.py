@@ -1,7 +1,7 @@
 """hs — the HydrogenSplat engine CLI.
 
     hs <stage> --project DIR [stage options]
-    hs tools | hs calib ... | hs selftest [--clip CLIP]
+    hs tools | hs calib ... | hs selftest [--clip CLIP] | hs phone | hs replay EVENTS.jsonl
 
 Stages: ingest, select, solve, train, move (alias paths), prune, render, views. Each wraps one of
 the vendored scripts or a Brush binary as a subprocess and speaks the JSON-lines event
@@ -15,14 +15,14 @@ import traceback
 
 from . import __version__, events, keepawake
 from .project import Project
-from .stages import archive, calibrate, exposure, ingest, masks, move, prune, render, select, selftest, solve, tools, train, views
+from .stages import archive, calibrate, exposure, grade, ingest, masks, move, phone, prune, render, replay, select, selftest, solve, tools, train, views
 
 PROJECT_STAGES = {
     "ingest": ingest, "select": select, "solve": solve, "train": train,
     "move": move, "paths": move, "prune": prune, "render": render, "views": views,
-    "exposure": exposure, "masks": masks, "archive": archive,
+    "exposure": exposure, "masks": masks, "archive": archive, "grade": grade,
 }
-FREE_STAGES = {"tools": tools, "calib": calibrate, "selftest": selftest}
+FREE_STAGES = {"tools": tools, "calib": calibrate, "selftest": selftest, "phone": phone, "replay": replay}
 
 
 # --project and --verbose are accepted on either side of the stage name: `hs -p DIR solve`
@@ -38,7 +38,7 @@ def build_parser():
     ap.add_argument("-p", "--project", default=None, help="project folder (created by ingest)")
     ap.add_argument("-v", "--verbose", action="store_true", help="also emit child output as {\"ev\":\"log\"} events")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<stage>")
-    for mod in (ingest, select, solve, exposure, masks, train, archive, move, prune, render, views, tools, calibrate, selftest):
+    for mod in (ingest, select, solve, exposure, masks, train, archive, move, prune, render, grade, views, tools, calibrate, selftest, phone, replay):
         mod.add_parser(sub)
     seen = set()
     for name, sp in sub.choices.items():

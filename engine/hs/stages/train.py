@@ -47,6 +47,7 @@ registered frame (rig6: 170,841 / 65); splat count monotone through growth.
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 
@@ -73,6 +74,9 @@ def add_parser(sub):
     p.add_argument("--growth-stop-iter", type=int, default=30000)
     p.add_argument("--refine-every", type=int, default=130)
     p.add_argument("--split-at-screen-size", type=float, default=None, help="Brush default 0.5")
+    p.add_argument("--min-scale-factor", type=float, default=None,
+                   help="Mip-Splatting 3D-filter strength (Brush >= #541 default 0.1; 0 = off, the pre-#541 behaviour). "
+                        "Always passed explicitly when the binary supports it, so the manifest records it")
     p.add_argument("--export-every", type=int, default=2500)
     p.add_argument("--resume-from", default=None, help="an export_NNNNN.ply to continue from (experimental)")
     p.add_argument("--start-iter", type=int, default=None, help="with --resume-from; default: parsed from its name")
@@ -84,6 +88,33 @@ def add_parser(sub):
     p.add_argument("--no-masks", action="store_true",
                    help="train without train/dataset/masks even though it exists")
     return p
+
+
+MIN_SCALE_DEFAULT = 0.1   # Brush #541 (dd5ea36, 2026-09-13)
+
+
+def brush_info(brush):
+    """What we know about the binary: git commit/branch of its checkout, and which flags it has."""
+    info = {"path": brush}
+    try:
+        info["mtime"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(os.path.getmtime(brush)))
+    except OSError:
+        pass
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(brush))))  # <repo>/target/release/brush
+    if os.path.isdir(os.path.join(root, ".git")):
+        def git(*args):
+            r = subprocess.run(["git", "-C", root] + list(args), capture_output=True, text=True, timeout=10)
+            return r.stdout.strip() if r.returncode == 0 else None
+        info["git_commit"] = git("rev-parse", "--short", "HEAD")
+        info["git_branch"] = git("rev-parse", "--abbrev-ref", "HEAD")
+        dirty = git("status", "--porcelain", "--untracked-files=no")
+        info["git_dirty"] = bool(dirty) if dirty is not None else None
+    try:
+        r = subprocess.run([brush, "--help"], capture_output=True, text=True, timeout=30)
+        info["flags"] = sorted(set(re.findall(r"(--[a-z][a-z0-9-]+)", r.stdout + r.stderr)))
+    except (OSError, subprocess.TimeoutExpired):
+        info["flags"] = None
+    return info
 
 
 def ply_vertex_count(path):
@@ -250,6 +281,20 @@ def run(a, pj):
             "--export-every", str(a.export_every),
             "--export-path", exports,
             "--export-name", "export_{iter}.ply"]
+    binfo = brush_info(brush)
+    flags = binfo.get("flags")
+    msf = a.min_scale_factor
+    if flags is not None and "--min-scale-factor" in flags:
+        msf = MIN_SCALE_DEFAULT if msf is None else msf
+        if "--min-scale-factor" not in a.brush_args:
+            argv += ["--min-scale-factor", str(msf)]
+    elif msf is not None:
+        raise events.StageError("--min-scale-factor given but this brush has no such flag",
+                                hint="update Brush to >= #541 (dd5ea36) or drop the option")
+    else:
+        msf = 0.0   # pre-#541 binaries have no 3D filter
+    pj.metric(STAGE, "brush_config", {"min_scale_factor": msf, "commit": binfo.get("git_commit"),
+                                      "branch": binfo.get("git_branch"), "dirty": binfo.get("git_dirty")})
     if a.split_at_screen_size is not None:
         argv += ["--split-at-screen-size", str(a.split_at_screen_size)]
     if start_iter:
@@ -257,7 +302,7 @@ def run(a, pj):
     if a.brush_args:
         argv += a.brush_args.split()
     # keep-awake is held by cli.py for the whole stage (keepawake.py), not wrapped around brush
-    pj.record_tool("brush", {"path": brush, "mtime": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(os.path.getmtime(brush)))})
+    pj.record_tool("brush", {k: v for k, v in binfo.items() if k != "flags"})
     pj.m["stages"][STAGE]["brush_argv"] = argv
     pj.save()
     env = {"RUST_LOG": os.environ.get("RUST_LOG", "info,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn")}

@@ -1,0 +1,4 @@
+#!/bin/sh
+# stand-in for ffprobe (see ../fake_ffprobe.py)
+HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$HERE/../../.."
+exec "${HS_PYTHON:-$ROOT/.venv/bin/python}" "$HERE/../fake_ffprobe.py" "$@"

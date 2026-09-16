@@ -8,6 +8,11 @@
 #                           (the real tail was ~148 s of silence)
 import sys, os, time, numpy as np
 args = sys.argv[1:]
+if "--help" in args or "-h" in args:
+    # an old binary's help: the flag list hs checks for; HS_FAKE_BRUSH_FLAGS adds more
+    print("Usage: brush [OPTIONS] [SOURCE]\n      --total-train-iters <N>\n      --export-path <P>\n"
+          + "".join(f"      {f} <V>\n" for f in os.environ.get("HS_FAKE_BRUSH_FLAGS", "").split(",") if f))
+    sys.exit(0)
 def opt(name, default):
     return args[args.index(name)+1] if name in args else default
 total = int(opt("--total-train-iters", 30000)); every = int(opt("--export-every", 5000))

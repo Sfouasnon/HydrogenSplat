@@ -17,7 +17,7 @@ import os
 import re
 import sys
 
-from .. import coverage, events, runner
+from .. import coverage, events, framing, runner
 
 STAGE = "move"
 RE_AIM = re.compile(r"aim check: projects to \(([-\d.]+), ([-\d.]+)\) in view (\d+) \((\w+), (\d+)x(\d+)\) at ([-\d.]+) mm — (.*)$")
@@ -45,6 +45,10 @@ def add_parser(sub):
     p.add_argument("--ease", type=float, default=1.0)
     p.add_argument("--aim-point", default=None, help="x,y,z mm — override the SfM median (you must then check the image)")
     p.add_argument("--span", type=float, default=0.8, help="sweep: fraction of the window to sweep")
+    p.add_argument("--headroom-mm", type=float, default=None,
+                   help="frame a person: solve the aim height so the crown sits this far below the top of the "
+                        "--frame-aspect crop on every frame (needs move/subject.json); overrides --aim-point")
+    p.add_argument("--frame-aspect", type=float, default=2.35, help="crop aspect the framing solves for")
     p.add_argument("--smooth", type=int, default=3, help="sweep: moving-average window over camera centres")
     return p
 
@@ -98,8 +102,21 @@ def run(a, pj):
         pj.metric(STAGE, f"{name}.keys", keys)
         argv = runner.python_argv("key_path.py", rig, "-o", out, "--keys", ",".join(map(str, keys)),
                                   "--frames", frames, "--fps", a.fps, "--hold", a.hold, "--ease", a.ease)
+    if a.headroom_mm is not None:
+        crown = framing.load_subject(pj)
+        if crown is None:
+            raise events.StageError("--headroom-mm needs move/subject.json with the subject's crown_mm",
+                                    hint="write {\"crown_mm\": [x, y, z]} (solve coordinates, mm)")
+        events.start(STAGE, "framing")
+        t, fmove, rows, depths, fy = framing.solve_aim(framing.builder(argv, out), crown, framing.up_axis(pj),
+                                                       a.frame_aspect, a.headroom_mm)
+        aim = crown - t * framing.up_axis(pj)
+        a.aim_point = ",".join(f"{x:.1f}" for x in aim)
+        pj.metric(STAGE, f"{name}.aim_below_crown_mm", round(t, 1))
+        pj.metric(STAGE, f"{name}.crown_row_px", [round(float(rows.min())), round(float(rows.max()))])
+        info["framing"] = {"headroom_mm": a.headroom_mm, "aspect": a.frame_aspect}
     if a.aim_point:
-        argv += ["--aim-point", a.aim_point]
+        argv.append(f"--aim-point={a.aim_point}")
     else:
         argv.append("--aim-median")
 
@@ -117,6 +134,18 @@ def run(a, pj):
         raise events.StageError("the path builder wrote nothing", hint="see logs/move.log")
     move = json.load(open(out))
     pj.artifact(STAGE, out, "move")
+    if a.headroom_mm is not None:
+        rows, depths, fy = framing.crown_track(move, crown)
+        tp = framing.write_track(pj, name, move, rows, depths, fy, a.frame_aspect, a.headroom_mm, aim, t)
+        pj.artifact(STAGE, tp, "json")
+        tops = framing.crop_rows(rows, depths, fy, a.headroom_mm)
+        pj.check(STAGE, "headroom_fits_every_frame", bool(tops.min() >= 0 and tops.max() <= framing.room(move, a.frame_aspect) + 0.5),
+                 value=f"crop starts {tops.min():.0f}-{tops.max():.0f} px down (room {framing.room(move, a.frame_aspect):.0f}) "
+                       f"for {a.headroom_mm:g} mm above the crown at {depths.min():.0f}-{depths.max():.0f} mm", move=name)
+    else:
+        stale = pj.path("move", framing.FRAME_FILE.format(name=name))
+        if os.path.exists(stale):
+            os.remove(stale)
     pj.metric(STAGE, f"{name}.frames", len(move["frames"]))
     pj.metric(STAGE, f"{name}.size", [move["width"], move["height"]])
     if "obj" in st:
