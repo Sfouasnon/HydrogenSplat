@@ -142,11 +142,13 @@ def parse_exclude(text):
         if not tok:
             continue
         tok = os.path.splitext(tok)[0]
-        m = re.fullmatch(r"(cap\d+)_([LR])", tok)
+        m = re.fullmatch(r"([A-Za-z0-9-]+)_([LR])", tok)
         if m:
             tok = f"{m.group(2)}/{m.group(1)}"
-        if not re.fullmatch(r"[LR]/cap\d+", tok):
-            raise events.StageError(f"--exclude: cannot read '{tok}'", hint="write views as L/cap064,R/cap069")
+        if re.fullmatch(r"[A-Za-z0-9-]+", tok):        # a bare camera id on an array: GA -> L/GA
+            tok = "L/" + tok
+        if not re.fullmatch(r"[LR]/[A-Za-z0-9-]+", tok):
+            raise events.StageError(f"--exclude: cannot read '{tok}'", hint="write views as L/cap064,R/cap069 (or GA,GB on an array)")
         out.add(tok)
     return out
 

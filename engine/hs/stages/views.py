@@ -41,7 +41,7 @@ import sys
 
 import numpy as np
 
-from .. import events, runner
+from .. import events, rig, runner
 from .prune import final_export
 from .render import DEFAULT_RENDER, RE_FRAME, RE_LOADED, RE_PATH
 
@@ -100,9 +100,11 @@ def build_path(pj, captures, out_path, eye="L"):
     A photograph-to-render residual in ONE eye is not a disparity: a shift present in both
     eyes with the same sign cancels in d = xL - xR, and only the difference eL - eR moves
     apparent depth. Rendering R as well is what makes that subtraction possible."""
-    G = np.load(pj.rig_npz, allow_pickle=True)
-    names = [str(x) for x in G["names"]]
-    L = np.arange(0, len(names), 2) + (1 if eye == "R" else 0)
+    G, names, L = rig.load(pj.rig_npz)
+    if eye == "R":
+        if not rig.is_stereo(G):
+            raise events.StageError("--eye R needs a stereo rig; this project's rig.npz is mono (one view per camera)")
+        L = L + 1
     K, R, t, C = (G[k].astype(float) for k in ("K", "R", "t", "C"))
     pts = G["pts"].astype(float)
     subject = np.median(pts, axis=0)
@@ -122,7 +124,7 @@ def build_path(pj, captures, out_path, eye="L"):
         frames.append({"c2w": c2w.tolist()})
         Xc = R[v] @ subject + t[v]
         uv = (K[v] @ Xc)[:2] / Xc[2]
-        views.append({"capture": c, "view": names[v], "image": names[v][:-2] + ".jpg",
+        views.append({"capture": c, "view": names[v], "image": rig.capture_name(names[v]) + ".jpg",
                       "subject_px": [float(uv[0]), float(uv[1])], "depth_mm": float(Xc[2])})
     json.dump({"note": "hs views: the model rendered from real capture poses, for A/B against the photographs",
                "width": w, "height": h, "K": K[int(L[0])].tolist(), "fps": 30.0, "frames": frames},

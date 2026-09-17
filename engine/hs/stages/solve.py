@@ -46,11 +46,20 @@ def add_parser(sub):
     p.add_argument("--no-float-rig", action="store_true", help="NOT recommended: keep sensor_from_rig fixed")
     p.add_argument("--reuse-matches", action="store_true", help="keep an existing database.db (skip features/matching)")
     p.add_argument("--max-reproj", type=float, default=1.8, help="check threshold, px")
+    g = p.add_argument_group("array source (monocolmap.py; ignored on a Hydrogen clip)")
+    g.add_argument("--scale-pair", default=None, metavar="CAM1,CAM2,MM",
+                   help="metric scale from the measured distance between two camera centres, e.g. GA,GB,700")
+    g.add_argument("--scale", type=float, default=None, help="multiply the reconstruction by this to get metres")
+    g.add_argument("--focal-px", type=float, default=None,
+                   help="focal length prior in pixels = lens mm / sensor width mm x image width")
+    g.add_argument("--fix-intrinsics", action="store_true", help="keep --focal-px; do not refine focal/distortion")
     return p
 
 
 def run(a, pj):
     pj.require(STAGE)
+    if pj.m.get("source", {}).get("kind") == "array":
+        return run_array(a, pj)
     frames = pj.frames_dir
     n_sel = len([f for f in os.listdir(frames) if f.lower().endswith(".jpg")]) if os.path.isdir(frames) else 0
     if n_sel == 0:
@@ -227,6 +236,155 @@ def run(a, pj):
              value=f"L–R separation {seps.min():.3f}–{seps.max():.3f} mm vs profile {baseline:.3f} mm")
     # the stage completed; a failed quality check stays visible in the manifest and the
     # event stream rather than blocking (partial registration raised above — that one blocks)
+    pj.finish(STAGE, ok=True)
+
+
+def run_array(a, pj):
+    """Array source: monocolmap.py prep -> sfm (one shared camera) -> export. Same outputs,
+    metrics and checks as the Hydrogen path minus everything that is about a stereo rig."""
+    frames = pj.frames_dir
+    n_cam = len([f for f in os.listdir(frames)]) if os.path.isdir(frames) else 0
+    if n_cam == 0:
+        raise events.StageError("no frames", hint="hs ingest --frames DIR / --r3d DIR --take NNN")
+    work = pj.stage_dir(STAGE)
+    keep_db = None
+    if a.reuse_matches and os.path.exists(os.path.join(work, "database.db")):
+        keep_db = os.path.join(pj.root, "database.db.keep")
+        shutil.move(os.path.join(work, "database.db"), keep_db)
+    pj.begin(STAGE, argv=sys.argv)
+    if keep_db:
+        shutil.move(keep_db, os.path.join(work, "database.db"))
+    if os.path.isdir(pj.dataset_dir):
+        shutil.rmtree(pj.dataset_dir)
+    os.makedirs(pj.path("train"), exist_ok=True)
+    pj.metric(STAGE, "source_kind", "array")
+    log = pj.log_path(STAGE)
+
+    events.start(STAGE, "prep")
+    runner.run(runner.python_argv("monocolmap.py", "prep", frames, "-o", work), STAGE, log_path=log)
+    caps = json.load(open(os.path.join(work, "captures.json")))["captures"]
+    pj.metric(STAGE, "captures", len(caps))
+    n_img = len(caps)
+
+    events.start(STAGE, "sfm")
+    argv = runner.python_argv("monocolmap.py", "sfm", work,
+                              "--peak-threshold", a.peak_threshold, "--features", a.features)
+    if a.masks:
+        argv += ["--masks", a.masks]
+    if a.focal_px:
+        argv += ["--focal-px", a.focal_px]
+    if a.fix_intrinsics:
+        argv.append("--fix-intrinsics")
+    if a.scale_pair:
+        argv += ["--scale-pair", a.scale_pair]
+    elif a.scale:
+        argv += ["--scale", a.scale]
+    state = {"metrics": {}}
+
+    def on_line(line):
+        m = RE_FEAT.search(line)
+        if m:
+            events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="features")
+            return
+        m = RE_MATCH.search(line)
+        if m:
+            i, ni, j, nj = (int(x) for x in m.groups())
+            events.progress(STAGE, (i - 1) * nj + j - 1, ni * nj, step="matching", detail=f"block {i}/{ni},{j}/{nj}")
+            return
+        m = RE_REG.search(line)
+        if m:
+            events.progress(STAGE, int(m.group(2)), n_img, step="mapping", detail="images registered")
+            return
+        for key, rx in (("featstat", RE_FEATSTAT), ("recon", RE_RECON), ("reproj", RE_REPROJ), ("depth", RE_DEPTH)):
+            m = rx.search(line)
+            if m:
+                state["metrics"][key] = m.groups()
+                return
+
+    runner.run(argv, STAGE, log_path=log, on_line=on_line)
+    rep_path = os.path.join(work, "sfm_report.json")
+    if not os.path.exists(rep_path):
+        raise events.StageError("sfm wrote no sfm_report.json", hint="see logs/solve.log")
+    rep = json.load(open(rep_path))
+    mm = state["metrics"]
+    if "featstat" in mm:
+        pj.metric(STAGE, "features_per_image_median", int(mm["featstat"][1]))
+    pj.metric(STAGE, "num_images", rep["num_images"])
+    pj.metric(STAGE, "num_frames", rep["num_frames"])
+    pj.metric(STAGE, "num_points", rep["num_points"])
+    pj.metric(STAGE, "mean_reproj_px", round(float(rep["mean_reproj_px"]), 4))
+    if "reproj" in mm:
+        pj.metric(STAGE, "median_reproj_px", float(mm["reproj"][1]))
+    cam = rep.get("camera", {})
+    if cam:
+        pj.metric(STAGE, "camera_params", cam)
+        fx = cam["params"][0]
+        pj.metric(STAGE, "focal_px", round(fx, 1))
+        pj.metric(STAGE, "hfov_deg", round(float(2 * np.degrees(np.arctan(cam["width"] / (2 * fx)))), 2))
+    if "depth" in mm:
+        pj.metric(STAGE, "scene_depth_p5_mm", int(mm["depth"][0]))
+        pj.metric(STAGE, "scene_depth_median_mm", int(mm["depth"][1]))
+        pj.metric(STAGE, "scene_depth_p95_mm", int(mm["depth"][2]))
+    pj.artifact(STAGE, rep_path, "json")
+    scale = rep.get("scale_to_m")
+    pj.metric(STAGE, "scale_to_m", scale)
+    pj.check(STAGE, "scene_scaled", scale is not None, needs_human=scale is None,
+             value=(f"x{scale:.6f} from {a.scale_pair or a.scale}" if scale is not None
+                    else "units are arbitrary: re-solve with --scale-pair CAM1,CAM2,MM (a measured camera spacing)"))
+
+    all_reg = rep["num_frames"] == len(caps)
+    pj.check(STAGE, "all_frames_registered", all_reg, value=f"{rep['num_frames']}/{len(caps)}")
+    pj.check(STAGE, "mean_reproj_ok", float(rep["mean_reproj_px"]) <= a.max_reproj,
+             value=f"{float(rep['mean_reproj_px']):.3f} px (want ≤ {a.max_reproj})")
+
+    events.start(STAGE, "per_image")
+    per = per_image_table(os.path.join(work, "sparse", "rig"))
+    per_path = os.path.join(work, "per_image.json")
+    json.dump(per, open(per_path, "w"), indent=1)
+    pj.artifact(STAGE, per_path, "json")
+    worst = max(per["images"], key=lambda r: r["mean_reproj_px"] or 0) if per["images"] else None
+    if worst:
+        pj.metric(STAGE, "worst_image_reproj_px", worst["mean_reproj_px"])
+        pj.check(STAGE, "no_image_over_3px", (worst["mean_reproj_px"] or 0) <= 3.0,
+                 value=f"worst {worst['name']} {worst['mean_reproj_px']:.2f} px")
+    if not all_reg:
+        pj.finish(STAGE, ok=False, error="partial registration")
+        got = set(os.path.splitext(os.path.basename(r["name"]))[0] for r in per["images"])
+        missing = sorted(set(c["capture"] for c in caps) - got)
+        raise events.StageError(f"only {rep['num_frames']} of {len(caps)} cameras registered "
+                                f"(unregistered: {', '.join(missing)})",
+                                hint="look at solve/per_image.json; a camera that sees too little of what the "
+                                     "others see cannot be placed. Do not train on a partial solve.")
+
+    events.start(STAGE, "export")
+    runner.run(runner.python_argv("monocolmap.py", "export", os.path.join(work, "sparse", "rig"),
+                                  "--images", os.path.join(work, "images"), "-o", pj.dataset_dir),
+               STAGE, log_path=log,
+               on_line=lambda l: (lambda m: m and events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="export"))(RE_UNDIST.search(l)))
+    if not os.path.exists(pj.rig_npz):
+        raise events.StageError("export wrote no rig.npz")
+    import cv2
+    G = np.load(pj.rig_npz, allow_pickle=True)
+    l_dir = os.path.join(pj.dataset_dir, "images", "L")
+    l_first = sorted(f for f in os.listdir(l_dir) if f.lower().endswith(".jpg"))[0]
+    im = cv2.imread(os.path.join(l_dir, l_first))
+    rig_wh, img_wh = (int(G["w"]), int(G["h"])), (im.shape[1], im.shape[0])
+    pj.metric(STAGE, "view_size_L", list(img_wh))
+    pj.check(STAGE, "rig_size_matches_L_views", rig_wh == img_wh,
+             value=f"rig.npz {rig_wh[0]}x{rig_wh[1]} vs {l_first} {img_wh[0]}x{img_wh[1]}")
+    pj.artifact(STAGE, pj.dataset_dir, "dataset")
+    pj.artifact(STAGE, pj.rig_npz, "rig")
+    ply = os.path.join(pj.dataset_dir, "sparse", "points3D.ply")
+    if os.path.exists(ply):
+        pj.artifact(STAGE, ply, "pointcloud")
+
+    events.start(STAGE, "coverage")
+    cov = coverage.write(pj.rig_npz, os.path.join(work, "coverage.json"))
+    pj.artifact(STAGE, os.path.join(work, "coverage.json"), "json")
+    pj.metric(STAGE, "subject_mm", cov["subject_mm"])
+    pj.metric(STAGE, "azimuth_range_deg", cov["azimuth_range_deg"])
+    pj.metric(STAGE, "elevation_range_deg", cov["elevation_range_deg"])
+    pj.metric(STAGE, "distance_range_mm", cov["distance_range_mm"])
     pj.finish(STAGE, ok=True)
 
 

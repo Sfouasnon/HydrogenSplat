@@ -25,6 +25,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from spline_path import catmull_rom  # noqa: E402
+import rig  # noqa: E402
 
 
 def main():
@@ -47,7 +48,7 @@ def main():
     C = G["C"].astype(np.float64)
     R = G["R"].astype(np.float64)
     Kw = G["K"].astype(np.float64)
-    L = np.arange(0, len(names), 2)
+    L = rig.left_indices(G, names)
     nC = len(L)
 
     keys = [int(k) for k in a.keys.split(",")]
@@ -56,6 +57,9 @@ def main():
         sys.exit(f"keys out of range 0..{nC-1}: {bad}")
     if len(keys) < 2:
         sys.exit("need at least 2 keys")
+
+    if a.eye != "L" and not rig.is_stereo(G):
+        sys.exit("--eye R/mid needs a stereo rig; this rig.npz is mono (one view per camera)")
 
     def centre(k):
         if a.eye == "L":

@@ -50,8 +50,10 @@ hs/
 
 ```
 hs ingest  -p P --clip VID_..._2x1.h4v [--link]                       copy, MD5, ffprobe, validate 2x1 video, match the calibration profile
+hs ingest  -p P --frames DIR | --r3d RDM_DIR --take 067 [--res 1]     array source: one frame per camera (REDline renders the R3Ds); select is marked done
 hs select  -p P [--residual 1.5 --max-gap 90 --end N --dry-run]      frames + selection.json + contact.jpg
 hs solve   -p P                                                       prep → sfm --float-rig → export; per_image.json, coverage.json
+hs solve   -p P --scale-pair GA,GB,700 [--focal-px F]                 array project: monocolmap.py, one shared camera, metric scale from a measured spacing
 hs exposure -p P [--mode rgb|luma] [--restore] [--dry-run]            match exposure + white balance across the training views
 hs masks   -p P [--radius 0.10] [--margin-mm 5] [--min-opacity 0.2]   per-view subject silhouettes for Brush's mask channel
 hs train   -p P [--brush PATH]                                        brush → train/exports/export_NNNNN.ply   (Mac only)
@@ -74,6 +76,44 @@ metrics, checks and artifacts in `manifest.json`. `-v` also streams the child's 
 `{"ev":"log"}` events. Opening a project reconciles it first: a stage the manifest still calls
 `running` whose recorded pid is gone becomes `failed — interrupted`, so a ^C'd or crashed run
 reports that instead of blocking the next stage with "solve is running".
+
+## Array source: R3D camera arrays (2026-09-17)
+
+The pipeline also takes a **camera array** — one photograph per camera, every camera the same
+body and lens (the 2026-04-03 KOMODO-X 4×3 rig: 12 cameras, three synchronised takes of a
+gray sphere + tag board / gray card + focus chart / Macbeth). Nothing else about the project
+changes: `train`, `archive`, `views`, `move` and `render` read the same `train/dataset` and
+`rig.npz`.
+
+```
+hs ingest -p Projects/2026-04-03_array067 --r3d ~/Desktop/Camera\ Footage/RED_Footage --take 067
+hs ingest -p P --frames DIR            # or: a folder of PNG/JPEG/TIFF frames already named by camera
+hs solve  -p P --scale-pair GA,GB,700  # the measured distance in mm between two camera centres
+```
+
+- **ingest** finds every `*_?067_*.RDC/*_001.R3D` under the RDM tree, names each by its camera
+  position (`G007_A067` → `GA`) and renders the first frame through REDline (`--format 1
+  --gammaCurve 1 --colorSpace 1`, i.e. a 16-bit BT.709 TIFF, converted to 8-bit PNG). REDline is
+  found on `PATH`, then `~/bin/REDline`, then `/usr/local/bin/REDline`, or given with
+  `--redline` / `HS_REDLINE`. Frames land in `source/frames/`; `source.kind` is `array` in the
+  manifest; `select` is marked done with symlinks (there is nothing to select from one frame per
+  camera, and `hs select` refuses an array project).
+- **solve** runs `monocolmap.py` instead of `rigcolmap.py`: SIFT → exhaustive matching → incremental
+  mapping with ONE shared `OPENCV` camera, focal and distortion refined, **principal point held at
+  the centre** (freeing it collapsed the 12-view solve to two images: a mostly planar set gives it
+  nothing to pull against). Then the metric scale: photogrammetry from uncalibrated cameras has no
+  unit, so `--scale-pair CAM1,CAM2,MM` (a measured camera spacing) or `--scale S` sets it; without
+  one the `scene_scaled` check fails (`needs_human`) and the dataset is exported unscaled.
+- **rig.npz** gets the mono layout (`hs/rig.py`): one view per camera named `<cam>_L`, `stereo =
+  False`, images in `train/dataset/images/L/<cam>.jpg`. Every consumer of the old `[::2]` idiom
+  (coverage, spline_path, key_path, movescript, views) goes through `rig.left_indices()`, so a
+  stereo file without the key still reads as pairs. `hs views --eye R` and `key_path --eye R|mid`
+  refuse a mono rig. `--exclude` takes camera ids (`GA,HB`) as well as `L/cap064`.
+- On the 2026-04-03 take 067 (12 × 3840×2160): 12/12 registered, 5,375 points, mean reprojection
+  0.51 px, fx ≈ 5,700 px (37° horizontal FOV), 4×3 grid at ≈ 700 mm spacing once scaled.
+- **Known limit**: coverage's `up_world` is the mean camera −y axis. The array cameras are mounted
+  portrait, so that axis is horizontal and the azimuth/elevation table (and any `hs move` preset
+  built on it) is rotated 90°. Fine for train/archive/views; fix before relying on move presets.
 
 ## Golden test
 

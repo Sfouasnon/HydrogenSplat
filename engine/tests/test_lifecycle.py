@@ -43,10 +43,10 @@ def write_ply(path, n=10, seed=0):
         f.write(hdr.encode() + rng.normal(size=(n, len(props))).astype("<f4").tobytes())
 
 
-def write_jpg(path, level):
+def write_jpg(path, level, size=(32, 24)):
     import cv2
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    img = np.full((24, 32, 3), level, np.uint8)
+    img = np.full((size[1], size[0], 3), level, np.uint8)
     cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
 
@@ -724,3 +724,156 @@ class BrushConfig(TrainResume):
             self.assertEqual(pj.stage("train")["metrics"]["brush_config"]["min_scale_factor"], 0.0)
         finally:
             train.brush_info = real
+
+
+# ------------------------------------------------------------------ array source (R3D / frames)
+class ArrayIngest(Base):
+    """hs ingest --frames / --r3d: one frame per camera, select marked done, mono rig layout."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["HS_PYTHON"] = sys.executable
+        self.redline = os.path.join(FAKEBIN, "REDline")
+
+    def events(self):
+        return [json.loads(l) for l in self.out.getvalue().splitlines() if l.startswith("{")]
+
+    def args(self, **kw):
+        base = dict(clip=None, phone=None, remote=None, adb="adb", link=False, profile=None, ffprobe="ffprobe",
+                    frames=None, r3d=None, take=None, redline=self.redline, res=1)
+        base.update(kw)
+        return Namespace(**base)
+
+    def frames_dir(self, cams=("GA", "GB", "HA", "HB"), size=(64, 36)):
+        d = os.path.join(self.tmp, "frames")
+        os.makedirs(d)
+        for i, c in enumerate(cams):
+            write_jpg(os.path.join(d, c + ".jpg"), 40 + 30 * i, size)
+        return d
+
+    def rdm_tree(self, take="067", cams=("GA", "GB", "HA")):
+        root = os.path.join(self.tmp, "RED_Footage")
+        for cam in cams:
+            for tk in (take, "068"):
+                clip = f"{cam[0]}007_{cam[1]}{tk}_0403XX"
+                d = os.path.join(root, cam, f"{cam[0]}007_ZZZZZZ.RDM", clip + ".RDC")
+                os.makedirs(d)
+                with open(os.path.join(d, clip + "_001.R3D"), "wb") as f:
+                    f.write(bytes([ord(cam[1]) if tk == take else 1]) + b"\0" * 64)
+        return root
+
+    def test_frames_route_marks_select_done_and_records_cameras(self):
+        pj = Project(self.root, create=True)
+        ingest.run(self.args(frames=self.frames_dir()), pj)
+        self.assertEqual(pj.m["source"]["kind"], "array")
+        self.assertEqual([c["camera"] for c in pj.m["source"]["cameras"]], ["GA", "GB", "HA", "HB"])
+        self.assertEqual(pj.status("ingest"), "done")
+        self.assertEqual(pj.status("select"), "done")
+        self.assertEqual(sorted(os.listdir(pj.frames_dir)), ["GA.jpg", "GB.jpg", "HA.jpg", "HB.jpg"])
+        self.assertTrue(os.path.islink(os.path.join(pj.frames_dir, "GA.jpg")))
+        chk = {c["name"]: c for c in pj.stage("ingest")["checks"]}
+        self.assertTrue(chk["one_frame_size"]["ok"])
+        self.assertIsNone(pj.m["profile_id"])
+        self.assertIsNone(pj.lock_holder())
+
+    def test_mixed_sizes_and_too_few_cameras_are_refused(self):
+        d = self.frames_dir(cams=("GA", "GB", "HA"))
+        write_jpg(os.path.join(d, "HB.jpg"), 90, (32, 18))
+        pj = Project(self.root, create=True)
+        with self.assertRaises(events.StageError):
+            ingest.run(self.args(frames=d), pj)
+        chk = {c["name"]: c for c in pj.stage("ingest")["checks"]}
+        self.assertFalse(chk["one_frame_size"]["ok"])
+        self.assertIn("HB", chk["one_frame_size"]["value"])
+        pj.release()
+        shutil.rmtree(d)
+        d = self.frames_dir(cams=("GA", "GB"))
+        with self.assertRaises(events.StageError):
+            ingest.run(self.args(frames=d), pj)
+        self.assertNotEqual(pj.status("ingest"), "done")      # cli.py turns the raise into "failed"
+        self.assertEqual(pj.status("select"), "pending")
+
+    def test_r3d_route_transcodes_the_take_through_redline(self):
+        root = self.rdm_tree()
+        pj = Project(self.root, create=True)
+        ingest.run(self.args(r3d=root, take="67"), pj)
+        cams = pj.m["source"]["cameras"]
+        self.assertEqual([c["camera"] for c in cams], ["GA", "GB", "HA"])
+        self.assertTrue(all(c["file"].endswith(".png") for c in cams))
+        self.assertTrue(all("_A067_" in c["origin"] or "_B067_" in c["origin"] for c in cams))
+        self.assertEqual((cams[0]["width"], cams[0]["height"]), (64, 36))
+        import cv2
+        im = cv2.imread(pj.path("source", "frames", "GB.png"))
+        self.assertEqual(im.dtype, np.uint8)
+        self.assertEqual(int(im[0, -1, 1]), ord("B"))       # 16-bit grey level survived the 8-bit conversion
+        self.assertEqual(pj.m["tools"]["redline"]["path"], self.redline)
+        prog = [e for e in self.events() if e["ev"] == "progress" and e.get("step") == "transcode"]
+        self.assertEqual((prog[-1]["done"], prog[-1]["total"]), (3, 3))
+        self.assertEqual(pj.m["source"]["take"], "67")
+
+    def test_r3d_needs_a_take_and_a_clip_for_it(self):
+        root = self.rdm_tree()
+        pj = Project(self.root, create=True)
+        with self.assertRaises(events.StageError):
+            ingest.run(self.args(r3d=root), pj)
+        pj.release()
+        with self.assertRaises(events.StageError):
+            ingest.run(self.args(r3d=root, take="099"), pj)
+
+    def test_select_is_refused_on_an_array_project(self):
+        from hs.stages import select
+        pj = Project(self.root, create=True)
+        ingest.run(self.args(frames=self.frames_dir()), pj)
+        with self.assertRaises(events.StageError):
+            select.run(Namespace(), pj)
+
+    def test_exclude_accepts_camera_ids(self):
+        self.assertEqual(train.parse_exclude("GA, HB_L, L/cap004, cap005_R"), {"L/GA", "L/HB", "L/cap004", "R/cap005"})
+
+
+class MonoRig(Base):
+    """rig.npz with stereo=False: every consumer takes one view per capture."""
+
+    def mono_rig(self, path, n=4):
+        rng = np.random.default_rng(3)
+        R = np.tile(np.eye(3), (n, 1, 1))
+        C = np.stack([np.array([700.0 * i, 0.0, 0.0]) for i in range(n)])
+        t = np.einsum("nij,nj->ni", R, -C)
+        K = np.tile(np.array([[5000.0, 0, 1920.0], [0, 5000.0, 1080.0], [0, 0, 1]]), (n, 1, 1))
+        pts = rng.normal(size=(200, 3)) * 100 + np.array([1000.0, 0, 3000.0])
+        np.savez(path, names=np.array([f"{c}_L" for c in ("GA", "GB", "HA", "HB")[:n]]), K=K, R=R, t=t, C=C,
+                 pts=pts, wh=np.tile([3840, 2160], (n, 1)), w=3840, h=2160, s_mm=1.0,
+                 photos=np.array(["GA", "GB", "HA", "HB"][:n]), stereo=False)
+
+    def test_helpers_and_coverage(self):
+        from hs import coverage, rig
+        p = os.path.join(self.tmp, "rig.npz")
+        self.mono_rig(p)
+        G, names, L = rig.load(p)
+        self.assertFalse(rig.is_stereo(G))
+        self.assertEqual(L.tolist(), [0, 1, 2, 3])
+        self.assertIsNone(rig.right_index(G, 0))
+        self.assertEqual(rig.capture_name("GA_L"), "GA")
+        self.assertEqual(rig.capture_name("cap004_R"), "cap004")
+        cov = coverage.compute(p)
+        self.assertEqual(cov["n_captures"], 4)
+        self.assertFalse(cov["stereo"])
+        self.assertEqual([c["name"] for c in cov["captures"]], ["GA", "GB", "HA", "HB"])
+        self.assertTrue(all(c["lr_separation_mm"] is None for c in cov["captures"]))
+        # the stereo default is untouched: a file without the key is still pairs
+        write_rig(os.path.join(self.tmp, "old.npz"), seed=1)
+        G2 = np.load(os.path.join(self.tmp, "old.npz"), allow_pickle=True)
+        self.assertTrue(rig.is_stereo(G2))
+        self.assertEqual(rig.right_index(G2, 0), 1)
+
+    def test_views_path_is_one_frame_per_camera_and_refuses_the_right_eye(self):
+        from hs.stages import views
+        pj = self.solved_project()
+        self.mono_rig(pj.rig_npz)
+        out = os.path.join(self.tmp, "path.json")
+        v, subj, fx = views.build_path(pj, [0, 3], out, "L")
+        self.assertEqual([x["view"] for x in v], ["GA_L", "HB_L"])
+        self.assertEqual([x["image"] for x in v], ["GA.jpg", "HB.jpg"])
+        self.assertEqual(len(json.load(open(out))["frames"]), 2)
+        with self.assertRaises(events.StageError):
+            views.build_path(pj, [0], out, "R")

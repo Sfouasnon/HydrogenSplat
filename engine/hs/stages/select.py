@@ -33,6 +33,9 @@ def add_parser(sub):
 
 def run(a, pj):
     pj.require(STAGE)
+    if pj.m.get("source", {}).get("kind") == "array":
+        raise events.StageError("an array project has one frame per camera; ingest already marked select done",
+                                hint="hs solve --project ...")
     clip = pj.clip
     if not clip or not os.path.exists(clip):
         raise events.StageError("no source clip in the project", hint="hs ingest --clip ...")

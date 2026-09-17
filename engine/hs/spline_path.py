@@ -22,6 +22,9 @@ Usage:
 import argparse, json, math, os, sys
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rig  # noqa: E402
+
 
 def read_ply_xyz(path):
     with open(path, "rb") as f:
@@ -79,7 +82,7 @@ def main():
     C = G["C"].astype(np.float64)
     R = G["R"].astype(np.float64)
     Kw = G["K"].astype(np.float64)
-    L = np.arange(0, len(names), 2)
+    L = rig.left_indices(G, names)
     CL = C[L]
     nC = len(CL)
     if nC < 4:

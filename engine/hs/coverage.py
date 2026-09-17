@@ -24,16 +24,16 @@ import os
 
 import numpy as np
 
+from . import rig
+
 
 def load_rig(rig_npz):
-    G = np.load(rig_npz, allow_pickle=True)
-    names = [str(x) for x in G["names"]]
-    L = np.arange(0, len(names), 2)
-    return G, names, L
+    return rig.load(rig_npz)
 
 
 def compute(rig_npz):
     G, names, L = load_rig(rig_npz)
+    stereo = rig.is_stereo(G)
     C = G["C"].astype(np.float64)
     R = G["R"].astype(np.float64)
     pts = G["pts"].astype(np.float64)
@@ -57,16 +57,18 @@ def compute(rig_npz):
 
     caps = []
     for i, v in enumerate(L):
-        caps.append({"capture": i, "name": names[v][:-2] if names[v].endswith("_L") else names[v],
+        caps.append({"capture": i, "name": rig.capture_name(names[v]),
                      "azimuth_deg": round(float(az[i]), 2), "elevation_deg": round(float(elev[i]), 2),
                      "distance_mm": round(float(dist[i]), 1),
-                     "lr_separation_mm": round(float(np.linalg.norm(C[v] - C[v + 1])), 4)})
+                     # a mono rig has no pair to separate; None keeps the column, not a fake zero
+                     "lr_separation_mm": round(float(np.linalg.norm(C[v] - C[v + 1])), 4) if stereo else None})
     table = {
         "note": __doc__.split("\n\n")[1].strip(),
         "subject_mm": [round(float(x), 3) for x in subject],
         "up_world": [round(float(x), 6) for x in up],
         "azimuth_ref_world": [round(float(x), 6) for x in ref],
         "n_captures": len(caps),
+        "stereo": stereo,
         "azimuth_range_deg": [round(float(az.min()), 2), round(float(az.max()), 2)],
         "elevation_range_deg": [round(float(elev.min()), 2), round(float(elev.max()), 2)],
         "distance_range_mm": [round(float(dist.min()), 1), round(float(dist.max()), 1)],

@@ -199,7 +199,7 @@ def aim_check_image(pj, view_name, u, v, depth_mm, move_name):
         import cv2
     except ImportError:
         return None
-    m = re.match(r"(cap\d+)_([LR])$", view_name)
+    m = re.match(r"([A-Za-z0-9-]+)_([LR])$", view_name)
     if not m:
         return None
     cap, eye = m.groups()

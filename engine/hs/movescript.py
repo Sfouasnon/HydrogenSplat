@@ -32,6 +32,8 @@ import re
 
 import numpy as np
 
+from . import rig
+
 DEG_PER_10 = 30.0          # 10/10 orbit rate, deg/s
 MM_PER_10 = 150.0          # 10/10 dolly rate, mm/s
 HULL_MM = 25.0
@@ -236,7 +238,7 @@ def build(rig_npz, text, out_path, fps=30.0, aim_point=None):
     """Compile a script into the move JSON the path renderer reads. -> report dict."""
     G = np.load(rig_npz, allow_pickle=True)
     names = [str(x) for x in G["names"]]
-    L = np.arange(0, len(names), 2)
+    L = rig.left_indices(G, names)
     C = G["C"].astype(np.float64)
     R = G["R"].astype(np.float64)
     t = G["t"].astype(np.float64)
