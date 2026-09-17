@@ -82,6 +82,9 @@ public struct Manifest: Sendable {
     public let name: String
     public let created: Date?
     public let profileID: String?
+    /// "array" for a camera array (one frame per camera); nil/"clip" for a Hydrogen clip
+    public let sourceKind: String?
+    public let cameras: [String]
     public let clipPath: String?
     public let clipMD5: String?
     public let originalPath: String?
@@ -94,6 +97,8 @@ public struct Manifest: Sendable {
         name = v["name"]?.string ?? "?"
         created = Manifest.date(v["created"]?.string)
         profileID = v["profile_id"]?.string
+        sourceKind = v["source"]?["kind"]?.string
+        cameras = (v["source"]?["cameras"]?.array ?? []).compactMap { $0["camera"]?.string }
         clipPath = v["source"]?["clip"]?.string
         clipMD5 = v["source"]?["md5"]?.string
         originalPath = v["source"]?["original_path"]?.string
@@ -107,6 +112,7 @@ public struct Manifest: Sendable {
     public func stage(_ name: String) -> StageState? { stages.first { $0.name == name } }
 
     public var clipName: String? { clipPath.map { ($0 as NSString).lastPathComponent } }
+    public var isArray: Bool { sourceKind == "array" }
 
     /// The furthest stage that is done, for the project list.
     public var lastDone: String? {

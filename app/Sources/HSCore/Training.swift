@@ -6,6 +6,44 @@ import IOKit.ps
 
 /// What the Train panel exposes, and the `hs` commands it turns into.
 /// Defaults are the rig6 schedule `hs train` has always used.
+/// The captures a project holds, in rig order: `cap000…` pairs from a Hydrogen clip, or one
+/// name per camera (`GA`, `GB`, …) from an array. Read from solve/coverage.json, which the
+/// solve writes in the same frame and order the path builders and `hs views` use.
+public struct CaptureSet: Equatable, Sendable {
+    public var names: [String]
+    public var stereo: Bool
+
+    public init(names: [String], stereo: Bool) {
+        self.names = names
+        self.stereo = stereo
+    }
+
+    /// A stereo set of `count` captures named the way `hs solve` names them.
+    public init(count: Int) {
+        self.names = (0..<max(count, 0)).map { String(format: "cap%03d", $0) }
+        self.stereo = true
+    }
+
+    public var count: Int { names.count }
+    /// Views Brush trains on: two per capture on a stereo rig, one per camera on an array.
+    public var views: Int { stereo ? count * 2 : count }
+    public var noun: String { stereo ? "capture" : "camera" }
+
+    public static func read(project: String) -> CaptureSet {
+        let p = (project as NSString).appendingPathComponent("solve/coverage.json")
+        guard let d = FileManager.default.contents(atPath: p), let j = JSONValue.parse(d) else {
+            return CaptureSet(names: [], stereo: true)
+        }
+        // "stereo" is absent from every coverage.json written before arrays existed: those are pairs
+        let stereo = j["stereo"]?.bool ?? true
+        let names = (j["captures"]?.array ?? []).compactMap { $0["name"]?.string }
+        if names.isEmpty {
+            return CaptureSet(count: j["n_captures"]?.int ?? 0)
+        }
+        return CaptureSet(names: names, stereo: stereo)
+    }
+}
+
 public struct TrainSettings: Equatable, Sendable {
     public var totalIters = 40_000
     public var growthStopIter = 30_000
@@ -35,8 +73,9 @@ public struct TrainSettings: Equatable, Sendable {
         return Array(stride(from: holdoutStart, to: total, by: holdoutEvery))
     }
 
-    public func excludedViews(total: Int) -> [String] {
-        var v = holdoutCaptures(total: total).flatMap { c in ["L", "R"].map { "\($0)/cap" + String(format: "%03d", c) } }
+    public func excludedViews(in set: CaptureSet) -> [String] {
+        let eyes = set.stereo ? ["L", "R"] : ["L"]      // an array's single view per camera lives in images/L
+        var v = holdoutCaptures(total: set.count).flatMap { c in eyes.map { "\($0)/" + set.names[c] } }
         for x in excludeExtra.split(whereSeparator: { $0 == "," || $0 == " " }) where !x.isEmpty {
             let s = String(x)
             if !v.contains(s) { v.append(s) }
@@ -53,13 +92,21 @@ public struct TrainSettings: Equatable, Sendable {
     }
 
     public func trainArguments(project: String, captures: Int) -> [String] {
+        trainArguments(project: project, in: CaptureSet(count: captures))
+    }
+
+    public func steps(project: String, captures: Int) -> [RunQueue.Step] {
+        steps(project: project, in: CaptureSet(count: captures))
+    }
+
+    public func trainArguments(project: String, in set: CaptureSet) -> [String] {
         var a = ["train", "-p", project,
                  "--total-train-iters", String(totalIters),
                  "--growth-stop-iter", String(growthStopIter),
                  "--refine-every", String(refineEvery),
                  "--min-scale-factor=\(TrainSettings.num(minScaleFactor))"]
         if let s = splitAtScreenSize { a.append("--split-at-screen-size=\(TrainSettings.num(s))") }
-        let ex = excludedViews(total: captures)
+        let ex = excludedViews(in: set)
         if !ex.isEmpty { a.append("--exclude=\(ex.joined(separator: ","))") }
         if !useMasks { a.append("--no-masks") }
         let b = brushArgs
@@ -77,21 +124,21 @@ public struct TrainSettings: Equatable, Sendable {
     }
 
     /// train → archive (if named) → views (if asked). Each step only runs if the one before succeeded.
-    public func steps(project: String, captures: Int) -> [RunQueue.Step] {
-        var s = [RunQueue.Step(title: "Train", arguments: trainArguments(project: project, captures: captures))]
+    public func steps(project: String, in set: CaptureSet) -> [RunQueue.Step] {
+        var s = [RunQueue.Step(title: "Train", arguments: trainArguments(project: project, in: set))]
         let name = archiveName.trimmingCharacters(in: .whitespaces)
         if !name.isEmpty {
             s.append(.init(title: "Archive \(name)", arguments: ["archive", "-p", project, "--name", name]))
         }
         if scoreViews {
-            let held = holdoutCaptures(total: captures)
+            let held = holdoutCaptures(total: set.count)
             // never the bare "views" name: that is the in-sample report hs views writes by default
             let label = name.isEmpty ? (held.isEmpty ? "views_latest" : "holdout_latest") : "views_\(name)"
             var base = ["views", "-p", project]
             if !held.isEmpty { base += ["--captures", held.map(String.init).joined(separator: ",")] }
             if let mm = subjectMM { base += ["--subject-mm", TrainSettings.num(mm)] }
             s.append(.init(title: "Score views (L)", arguments: base + ["--name", label]))
-            if scoreBothEyes {
+            if scoreBothEyes && set.stereo {       // an array has no second eye to subtract
                 s.append(.init(title: "Score views (R)", arguments: base + ["--eye", "R", "--name", label + "_R"]))
             }
         }

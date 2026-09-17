@@ -30,11 +30,8 @@ struct TrainView: View {
         return s
     }
 
-    private var captures: Int {
-        let p = (project.path as NSString).appendingPathComponent("solve/coverage.json")
-        guard let d = FileManager.default.contents(atPath: p) else { return 0 }
-        return JSONValue.parse(d)?["n_captures"]?.int ?? 0
-    }
+    private var captureSet: CaptureSet { CaptureSet.read(project: project.path) }
+    private var captures: Int { captureSet.count }
 
     private var hasMasks: Bool {
         FileManager.default.fileExists(atPath: (project.path as NSString).appendingPathComponent("train/dataset/masks"))
@@ -42,8 +39,15 @@ struct TrainView: View {
 
     private var solveDone: Bool { manifest.stage("solve")?.status == .done }
     private var queue: RunQueue? { model.trainQueues[project.path] }
+    /// The lock as either source sees it: this view polls it every 3 s, and the store carries the
+    /// value the sidebar shows. Taking whichever is alive means a Terminal run is never missed
+    /// because one of the two had not refreshed yet — missing it offers a Start button that the
+    /// engine would only refuse.
+    private var activeLock: ProjectSummary.LockInfo? {
+        [lock, project.lock].compactMap { $0 }.first { $0.alive } ?? lock ?? project.lock
+    }
     private var externalTrain: Bool {
-        guard let l = lock, l.alive else { return false }
+        guard let l = activeLock, l.alive else { return false }
         return !(queue?.isRunning ?? false)
     }
 
@@ -52,7 +56,7 @@ struct TrainView: View {
             VStack(alignment: .leading, spacing: 14) {
                 if !solveDone {
                     Text("Solve this project first — training needs the solved dataset.").foregroundStyle(.secondary)
-                } else if externalTrain, let l = lock {
+                } else if externalTrain, let l = activeLock {
                     ExternalTrainView(project: project, manifest: manifest, lock: l)
                 } else {
                     currentModel
@@ -135,16 +139,16 @@ struct TrainView: View {
                 }
                 .labelsHidden().frame(width: 200)
             }
-            Handle(title: "Hold out", help: "Leaves every Nth capture (both eyes) out of training, so the view score measures the model on photographs it never saw. Use the same setting for every run you want to compare.") {
+            Handle(title: "Hold out", help: "Leaves every Nth \(captureSet.noun)\(captureSet.stereo ? " (both eyes)" : "") out of training, so the view score measures the model on photographs it never saw. Use the same setting for every run you want to compare.") {
                 Picker("", selection: settings.holdoutEvery) {
                     Text("Nothing").tag(0)
-                    Text("Every 10th capture").tag(10)
-                    Text("Every 5th capture").tag(5)
+                    Text("Every 10th \(captureSet.noun)").tag(10)
+                    Text("Every 5th \(captureSet.noun)").tag(5)
                 }
                 .labelsHidden().frame(width: 200)
                 let held = settings.wrappedValue.holdoutCaptures(total: captures)
                 if !held.isEmpty {
-                    Text("\(held.count) of \(captures) captures · \(captures * 2 - held.count * 2) views train")
+                    Text("\(held.count) of \(captures) \(captureSet.noun)s · \(captureSet.views - held.count * (captureSet.stereo ? 2 : 1)) views train")
                         .foregroundStyle(.secondary).monospacedDigit()
                 }
             }
@@ -197,7 +201,10 @@ struct TrainView: View {
             }
             Handle(title: "Then score", help: "Renders the model from the held-out (or chosen) capture poses and compares with the photographs. The crop size must match between runs you compare: 350 mm head, 2000 mm body.") {
                 Toggle("Score views", isOn: settings.scoreViews)
-                Toggle("both eyes", isOn: settings.scoreBothEyes).disabled(!settings.wrappedValue.scoreViews)
+                Toggle("both eyes", isOn: settings.scoreBothEyes)
+                    .disabled(!settings.wrappedValue.scoreViews || !captureSet.stereo)
+                    .help(captureSet.stereo ? "Render and grade the right eye too: only eL - eR is a disparity."
+                                            : "This project has one view per camera — there is no second eye.")
                 OptionalNumber(value: settings.subjectMM, placeholder: "crop mm (auto)", choices: [350, 2000])
                     .disabled(!settings.wrappedValue.scoreViews)
             }
@@ -205,7 +212,7 @@ struct TrainView: View {
     }
 
     private var steps: [RunQueue.Step] {
-        settings.wrappedValue.steps(project: project.path, captures: captures)
+        settings.wrappedValue.steps(project: project.path, in: captureSet)
     }
 
     private var commandPreview: some View {
@@ -235,7 +242,8 @@ struct TrainView: View {
                 }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(running || nameBlocked || captures == 0 || !model.config.problems.isEmpty)
+            .disabled(running || nameBlocked || captures == 0 || !model.config.problems.isEmpty
+                      || activeLock?.alive == true)
             if onBattery {
                 Label("On battery — macOS will sleep and stall training. Plug in.", systemImage: "battery.25")
                     .foregroundStyle(.orange)

@@ -264,3 +264,54 @@ final class TrainingTests: XCTestCase {
         XCTAssertNil(RunSession.leadingNumber(nil))
     }
 }
+
+final class ArrayProjectTests: XCTestCase {
+    private func coverage(_ body: String) -> String {
+        let d = NSTemporaryDirectory() + "hs-arr-" + UUID().uuidString
+        try! FileManager.default.createDirectory(atPath: d + "/solve", withIntermediateDirectories: true)
+        try! body.write(toFile: d + "/solve/coverage.json", atomically: true, encoding: .utf8)
+        return d
+    }
+
+    func testCaptureSetReadsCamerasAndStereoFlag() {
+        let arr = coverage(#"{"n_captures": 3, "stereo": false, "captures": [{"name":"GA"},{"name":"GB"},{"name":"HA"}]}"#)
+        let s = CaptureSet.read(project: arr)
+        XCTAssertFalse(s.stereo)
+        XCTAssertEqual(s.names, ["GA", "GB", "HA"])
+        XCTAssertEqual(s.views, 3)
+        XCTAssertEqual(s.noun, "camera")
+        // a coverage.json written before arrays existed has no "stereo" key: still pairs
+        let old = coverage(#"{"n_captures": 2, "captures": [{"name":"cap000"},{"name":"cap001"}]}"#)
+        let o = CaptureSet.read(project: old)
+        XCTAssertTrue(o.stereo)
+        XCTAssertEqual(o.views, 4)
+        XCTAssertEqual(o.noun, "capture")
+        XCTAssertEqual(CaptureSet.read(project: "/nope").count, 0)
+    }
+
+    func testArrayHoldoutExcludesCamerasAndSkipsTheRightEye() {
+        var s = TrainSettings()
+        s.scoreBothEyes = true
+        s.holdoutEvery = 2
+        s.holdoutStart = 1
+        let set = CaptureSet(names: ["GA", "GB", "GC", "GD"], stereo: false)
+        XCTAssertEqual(s.excludedViews(in: set), ["L/GB", "L/GD"])
+        let steps = s.steps(project: "/p", in: set)
+        XCTAssertTrue(steps[0].arguments.contains("--exclude=L/GB,L/GD"))
+        XCTAssertEqual(steps.map(\.title), ["Train", "Score views (L)"])   // no R pass on an array
+        // the same settings on a stereo set still hold out both eyes
+        let stereo = CaptureSet(count: 4)
+        XCTAssertEqual(s.excludedViews(in: stereo), ["L/cap001", "R/cap001", "L/cap003", "R/cap003"])
+        XCTAssertEqual(s.steps(project: "/p", in: stereo).map(\.title), ["Train", "Score views (L)", "Score views (R)"])
+    }
+
+    func testManifestReadsAnArraySource() {
+        let m = Manifest(data: #"""
+        {"name":"a","stages":{},"source":{"kind":"array","md5":"abc","original_path":"/x/RED",
+         "cameras":[{"camera":"GA"},{"camera":"GB"}],"probe":{"width":3840,"height":2160,"nb_frames":2}}}
+        """#.data(using: .utf8)!)
+        XCTAssertTrue(m!.isArray)
+        XCTAssertEqual(m!.cameras, ["GA", "GB"])
+        XCTAssertNil(m!.clipName)
+    }
+}
