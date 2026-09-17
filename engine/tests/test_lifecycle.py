@@ -811,6 +811,27 @@ class ArrayIngest(Base):
         self.assertEqual((prog[-1]["done"], prog[-1]["total"]), (3, 3))
         self.assertEqual(pj.m["source"]["take"], "67")
 
+    def test_broken_redline_on_path_is_skipped_for_a_working_one(self):
+        # a REDline that aborts before printing anything (the Rosetta failure) must not win on PATH order
+        bad = os.path.join(self.tmp, "bad", "REDline")
+        os.makedirs(os.path.dirname(bad))
+        open(bad, "w").write("#!/bin/sh\nexit 134\n")
+        os.chmod(bad, 0o755)
+        old_path, old_home = os.environ["PATH"], os.environ.get("HOME")
+        home = os.path.join(self.tmp, "home")
+        os.makedirs(os.path.join(home, "bin"))
+        good = os.path.join(home, "bin", "REDline")
+        open(good, "w").write(f'#!/bin/sh\nexec "{self.redline}" "$@"\n')     # the fake resolves helpers next to itself
+        os.chmod(good, 0o755)
+        os.environ["PATH"] = os.path.dirname(bad) + os.pathsep + old_path
+        os.environ["HOME"] = home
+        try:
+            self.assertEqual(ingest.redline_exe("REDline"), os.path.join(home, "bin", "REDline"))
+            with self.assertRaises(events.StageError):
+                ingest.redline_exe(bad)                     # an explicit path that does not run is an error
+        finally:
+            os.environ["PATH"], os.environ["HOME"] = old_path, old_home
+
     def test_r3d_needs_a_take_and_a_clip_for_it(self):
         root = self.rdm_tree()
         pj = Project(self.root, create=True)

@@ -57,15 +57,40 @@ def add_parser(sub):
     return p
 
 
+def redline_runs(exe):
+    """True when this REDline starts and answers --help. A REDline whose Rosetta translation
+    is broken exists, is executable and aborts before printing anything, so existence is not
+    enough; this is what tells ~/bin/REDline (the re-signed copy) from /usr/local/bin/REDline."""
+    try:
+        r = subprocess.run([exe, "--help"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "--format" in (r.stdout + r.stderr)
+
+
 def redline_exe(name):
-    exe = shutil.which(os.path.expanduser(name))
-    if exe:
-        return exe
-    for c in (os.path.expanduser("~/bin/REDline"), "/usr/local/bin/REDline"):
-        if os.path.exists(c):
+    """An explicit path (--redline / HS_REDLINE with a slash) must work; a bare name is looked
+    for on PATH, then ~/bin, then /usr/local/bin, then inside REDCINE-X PRO — first one that runs."""
+    name = os.path.expanduser(name)
+    if os.sep in name:
+        if not os.path.exists(name):
+            raise events.StageError(f"REDline not found: {name}")
+        if not redline_runs(name):
+            raise events.StageError(f"REDline at {name} does not run", hint="try it by hand: REDline --help")
+        return name
+    tried = []
+    for c in ([shutil.which(name)] if shutil.which(name) else []) + [
+            os.path.expanduser("~/bin/REDline"), "/usr/local/bin/REDline",
+            "/Applications/REDCINE-X Professional/REDCINE-X PRO.app/Contents/MacOS/REDline"]:
+        if c in tried or not os.path.exists(c):
+            continue
+        tried.append(c)
+        if redline_runs(c):
             return c
-    raise events.StageError(f"REDline not found ({name})",
-                            hint="install REDCINE-X PRO, or point HS_REDLINE / --redline at the executable")
+    raise events.StageError("no working REDline" + (f" (tried {', '.join(tried)})" if tried else " found"),
+                            hint="install REDCINE-X PRO, or point HS_REDLINE / --redline at an executable that "
+                                 "answers `REDline --help`; on Apple silicon a Rosetta cache fault aborts the "
+                                 "installed copy — a re-signed copy in ~/bin is picked up automatically")
 
 
 def r3d_clips(root, take):
