@@ -29,9 +29,12 @@ public final class ProjectStore: ObservableObject {
         didSet { if root != oldValue { reload() } }
     }
 
+    private var lastStamp = ""
+
     public init(root: String) {
         self.root = root
         reload()
+        lastStamp = stamp()
     }
 
     public func reload() {
@@ -56,10 +59,42 @@ public final class ProjectStore: ObservableObject {
             }
         }
         projects = out
+        lastStamp = stamp()
     }
 
     public func project(at path: String) -> ProjectSummary? {
         projects.first { $0.path == path }
+    }
+
+    /// Reload only when something on disk actually changed. A stage run from Terminal writes
+    /// manifest.json and removes .hs.lock with nothing to tell the app, so without this the
+    /// sidebar and the stages table keep showing whatever was true at the last reload -- a
+    /// finished run still reading "train running", with no progress bar, because the lock it
+    /// would follow is already gone. Stamping mtime+size of those two files per project is a
+    /// handful of stats; reload() itself re-reads every manifest, so it stays behind the stamp.
+    public func refreshIfChanged() {
+        let now = stamp()
+        if now != lastStamp {
+            lastStamp = now
+            reload()
+        }
+    }
+
+    private func stamp() -> String {
+        let fm = FileManager.default
+        var parts: [String] = []
+        for n in ((try? fm.contentsOfDirectory(atPath: root)) ?? []).sorted()
+        where !n.hasPrefix("_") && !n.hasPrefix(".") {
+            let dir = (root as NSString).appendingPathComponent(n)
+            for f in ["manifest.json", ".hs.lock"] {
+                let p = (dir as NSString).appendingPathComponent(f)
+                let a = try? fm.attributesOfItem(atPath: p)
+                let t = (a?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+                let s = (a?[.size] as? Int) ?? -1
+                parts.append("\(n)/\(f):\(t):\(s)")
+            }
+        }
+        return parts.joined(separator: "|")
     }
 
     public nonisolated static func load(_ dir: String) -> ProjectSummary {

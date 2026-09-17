@@ -4,6 +4,8 @@ import HSCore
 struct RootView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: ProjectStore
+    // a stage run from Terminal changes manifest.json and .hs.lock and tells the app nothing
+    private let poll = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
 
     var body: some View {
         NavigationSplitView {
@@ -35,6 +37,7 @@ struct RootView: View {
                 }
             }
             .navigationSplitViewColumnWidth(min: 230, ideal: 270)
+            .onReceive(poll) { _ in store.refreshIfChanged() }
         } detail: {
             switch model.selection {
             case .setup, .none:

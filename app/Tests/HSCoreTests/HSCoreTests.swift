@@ -315,3 +315,34 @@ final class ArrayProjectTests: XCTestCase {
         XCTAssertNil(m!.clipName)
     }
 }
+
+@MainActor
+final class ProjectStoreWatchTests: XCTestCase {
+    /// A Terminal run writes manifest.json and deletes .hs.lock without telling the app;
+    /// refreshIfChanged() is what turns a finished run from "running" into done.
+    func testRefreshIfChangedPicksUpAManifestWrittenOutsideTheApp() throws {
+        let root = NSTemporaryDirectory() + "hs-store-" + UUID().uuidString
+        let dir = root + "/proj"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        func write(_ status: String) throws {
+            try #"{"name":"proj","stages":{"train":{"status":"\#(status)"}}}"#
+                .write(toFile: dir + "/manifest.json", atomically: true, encoding: .utf8)
+        }
+        try write("running")
+        try "{\"pid\": 999999}".write(toFile: dir + "/.hs.lock", atomically: true, encoding: .utf8)
+
+        let store = ProjectStore(root: root)
+        XCTAssertEqual(store.project(at: dir)?.manifest?.stage("train")?.status, .running)
+        XCTAssertNotNil(store.project(at: dir)?.lock)
+
+        store.refreshIfChanged()        // nothing moved: still the same snapshot
+        XCTAssertEqual(store.project(at: dir)?.manifest?.stage("train")?.status, .running)
+
+        try write("done")               // what `hs train` does at the end, from another process
+        try FileManager.default.removeItem(atPath: dir + "/.hs.lock")
+        store.refreshIfChanged()
+        XCTAssertEqual(store.project(at: dir)?.manifest?.stage("train")?.status, .done)
+        XCTAssertNil(store.project(at: dir)?.lock)
+        try? FileManager.default.removeItem(atPath: root)
+    }
+}
