@@ -268,6 +268,93 @@ def azimuth_table(report, band=AZIMUTH_BAND):
             for lo in sorted(bands)]
 
 
+def coverage_map(pj, cov, report, out_path, eye="L", displaced_px=4.0):
+    """One picture answering "where does this model break, and what does that look like".
+
+    A bearing is not an instruction: "cover azimuth −135…−90" means nothing to someone holding
+    the camera, because that zero is the mean camera direction in the SfM frame. So plot every
+    capture the clip actually has (grey), colour the scored ones by how much of them landed in the
+    wrong place, and put the photographs of the three worst underneath. The gaps in the orbit are
+    then visible as gaps, and the failures are recognisable as pictures of a subject.
+    """
+    import cv2
+    caps = cov.get("captures") or []
+    if not caps:
+        return None
+    W, H = 1600, 520                      # the map; the filmstrip is added under it
+    PAD_L, PAD_R, PAD_T, PAD_B = 70, 24, 54, 64
+    az = np.array([c["azimuth_deg"] for c in caps], float)
+    el = np.array([c["elevation_deg"] for c in caps], float)
+    a_lo, a_hi = float(az.min()) - 5, float(az.max()) + 5
+    e_lo, e_hi = float(el.min()) - 3, float(el.max()) + 3
+    img = np.full((H, W, 3), 22, np.uint8)
+
+    def xy(a_, e_):
+        x = PAD_L + (a_ - a_lo) / max(a_hi - a_lo, 1e-6) * (W - PAD_L - PAD_R)
+        y = H - PAD_B - (e_ - e_lo) / max(e_hi - e_lo, 1e-6) * (H - PAD_T - PAD_B)
+        return int(round(x)), int(round(y))
+
+    for a_ in range(int(np.ceil(a_lo / 30) * 30), int(a_hi) + 1, 30):     # grid, labelled in degrees
+        x, _ = xy(a_, e_lo)
+        cv2.line(img, (x, PAD_T), (x, H - PAD_B), (48, 48, 48), 1)
+        cv2.putText(img, f"{a_:+d}", (x - 14, H - PAD_B + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (150, 150, 150), 1, cv2.LINE_AA)
+    for e_ in range(int(np.ceil(e_lo / 10) * 10), int(e_hi) + 1, 10):
+        _, y = xy(a_lo, e_)
+        cv2.line(img, (PAD_L, y), (W - PAD_R, y), (48, 48, 48), 1)
+        cv2.putText(img, f"{e_:+d}", (8, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (150, 150, 150), 1, cv2.LINE_AA)
+
+    for c in caps:                                                        # every capture in the clip
+        cv2.circle(img, xy(c["azimuth_deg"], c["elevation_deg"]), 3, (90, 90, 90), -1, cv2.LINE_AA)
+
+    by_cap = {c["capture"]: c for c in caps}
+    scored = [r for r in report if r.get("capture") in by_cap]
+    for r in sorted(scored, key=lambda r: r.get("displaced_fraction") or 0):
+        c = by_cap[r["capture"]]
+        f = min((r.get("displaced_fraction") or 0) / 0.4, 1.0)            # green at 0, red at 40%
+        col = (60, int(220 * (1 - f)) + 20, int(230 * f) + 25)
+        pt = xy(c["azimuth_deg"], c["elevation_deg"])
+        cv2.circle(img, pt, 11, col, -1, cv2.LINE_AA)
+        cv2.circle(img, pt, 11, (240, 240, 240), 1, cv2.LINE_AA)
+        cv2.putText(img, f"{100 * (r.get('displaced_fraction') or 0):.0f}", (pt[0] - 10, pt[1] + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, (20, 20, 20), 1, cv2.LINE_AA)
+
+    cv2.putText(img, "where the model breaks", (PAD_L, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(img, "small grey = a capture in the clip.  circle = a scored view, % of patches out of place."
+                     "  empty stretches are angles the camera never covered.",
+                (PAD_L, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (170, 170, 170), 1, cv2.LINE_AA)
+    cv2.putText(img, "azimuth (deg, 0 = the average direction the camera looked from)",
+                (PAD_L, H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (150, 150, 150), 1, cv2.LINE_AA)
+    cv2.putText(img, "elev", (8, PAD_T - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (150, 150, 150), 1, cv2.LINE_AA)
+
+    # the three worst, as photographs: what those angles actually look like
+    worst = sorted(scored, key=lambda r: -(r.get("displaced_fraction") or 0))[:3]
+    tiles, TH = [], 300
+    for r in worst:
+        src = os.path.join(pj.dataset_dir, "images", eye, rig.capture_name(r["view"]) + ".jpg")
+        im = cv2.imread(src) if os.path.exists(src) else None
+        if im is None:
+            continue
+        h, w = im.shape[:2]
+        im = cv2.resize(im, (int(w * TH / h), TH))
+        im = cv2.copyMakeBorder(im, 44, 0, 0, 0, cv2.BORDER_CONSTANT, value=(22, 22, 22))
+        cv2.putText(im, f"{r['view']}  {100 * (r.get('displaced_fraction') or 0):.0f}% out of place",
+                    (8, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (60, 90, 240), 1, cv2.LINE_AA)
+        cv2.putText(im, f"az {r.get('azimuth_deg', 0):+.0f}  el {r.get('elevation_deg', 0):+.0f}"
+                        f"  subject {100 * (r.get('displaced_fraction_core') or 0):.0f}%"
+                        f"  around it {100 * (r.get('displaced_fraction_surround') or 0):.0f}%",
+                    (8, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (190, 190, 190), 1, cv2.LINE_AA)
+        tiles.append(im)
+    if tiles:
+        strip = np.hstack(tiles)
+        if strip.shape[1] < W:
+            strip = cv2.copyMakeBorder(strip, 0, 0, 0, W - strip.shape[1], cv2.BORDER_CONSTANT, value=(22, 22, 22))
+        else:
+            strip = cv2.resize(strip, (W, int(strip.shape[0] * W / strip.shape[1])))
+        img = np.vstack([img, strip])
+    cv2.imwrite(out_path, img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    return out_path
+
+
 def comparison_image(src_bgr, ren_bgr, res, out_path, label, displaced_px):
     """Photograph, model, difference, and where the displaced patches are."""
     import cv2
@@ -451,6 +538,10 @@ def run(a, pj):
                        f"{100 * worst['displaced_median']:.0f}% displaced over {worst['views']} view(s) "
                        f"(best band {best['azimuth_deg'][0]}…{best['azimuth_deg'][1]} "
                        f"{100 * best['displaced_median']:.0f}%; want ≤ {100 * a.max_displaced_fraction:.0f}%)")
+
+    cov_img = coverage_map(pj, cov, report, pj.path("views", f"{a.name}_coverage.jpg"), a.eye, a.displaced_px)
+    if cov_img:
+        pj.artifact(STAGE, cov_img, "image")
 
     core = [r["displaced_fraction_core"] or 0 for r in report]
     surround = [r["displaced_fraction_surround"] or 0 for r in report]
