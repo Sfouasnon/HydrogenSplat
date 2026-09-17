@@ -33,6 +33,25 @@ struct TrainView: View {
     private var captureSet: CaptureSet { CaptureSet.read(project: project.path) }
     private var captures: Int { captureSet.count }
 
+    /// Crop sizes every previous views report in this project used. A score is only comparable
+    /// with another at the SAME crop -- the 2026-09-17 g15 sweep was scored at 200 mm against a
+    /// 350 mm baseline and read as a large win that was mostly the smaller crop (less background,
+    /// which is where the displaced patches are). The settings are remembered per project and
+    /// survive relaunches, so the field can hold a value older than the runs being compared.
+    private var previousCrops: [Double] {
+        let dir = (project.path as NSString).appendingPathComponent("views")
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        var out = Set<Double>()
+        for f in files where f.hasSuffix("_report.json") {
+            let p = (dir as NSString).appendingPathComponent(f)
+            if let d = FileManager.default.contents(atPath: p),
+               let mm = JSONValue.parse(d)?["subject_extent_mm"]?.double {
+                out.insert(mm)
+            }
+        }
+        return out.sorted()
+    }
+
     private var hasMasks: Bool {
         FileManager.default.fileExists(atPath: (project.path as NSString).appendingPathComponent("train/dataset/masks"))
     }
@@ -207,6 +226,18 @@ struct TrainView: View {
                                             : "This project has one view per camera — there is no second eye.")
                 OptionalNumber(value: settings.subjectMM, placeholder: "crop mm (auto)", choices: [350, 2000])
                     .disabled(!settings.wrappedValue.scoreViews)
+                if settings.wrappedValue.scoreViews {
+                    let prev = previousCrops
+                    let cur = settings.wrappedValue.subjectMM
+                    let list = prev.map { JSONValue.number($0).display }.joined(separator: ", ")
+                    if !prev.isEmpty, let c = cur, !prev.contains(c) {
+                        Label("earlier runs scored at \(list) mm — this one will not be comparable",
+                              systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    } else if !prev.isEmpty, cur == nil {
+                        Label("auto measures the crop from the point cloud; earlier runs used \(list) mm",
+                              systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    }
+                }
             }
         }
     }

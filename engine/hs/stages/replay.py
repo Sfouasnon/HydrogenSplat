@@ -25,6 +25,9 @@ def add_parser(sub):
     p.add_argument("--gap", type=float, default=0.05, help="seconds between lines that carry no t")
     p.add_argument("--max-wait", type=float, default=2.0, help="cap on any single pause, after --speed")
     p.add_argument("--fail-at", type=int, default=None)
+    p.add_argument("--last", action="store_true",
+                   help="only the last run in the file (from its final `run` event): what a project's "
+                        "logs/<stage>.events.jsonl holds after several runs")
     return p
 
 
@@ -33,6 +36,10 @@ def run(a):
         lines = [l for l in open(a.file, encoding="utf-8").read().splitlines() if l.strip()]
     except OSError as e:
         raise events.StageError(f"cannot read {a.file}: {e}")
+    if getattr(a, "last", False):
+        starts = [i for i, l in enumerate(lines) if '"ev":"run"' in l.replace(" ", "")]
+        if starts:
+            lines = lines[starts[-1]:]
     t_prev, n, last_stage = 0.0, 0, STAGE
     for i, line in enumerate(lines, 1):
         try:

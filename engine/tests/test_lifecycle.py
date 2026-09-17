@@ -953,3 +953,53 @@ class ViewsEdgeMetric(Base):
         self.assertGreater(norms[0] - norms[-1], 0.15)
         # the ceiling describes the photograph, so it does not move when the render does
         self.assertEqual(len({r["grain_ceiling"] for r in rows}), 1)
+
+
+# ------------------------------------------------------------------ the run's own event log
+class EventLog(Base):
+    """Every project stage records its events to logs/<stage>.events.jsonl so the run can be
+    replayed into the app afterwards (hs/events.py open_file_log)."""
+
+    def lines(self, path):
+        return [json.loads(l) for l in open(path, encoding="utf-8").read().splitlines() if l.strip()]
+
+    def test_a_run_is_recorded_with_a_marker_and_timing_and_appends(self):
+        pj = Project(self.root, create=True)
+        p = pj.path("logs", "demo.events.jsonl")
+        for run in (1, 2):
+            events.open_file_log(p, argv=["hs", "demo", f"--run={run}"])
+            events.start("demo", "step")
+            events.metric("demo", "n", run)
+            events.done("demo", 0)
+            events.close_file_log()
+        evs = self.lines(p)
+        runs = [e for e in evs if e["ev"] == "run"]
+        self.assertEqual(len(runs), 2)                       # appended, the first run is still there
+        self.assertEqual(runs[1]["argv"][-1], "--run=2")
+        self.assertTrue(all("t" in e for e in evs))          # every line paces a replay
+        self.assertEqual([e["value"] for e in evs if e["ev"] == "metric"], [1, 2])
+        # stdout keeps the contract's shape: no t there, only in the file
+        self.assertNotIn('"t"', self.out.getvalue().splitlines()[-1])
+
+    def test_replay_last_plays_only_the_final_run(self):
+        from hs.stages import replay
+        pj = Project(self.root, create=True)
+        p = pj.path("logs", "demo.events.jsonl")
+        for run in (1, 2, 3):
+            events.open_file_log(p, argv=["hs", "demo", f"--run={run}"])
+            events.metric("demo", "n", run)
+            events.close_file_log()
+        before = len(self.out.getvalue().splitlines())
+        replay.run(Namespace(file=p, speed=1000.0, gap=0.0, max_wait=0.0, fail_at=None, last=True))
+        played = [json.loads(l) for l in self.out.getvalue().splitlines()[before:] if l.startswith("{")]
+        self.assertEqual([e["value"] for e in played if e["ev"] == "metric"], [3])
+        self.assertTrue(all("t" not in e for e in played))   # replay strips t as it paces
+
+    def test_an_unwritable_path_does_not_take_the_stage_down(self):
+        pj = Project(self.root, create=True)
+        bad = os.path.join(pj.root, "logs", "nope")
+        os.makedirs(os.path.dirname(bad), exist_ok=True)
+        open(bad, "w").close()
+        self.assertIsNone(events.open_file_log(os.path.join(bad, "x.events.jsonl")))
+        events.metric("demo", "n", 1)                        # still emits, just not to a file
+        events.close_file_log()

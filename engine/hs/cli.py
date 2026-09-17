@@ -70,6 +70,8 @@ def main(argv=None):
             if not a.project:
                 ap.error(f"hs {stage_name} needs --project DIR")
             pj = Project(a.project, create=(stage_name == "ingest"))
+            # the run's own event stream, replayable with `hs replay` (events.open_file_log)
+            events.open_file_log(pj.path("logs", f"{ev_stage}.events.jsonl"))
             mod.run(a, pj)
             code = 0
         elif stage_name == "tools":
@@ -111,6 +113,7 @@ def main(argv=None):
         events.done(ev_stage, 2)
         return 2
     finally:
+        events.close_file_log()
         if awake is not None:
             awake.__exit__(None, None, None)
         # finish() releases the project lock on the normal path; make sure an exception

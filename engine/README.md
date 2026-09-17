@@ -77,6 +77,23 @@ metrics, checks and artifacts in `manifest.json`. `-v` also streams the child's 
 `running` whose recorded pid is gone becomes `failed — interrupted`, so a ^C'd or crashed run
 reports that instead of blocking the next stage with "solve is running".
 
+## Every run records its own events (2026-09-17)
+
+Each project stage appends its event stream to `<project>/logs/<stage>.events.jsonl`: a `run`
+event first (argv, wall clock), then every event the stage emitted, each with `t` — seconds
+since that run started. `hs replay <file> --last` plays back the final run at its own pace, so
+a finished run can be pushed through the app's Event Replay view afterwards. The text log
+beside it (`logs/<stage>.log`) is still the child's raw output; this one is the engine's own.
+stdout is unchanged — `t` exists only in the file. A log that cannot be opened is skipped, never
+fatal.
+
+Use it when the app shows something the numbers do not explain (the 2026-09-17 growth chart drew
+a 16M spike on a 1.0M model): replay the run instead of reasoning about what the app received.
+
+```
+hs replay Projects/2026-09-15_head/logs/train.events.jsonl --last --speed 50
+```
+
 ## The grain ceiling in `hs views` (2026-09-17)
 
 `retained_edge_energy` is the render's 90th-percentile |Laplacian| over contrast divided by the

@@ -17,13 +17,24 @@ Event shapes (all carry ``"stage"``)::
     {"ev":"log","stage":"solve","line":"..."}          (only with --verbose)
 
 Consumers must ignore event kinds and keys they do not know.
+
+Every project stage also records its own stream to ``<project>/logs/<stage>.events.jsonl``
+(``open_file_log``), with a ``run`` event first carrying the argv, the wall clock and a
+monotonically increasing id, and a ``t`` on every line (seconds since that run started) --
+the shape ``hs replay`` reads. So any run can be played back into the app afterwards, which
+is how a chart that looks wrong gets answered from the run's own events instead of from
+reasoning about what the app might have received. The text log beside it is the child's raw
+output; this is the engine's own.
 """
 import json
+import os
 import sys
 import time
 
 _VERBOSE = False
 _SINK = None            # optional callable(dict) that also receives every event (selftest uses it)
+_FILE = None            # open file handle for <project>/logs/<stage>.events.jsonl
+_FILE_T0 = None
 _PROGRESS_MIN_DT = 0.25  # seconds between progress events for the same stage/step
 _last_progress = {}
 
@@ -39,10 +50,47 @@ def set_sink(fn):
     _SINK = fn
 
 
+def open_file_log(path, argv=None):
+    """Append this run's events to `path`. Never fatal: a log that cannot be written must not
+    take the stage down with it."""
+    global _FILE, _FILE_T0
+    close_file_log()
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        _FILE = open(path, "a", encoding="utf-8")
+    except OSError:
+        _FILE, _FILE_T0 = None, None
+        return None
+    _FILE_T0 = time.monotonic()
+    run_id = int(time.time())
+    _emit({"ev": "run", "stage": "hs", "run": run_id,
+           "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "argv": list(argv or sys.argv)})
+    return path
+
+
+def close_file_log():
+    global _FILE, _FILE_T0
+    if _FILE is not None:
+        try:
+            _FILE.close()
+        except OSError:
+            pass
+    _FILE, _FILE_T0 = None, None
+
+
 def _emit(obj):
     line = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=_default)
     sys.stdout.write(line + "\n")
     sys.stdout.flush()
+    if _FILE is not None:
+        # t is what paces `hs replay`; it is added only to the file so stdout stays byte-identical
+        rec = dict(obj)
+        rec["t"] = round(time.monotonic() - _FILE_T0, 3)
+        try:
+            _FILE.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":"), default=_default) + "\n")
+            _FILE.flush()
+        except (OSError, ValueError):
+            pass
     if _SINK is not None:
         _SINK(obj)
 
