@@ -9,11 +9,20 @@ enum Brand {
         Color(light: 0x7359F0, dark: 0xA48CFF), Color(light: 0xA043DE, dark: 0xC88BFF),
     ]
 
-    static var appIcon: NSImage? {
-        guard let url = Bundle.module.url(forResource: "AppIcon", withExtension: "png", subdirectory: "Resources")
-        else { return nil }
-        return NSImage(contentsOf: url)
-    }
+    /// The icon: Contents/Resources/AppIcon.icns in the .app, else the SwiftPM resource bundle
+    /// next to the executable (`swift run`). Never Bundle.module, which traps when the bundle
+    /// is not where the build left it.
+    static let appIcon: NSImage? = {
+        if Bundle.main.bundleURL.pathExtension == "app", let img = NSImage(named: "AppIcon") { return img }
+        let rel = "HydrogenSplat_HydrogenSplat.bundle/Resources/AppIcon.png"
+        let candidates = [Bundle.main.resourceURL?.appendingPathComponent(rel),
+                          Bundle.main.bundleURL.appendingPathComponent(rel),
+                          Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent(rel)]
+        for case let url? in candidates where FileManager.default.fileExists(atPath: url.path) {
+            if let img = NSImage(contentsOf: url) { return img }
+        }
+        return nil
+    }()
 }
 
 extension Color {

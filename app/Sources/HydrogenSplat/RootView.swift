@@ -14,6 +14,8 @@ struct RootView: View {
                         .tag(SidebarItem.setup)
                     Label("New Project", systemImage: "plus.rectangle.on.folder")
                         .tag(SidebarItem.ingest)
+                    Label("Console", systemImage: "terminal")
+                        .tag(SidebarItem.console)
                     Label("Event Replay", systemImage: "play.rectangle")
                         .tag(SidebarItem.replay)
                 }
@@ -41,6 +43,8 @@ struct RootView: View {
                 IngestView()
             case .replay:
                 ReplayView()
+            case .console:
+                ConsoleView()
             case .project(let path):
                 if let p = store.project(at: path) {
                     ProjectDetailView(project: p)

@@ -180,3 +180,87 @@ final class GradeTests: XCTestCase {
         XCTAssertEqual(data[255 * 4 + 3], r[255])
     }
 }
+
+final class TrainingTests: XCTestCase {
+    func testDefaultsMatchTheHoldoutBaseline() {
+        var s = TrainSettings()
+        s.archiveName = "holdout-base"
+        s.subjectMM = 350
+        let steps = s.steps(project: "/p", captures: 160)
+        XCTAssertEqual(steps.map(\.title), ["Train", "Archive holdout-base", "Score views (L)"])
+        let t = steps[0].arguments
+        XCTAssertEqual(Array(t.prefix(3)), ["train", "-p", "/p"])
+        XCTAssertTrue(t.contains("--min-scale-factor=0.1"))
+        let ex = try! XCTUnwrap(t.first { $0.hasPrefix("--exclude=") })
+        let views = ex.dropFirst("--exclude=".count).split(separator: ",")
+        XCTAssertEqual(views.count, 32)                       // 16 captures x 2 eyes, as run in Terminal
+        XCTAssertEqual(views.first, "L/cap005")
+        XCTAssertTrue(views.contains("R/cap155"))
+        XCTAssertFalse(t.contains { $0.hasPrefix("--brush-args") })
+        XCTAssertEqual(steps[2].arguments, ["views", "-p", "/p", "--captures",
+                                            "5,15,25,35,45,55,65,75,85,95,105,115,125,135,145,155",
+                                            "--subject-mm", "350", "--name", "views_holdout-base"])
+    }
+
+    func testExperimentsBecomeFlags() {
+        var s = TrainSettings()
+        s.holdoutEvery = 0
+        s.growthStopIter = 15_000
+        s.refineEvery = 200
+        s.splitAtScreenSize = 0.25
+        s.minScaleFactor = 0
+        s.backgroundNoise = 0
+        s.extraBrushArgs = "--opac-decay 0.006"
+        s.excludeExtra = "L/cap064, R/cap069"
+        s.useMasks = false
+        s.scoreBothEyes = true
+        let steps = s.steps(project: "/p", captures: 84)
+        let t = steps[0].arguments
+        XCTAssertTrue(t.contains("--split-at-screen-size=0.25"))
+        XCTAssertTrue(t.contains("--min-scale-factor=0"))
+        XCTAssertTrue(t.contains("--brush-args=--background-noise-strength 0 --opac-decay 0.006"))
+        XCTAssertTrue(t.contains("--exclude=L/cap064,R/cap069"))
+        XCTAssertTrue(t.contains("--no-masks"))
+        XCTAssertEqual(steps.map(\.title), ["Train", "Score views (L)", "Score views (R)"])
+        XCTAssertEqual(steps[2].arguments.suffix(4), ["--eye", "R", "--name", "views_latest_R"])
+        s.archiveName = "bad name"
+        XCTAssertNotNil(s.archiveNameProblem)
+    }
+
+    func testLogFollowsTheLastRun() {
+        let log = """
+        ### 2026-09-15 21:11:41  $ /x/brush old
+        [2026-09-16T04:12:17Z INFO  brush_cli] Refine iter 131, 193271 splats.
+        ### 2026-09-16 16:28:47  $ /x/brush new
+        [2026-09-16T23:29:00Z INFO  brush_cli] Refine iter 131, 190000 splats.
+        [2026-09-16T23:29:10Z INFO  brush_train::train] screen_size iter=260
+        [2026-09-16T23:29:10Z INFO  brush_cli] Refine iter 261, 196881 splats.
+        """
+        let st = TrainLogStatus.parse(log)
+        XCTAssertEqual(st.runStarted, "2026-09-16 16:28:47")
+        XCTAssertEqual(st.iter, 261)
+        XCTAssertEqual(st.splats, 196881)
+        XCTAssertEqual(st.rate!, 13.0, accuracy: 1e-9)
+        XCTAssertEqual(st.tail.count, 3)
+        XCTAssertEqual(st.etaSeconds(total: 1561)!, 100.0, accuracy: 1e-9)
+        XCTAssertNil(st.etaSeconds(total: 261))
+    }
+
+    func testRateSkipsSleep() {
+        let log = """
+        ### 2026-09-16 16:28:47  $ /x/brush new
+        [2026-09-16T23:29:00Z INFO  brush_cli] Refine iter 130, 1 splats.
+        [2026-09-16T23:29:20Z INFO  brush_cli] Refine iter 260, 1 splats.
+        [2026-09-17T01:29:20Z INFO  brush_cli] Refine iter 390, 1 splats.
+        [2026-09-17T01:29:40Z INFO  brush_cli] Refine iter 520, 1 splats.
+        """
+        let st = TrainLogStatus.parse(log)
+        XCTAssertEqual(st.rate!, 6.5, accuracy: 1e-9)   // 260 iters over 40 awake s; the 2 h gap is dropped
+    }
+
+    func testLeadingNumber() {
+        XCTAssertEqual(RunSession.leadingNumber("1019640 splats"), 1019640)
+        XCTAssertNil(RunSession.leadingNumber("splats"))
+        XCTAssertNil(RunSession.leadingNumber(nil))
+    }
+}

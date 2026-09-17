@@ -23,6 +23,7 @@ struct ProjectDetailView: View {
                 }
                 if let m = project.manifest {
                     sourceBox(m)
+                    TrainView(project: project, manifest: m)
                     stagesBox(m)
                     GradeView(project: project)
                     if let name = selectedStage ?? m.lastDone, let st = m.stage(name) {

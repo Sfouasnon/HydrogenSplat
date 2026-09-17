@@ -91,6 +91,18 @@ public enum Format {
         return String(format: "%d:%02d:%02d", t / 3600, (t % 3600) / 60, t % 60)
     }
 
+    /// Time left as "21 min · ~7:53 PM": a rounded span plus the wall-clock finish, so it never
+    /// reads like a clock time the way "21:05" does.
+    public static func eta(_ seconds: Double?, now: Date = Date()) -> String {
+        guard let s = seconds, s.isFinite, s >= 0 else { return "—" }
+        let span: String
+        if s < 60 { span = "under a minute" }
+        else if s < 3600 { span = "\(Int((s / 60).rounded())) min" }
+        else { span = String(format: "%d h %02d min", Int(s) / 3600, (Int(s) % 3600) / 60) }
+        let f = DateFormatter(); f.timeStyle = .short; f.dateStyle = .none
+        return "\(span) · ~\(f.string(from: now.addingTimeInterval(s)))"
+    }
+
     public static func bytes(_ n: Double?) -> String {
         guard let n = n else { return "—" }
         return ByteCountFormatter.string(fromByteCount: Int64(n), countStyle: .file)

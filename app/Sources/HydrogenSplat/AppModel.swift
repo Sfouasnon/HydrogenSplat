@@ -5,6 +5,7 @@ enum SidebarItem: Hashable {
     case setup
     case ingest
     case replay
+    case console
     case project(String)
 }
 
@@ -20,6 +21,11 @@ final class AppModel: ObservableObject {
     @Published var selection: SidebarItem? = .setup
     /// The latest run per project path (ingest today; every stage from M2).
     @Published var projectRuns: [String: RunSession] = [:]
+    /// The train → archive → views queue per project path; survives leaving the page.
+    @Published var trainQueues: [String: RunQueue] = [:]
+    /// Train panel settings per project path, kept for the session.
+    @Published var trainSettings: [String: TrainSettings] = [:]
+    @Published var consoleHistory: [ConsoleSession] = []
 
     let store: ProjectStore
     private static let key = "engineConfig.v1"

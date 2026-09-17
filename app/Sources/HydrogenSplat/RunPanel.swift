@@ -141,7 +141,7 @@ struct ProgressRow: View {
                         .monospacedDigit().foregroundStyle(.secondary)
                 }
                 if let eta = event.etaSeconds, (event.fraction ?? 0) < 1 {
-                    Text("ETA \(Format.duration(eta))").monospacedDigit().foregroundStyle(.secondary)
+                    Text("ETA \(Format.eta(eta))").monospacedDigit().foregroundStyle(.secondary)
                 }
             }
             .font(.caption)

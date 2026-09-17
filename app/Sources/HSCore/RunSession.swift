@@ -12,6 +12,14 @@ public final class RunSession: ObservableObject, Identifiable {
         case failedToStart(String)
     }
 
+    /// One progress reading: seconds since start, units done, and the number that leads the
+    /// detail text ("1019640 splats" → 1019640), for the growth chart.
+    public struct Sample: Hashable, Sendable {
+        public let t: Double
+        public let done: Double
+        public let value: Double?
+    }
+
     public struct ProgressKey: Hashable {
         public let stage: String
         public let step: String
@@ -25,6 +33,8 @@ public final class RunSession: ObservableObject, Identifiable {
     @Published public private(set) var progress: [ProgressKey: HSEvent] = [:]
     @Published public private(set) var progressOrder: [ProgressKey] = []
     @Published public private(set) var currentStep: String?
+    /// Progress readings of the main step (the first progress key seen), decimated past 4,000.
+    @Published public private(set) var samples: [Sample] = []
     @Published public private(set) var metrics: [(key: String, event: HSEvent)] = []
     @Published public private(set) var checks: [HSEvent] = []
     @Published public private(set) var errors: [HSEvent] = []
@@ -90,6 +100,13 @@ public final class RunSession: ObservableObject, Identifiable {
                 let key = ProgressKey(stage: e.stage, step: e.step ?? "")
                 if progress[key] == nil { progressOrder.append(key) }
                 progress[key] = e
+                if key == progressOrder.first, let d = e.done {
+                    let t = startedAt.map { e.receivedAt.timeIntervalSince($0) } ?? 0
+                    samples.append(Sample(t: t, done: d, value: RunSession.leadingNumber(e.detail)))
+                    if samples.count > 4000 {
+                        samples = samples.enumerated().filter { $0.offset % 2 == 0 }.map(\.element)
+                    }
+                }
                 currentStep = e.step ?? currentStep
             case "start":
                 currentStep = e.step ?? e.stage
@@ -123,6 +140,12 @@ public final class RunSession: ObservableObject, Identifiable {
         currentStep = nil
         runner = nil
         onFinish?(self)
+    }
+
+    nonisolated public static func leadingNumber(_ s: String?) -> Double? {
+        guard let s = s else { return nil }
+        let digits = s.prefix { $0.isNumber || $0 == "." }
+        return Double(digits)
     }
 
     /// The metric value for `stage.name`, latest wins.

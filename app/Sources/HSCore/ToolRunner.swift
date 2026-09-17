@@ -23,8 +23,14 @@ public final class ToolRunner: @unchecked Sendable {
 
     /// `onEvents` and `onExit` are always called on the main queue; every `onEvents` call
     /// precedes `onExit`.
+    private let mergeStderr: Bool
+    private var onLines: (([String]) -> Void)?
+
+    /// `mergeStderr`: stderr goes into the same line stream as stdout (the console wants both,
+    /// in order); otherwise it is only kept as `stderrTail`.
     public init(executable: String, arguments: [String], environment: [String: String],
-                workingDirectory: String? = nil) {
+                workingDirectory: String? = nil, mergeStderr: Bool = false) {
+        self.mergeStderr = mergeStderr
         argv = [executable] + arguments
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -37,10 +43,13 @@ public final class ToolRunner: @unchecked Sendable {
     public var pid: Int32 { process.processIdentifier }
     public var isRunning: Bool { process.isRunning }
 
+    /// `onLines` (optional) receives every line, JSON or not, in order, on the main queue.
     public func start(onEvents: @escaping ([HSEvent]) -> Void,
+                      onLines: (([String]) -> Void)? = nil,
                       onExit: @escaping (Result) -> Void) throws {
+        self.onLines = onLines
         let out = Pipe()
-        let err = Pipe()
+        let err = mergeStderr ? out : Pipe()
         process.standardOutput = out
         process.standardError = err
         process.standardInput = FileHandle.nullDevice
@@ -65,6 +74,9 @@ public final class ToolRunner: @unchecked Sendable {
                 if !evs.isEmpty { DispatchQueue.main.async { onEvents(evs) } }
             }
         }
+        if mergeStderr {
+            group.leave()   // no separate stderr stream to wait for
+        } else {
         err.fileHandleForReading.readabilityHandler = { [weak self] h in
             let data = h.availableData
             if data.isEmpty { h.readabilityHandler = nil }
@@ -79,6 +91,7 @@ public final class ToolRunner: @unchecked Sendable {
                     self.stderr.removeFirst(self.stderr.count - 64_000)
                 }
             }
+        }
         }
         process.terminationHandler = { [weak self] _ in
             self?.group.leave()
@@ -105,6 +118,12 @@ public final class ToolRunner: @unchecked Sendable {
     /// project lock and stops its child. SIGTERM after `grace` seconds if it is still alive.
     public func interrupt(grace: TimeInterval = 15) {
         guard process.isRunning else { return }
+        // a shell does not forward SIGINT to the command it is running; tell its children too
+        let pk = Process()
+        pk.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        pk.arguments = ["-INT", "-P", String(process.processIdentifier)]
+        try? pk.run()
+        pk.waitUntilExit()
         process.interrupt()
         queue.asyncAfter(deadline: .now() + grace) { [weak self] in
             guard let self = self, self.process.isRunning else { return }
@@ -113,6 +132,9 @@ public final class ToolRunner: @unchecked Sendable {
     }
 
     private func parse(_ lines: [String]) -> [HSEvent] {
+        if let cb = onLines, !lines.isEmpty {
+            DispatchQueue.main.async { cb(lines) }
+        }
         var evs: [HSEvent] = []
         for line in lines where !line.isEmpty {
             if let e = HSEvent(line: line, id: nextID) {
