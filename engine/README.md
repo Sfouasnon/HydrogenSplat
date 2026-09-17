@@ -77,6 +77,31 @@ metrics, checks and artifacts in `manifest.json`. `-v` also streams the child's 
 `running` whose recorded pid is gone becomes `failed — interrupted`, so a ^C'd or crashed run
 reports that instead of blocking the next stage with "solve is running".
 
+## Where the failure sits, not just how much (2026-09-17)
+
+Three hold-out runs all said the same thing in a form too coarse to act on: one median per view,
+one median per run. `hs views` now also reports
+
+- **`displaced_fraction_core` / `_surround`** per view, and their medians. The crop is 2×half
+  across and centred on the subject, so patches within half that radius are the subject and the
+  rest is what surrounds it. Radial, not segmented: it says which ring the displacement is in and
+  claims nothing more. Check `subject_registers_better_than_its_surroundings` fires when the
+  subject is the worse of the two, which would be a different (and worse) failure.
+- **`by_azimuth`**: medians per 45° band, with `every_azimuth_band_registers` naming the worst
+  band against the same threshold. Every hold-out run so far has been fine where the camera went
+  often and bad at the edges of its coverage; a per-run median cannot show that.
+- **`views_render_sharper_than_photo`** and `captures_sharper_than_the_model`: views whose
+  normalised edge energy exceeds 1.0 — the photograph is blurrier than the render, so its score
+  is a floor, not a model fault. Replaces `edge_energy_consistent_across_views`, whose spread
+  bound measured variation in the photographs (the 09-16 head spanned 39–103% because of its two
+  motion-blurred captures). The new bound, `no_view_much_softer_than_achievable`, flags any view
+  under 0.45 of its grain ceiling.
+
+`splat_count_in_range` is recalibrated too. A 0.6–1.4× band around rig6's 2,628 splats/frame
+failed every model since — head 8,833/frame, body 13,567, array 15,394, none of them wrong — so
+it is now a sanity band, 500–40,000 per frame: under it growth never took, over it the model is
+too heavy to render and probably full of floaters. `splats_per_frame` is recorded either way.
+
 ## Every run records its own events (2026-09-17)
 
 Each project stage appends its event stream to `<project>/logs/<stage>.events.jsonl`: a `run`

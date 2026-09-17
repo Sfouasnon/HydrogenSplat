@@ -63,7 +63,14 @@ RE_DATASET = re.compile(r"Loaded dataset with (\d+) training, (\d+) eval views")
 RE_EVAL = re.compile(r"Eval iter (\d+): PSNR ([\d.]+), ssim ([\d.]+)")
 RE_EXPORT = re.compile(r"export_(\d+)\.ply$")
 RE_ERR = re.compile(r"(❌|Error|error:|panicked)")
-SPLATS_PER_FRAME_REF = 170841 / 65.0
+SPLATS_PER_FRAME_REF = 170841 / 65.0          # rig6, kept as the historical reference only
+# A 0.6-1.4x band around rig6's 2,628 splats/frame failed every model trained since: the 09-15
+# head 8,833/frame, the body 13,567, the 04-03 array 15,394 -- three captures, three subjects,
+# all 3-6x rig6, none of them wrong. rig6 was a small coin on a short orbit. The check is worth
+# keeping only as a sanity bound on the runaway and the collapse, so it is one: under 500 means
+# growth never took, over 40,000 means a model too heavy to render at speed and probably
+# floaters. Recalibrate again when there are enough subjects to know what normal is.
+SPLATS_PER_FRAME_MIN, SPLATS_PER_FRAME_MAX = 500, 40000
 HEARTBEAT_S = 15.0   # re-emit progress if the trainer has printed nothing for this long
 
 
@@ -411,9 +418,12 @@ def run(a, pj):
         pj.metric(STAGE, "final_export_md5", md5_file(final[0]))
         pj.metric(STAGE, "final_splats", n)
         if n_frames and n:
-            lo, hi = 0.6 * SPLATS_PER_FRAME_REF * n_frames, 1.4 * SPLATS_PER_FRAME_REF * n_frames
-            pj.check(STAGE, "splat_count_in_range", lo <= n <= hi,
-                     value=f"{n:,} splats for {n_frames} frames (want {lo:,.0f}–{hi:,.0f}; rig6 170,841/65)")
+            per = n / n_frames
+            pj.metric(STAGE, "splats_per_frame", round(per, 1))
+            pj.check(STAGE, "splat_count_in_range", SPLATS_PER_FRAME_MIN <= per <= SPLATS_PER_FRAME_MAX,
+                     value=f"{n:,} splats for {n_frames} frames = {per:,.0f}/frame "
+                           f"(sanity band {SPLATS_PER_FRAME_MIN:,}–{SPLATS_PER_FRAME_MAX:,}; "
+                           f"rig6 {SPLATS_PER_FRAME_REF:,.0f}, 09-15 head 8,833, body 13,567, 04-03 array 15,394)")
     growth = [(it, s) for it, s in st["growth"] if it <= a.growth_stop_iter]
     if growth:
         mono = all(b >= a_ for (_, a_), (_, b) in zip(growth, growth[1:]))

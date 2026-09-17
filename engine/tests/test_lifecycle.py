@@ -1003,3 +1003,48 @@ class EventLog(Base):
         self.assertIsNone(events.open_file_log(os.path.join(bad, "x.events.jsonl")))
         events.metric("demo", "n", 1)                        # still emits, just not to a file
         events.close_file_log()
+
+
+# ------------------------------------------------------------------ views: where the failure sits
+class ViewsRegions(Base):
+    """Radial split and per-azimuth banding: a median over a whole orbit hides both."""
+
+    def test_core_and_surround_separate_a_failure_at_the_edges(self):
+        import cv2
+        from hs.stages.views import compare
+        rng = np.random.default_rng(1)
+        photo = cv2.GaussianBlur((rng.random((700, 700)) * 255).astype(np.float32), (0, 0), 1.5)
+        half, uv = 300, (350, 350)
+        yy, xx = np.mgrid[0:700, 0:700]
+        outer = np.hypot(xx - 350, yy - 350) > 0.5 * half
+        ren = photo.copy()
+        ren[outer] = np.roll(photo, 6, axis=1)[outer]        # only the surroundings are displaced
+
+        same = compare(photo, photo.copy(), uv, half, 4.0)
+        self.assertEqual(same["displaced_fraction_core"], 0.0)
+        self.assertEqual(same["displaced_fraction_surround"], 0.0)
+
+        r = compare(photo, ren, uv, half, 4.0)
+        self.assertGreater(r["displaced_fraction"], 0.5)      # the overall number looks terrible
+        self.assertLess(r["displaced_fraction_core"], 0.05)   # the subject is fine
+        self.assertGreater(r["displaced_fraction_surround"], 0.9)
+        self.assertEqual(r["patches_core"] + r["patches_surround"], r["patches"])
+
+    def test_azimuth_table_bands_and_orders(self):
+        from hs.stages.views import azimuth_table
+        report = [
+            {"azimuth_deg": -121, "displaced_fraction": 0.34, "displaced_fraction_core": 0.2,
+             "displaced_fraction_surround": 0.5, "retained_edge_energy_norm": 0.44},
+            {"azimuth_deg": -100, "displaced_fraction": 0.30, "displaced_fraction_core": 0.1,
+             "displaced_fraction_surround": 0.4, "retained_edge_energy_norm": 0.46},
+            {"azimuth_deg": 16, "displaced_fraction": 0.05, "displaced_fraction_core": 0.02,
+             "displaced_fraction_surround": 0.08, "retained_edge_energy_norm": 0.68},
+            {"azimuth_deg": None, "displaced_fraction": 0.99},        # no coverage entry: skipped
+        ]
+        t = azimuth_table(report, band=45)
+        self.assertEqual([b["azimuth_deg"] for b in t], [[-135, -90], [0, 45]])
+        self.assertEqual([b["views"] for b in t], [2, 1])
+        self.assertEqual(t[0]["displaced_median"], 0.32)              # median of the two
+        self.assertEqual(t[1]["displaced_median"], 0.05)
+        self.assertEqual(t[0]["surround_median"], 0.45)
+        self.assertEqual(azimuth_table([]), [])

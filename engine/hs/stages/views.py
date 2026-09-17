@@ -52,6 +52,10 @@ from .render import DEFAULT_RENDER, RE_FRAME, RE_LOADED, RE_PATH
 
 STAGE = "views"
 PATCH, PATCH_STEP, PATCH_MIN_STD, PATCH_MIN_RESP = 64, 32, 12.0, 0.25
+# a view under this much of its grain ceiling is soft enough to look at; 0.45 sits below every
+# view of the three 2026-09-17 baselines except the head's two worst (0.39, 0.44)
+SOFT_VIEW_NORM = 0.45
+AZIMUTH_BAND = 45          # degrees per reporting band
 
 
 def add_parser(sub):
@@ -205,8 +209,20 @@ def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP):
     # difference image: 0.76 of ITS ceiling, i.e. sub-half-pixel blur. Normalised, the number
     # means "of the edge energy a noise-free render could possibly keep, this model kept x".
     ceiling = sharp(cv2.medianBlur(s, 3))
+    # Where the failures sit. The crop is 2*half across, centred on the subject, so the patches
+    # inside half the radius are the subject itself and the rest is what surrounds it. On the
+    # 09-15 head the medians hide this completely: a view can read 16% displaced overall while
+    # the face is fine and the hair, silhouette and room behind it carry all of it. Radial, not
+    # segmented -- it says which ring the displacement is in, and claims nothing more.
+    cx, cy = uv[0] - x0, uv[1] - y0
+    rad = np.array([np.hypot(px - cx, py - cy) for px, py, *_ in mags]) if mags else np.zeros(0)
+    core = rad <= 0.5 * half
     ss, rs = sharp(s), sharp(r)
     return {
+        "patches_core": int(core.sum()) if len(rad) else 0,
+        "patches_surround": int((~core).sum()) if len(rad) else 0,
+        "displaced_fraction_core": round(float((m[core] > displaced_px).mean()), 3) if core.any() else None,
+        "displaced_fraction_surround": round(float((m[~core] > displaced_px).mean()), 3) if (~core).any() else None,
         "src_sharpness": round(ss, 4), "render_sharpness": round(rs, 4),
         "src_denoised_sharpness": round(ceiling, 4),
         "grain_ceiling": round(ceiling / ss, 3) if ss else None,
@@ -230,6 +246,26 @@ def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP):
         "displacement_p90_detrended_px": round(float(np.percentile(det, 90)), 2) if len(det) else None,
         "_patches": mags, "_box": (x0, y0, x1, y1),
     }
+
+
+def azimuth_table(report, band=AZIMUTH_BAND):
+    """Per-azimuth-band medians, sorted. One row per band that has views; a band is [lo, lo+band)."""
+    bands = {}
+    for r in report:
+        az = r.get("azimuth_deg")
+        if az is None:
+            continue
+        bands.setdefault(int(np.floor(az / band) * band), []).append(r)
+
+    def med(rs, k):
+        return round(float(np.median([x.get(k) or 0 for x in rs])), 3)
+
+    return [{"azimuth_deg": [lo, lo + band], "views": len(bands[lo]),
+             "displaced_median": med(bands[lo], "displaced_fraction"),
+             "core_median": med(bands[lo], "displaced_fraction_core"),
+             "surround_median": med(bands[lo], "displaced_fraction_surround"),
+             "norm_median": med(bands[lo], "retained_edge_energy_norm")}
+            for lo in sorted(bands)]
 
 
 def comparison_image(src_bgr, ren_bgr, res, out_path, label, displaced_px):
@@ -380,12 +416,51 @@ def run(a, pj):
                    f"{100 * (worst['displaced_fraction'] or 0):.0f}% of patches over {a.displaced_px:g} px "
                    f"(want ≤ {100 * a.max_displaced_fraction:.0f}%; rig6 golden: 3% at az −42, 24% at az +43)",
              needs_human=True)
-    pj.check(STAGE, "edge_energy_consistent_across_views",
-             (max(norm) - min(norm)) <= 0.25 if len(norm) > 1 else True,
-             value=f"kept {100 * min(norm):.0f}–{100 * max(norm):.0f}% of what a noise-free render could "
-                   f"(raw {100 * min(keep):.0f}–{100 * max(keep):.0f}%, grain ceiling "
-                   f"{100 * float(np.median(ceil)):.0f}%) across {len(norm)} views "
-                   f"(a spread here means some views are blurrier than others; rig6 golden raw: 49–69%)")
+    # A spread bound over the normalised values measured the PHOTOGRAPHS, not the model: the
+    # 09-16 head holdout spanned 39-103% because its two blurriest captures (cap115, cap145 --
+    # the lowest src_sharpness in the set) let the render out-resolve them. Say that instead.
+    blurred = [r for r in report if (r["retained_edge_energy_norm"] or 0) > 1.0]
+    soft = [r for r in report if (r["retained_edge_energy_norm"] or 1) < SOFT_VIEW_NORM]
+    pj.metric(STAGE, "views_render_sharper_than_photo", [r["view"] for r in blurred])
+    pj.metric(STAGE, "views_soft", [r["view"] for r in soft])
+    pj.check(STAGE, "no_view_much_softer_than_achievable", not soft,
+             value=(f"{len(soft)} of {len(report)} views under {SOFT_VIEW_NORM:g} of the grain ceiling: "
+                    + ", ".join(f"{r['view']} {r['retained_edge_energy_norm']:.2f}" for r in soft[:5])
+                    if soft else
+                    f"all {len(report)} views at or above {SOFT_VIEW_NORM:g} of the grain ceiling "
+                    f"(median {float(np.median(norm)):.3f}, raw {float(np.median(keep)):.3f}, "
+                    f"ceiling {float(np.median(ceil)):.3f})"))
+    if blurred:
+        # not a model fault: the capture is softer than the model, so its edge score is a floor
+        pj.check(STAGE, "captures_sharper_than_the_model", True, needs_human=True,
+                 value=f"{len(blurred)} view(s) where the render out-resolves the photograph "
+                       f"(motion blur in the capture): "
+                       + ", ".join(f"{r['view']} {r['retained_edge_energy_norm']:.2f}" for r in blurred[:5]))
+
+    # Per-azimuth: a median over a whole orbit hides the thing every hold-out run has shown --
+    # the model is fine where the camera went often and fails at the edges of its coverage.
+    table = azimuth_table(report)
+    if table:
+        pj.metric(STAGE, "by_azimuth", table)
+        worst = max(table, key=lambda b: b["displaced_median"])
+        best = min(table, key=lambda b: b["displaced_median"])
+        pj.check(STAGE, "every_azimuth_band_registers",
+                 worst["displaced_median"] <= a.max_displaced_fraction,
+                 needs_human=True,
+                 value=f"worst band az {worst['azimuth_deg'][0]}…{worst['azimuth_deg'][1]} "
+                       f"{100 * worst['displaced_median']:.0f}% displaced over {worst['views']} view(s) "
+                       f"(best band {best['azimuth_deg'][0]}…{best['azimuth_deg'][1]} "
+                       f"{100 * best['displaced_median']:.0f}%; want ≤ {100 * a.max_displaced_fraction:.0f}%)")
+
+    core = [r["displaced_fraction_core"] or 0 for r in report]
+    surround = [r["displaced_fraction_surround"] or 0 for r in report]
+    pj.metric(STAGE, "displaced_fraction_core_median", round(float(np.median(core)), 3))
+    pj.metric(STAGE, "displaced_fraction_surround_median", round(float(np.median(surround)), 3))
+    pj.check(STAGE, "subject_registers_better_than_its_surroundings",
+             float(np.median(core)) <= float(np.median(surround)),
+             value=f"subject {100 * float(np.median(core)):.0f}% vs surroundings "
+                   f"{100 * float(np.median(surround)):.0f}% displaced (medians over {len(report)} views); "
+                   f"the other way round means the model is failing on the subject itself")
     if not a.keep_frames:
         shutil.rmtree(out_dir, ignore_errors=True)
     pj.finish(STAGE, ok=True)
