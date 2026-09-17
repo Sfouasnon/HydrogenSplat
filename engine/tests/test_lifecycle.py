@@ -233,7 +233,7 @@ class TrainView(TrainResume):
 # ------------------------------------------------------------------ 2. exposure dry-run
 class ExposureDryRun(Base):
     def args(self, **kw):
-        base = dict(mode="rgb", restore=False, dry_run=False)
+        base = dict(mode="rgb", restore=False, dry_run=False, force=False)
         base.update(kw)
         return Namespace(**base)
 
@@ -273,6 +273,21 @@ class ExposureDryRun(Base):
         self.assertEqual(pj.status("exposure"), "pending")
         self.assertEqual(pj.status("train"), "done")
         self.assertFalse(os.path.exists(pj.lock_path))
+
+    def test_an_array_project_is_refused_unless_forced(self):
+        pj = self.solved_project()
+        pj.m["source"] = {"kind": "array"}
+        pj.save()
+        with self.assertRaises(events.StageError) as e:
+            exposure.run(self.args(), pj)
+        self.assertIn("framing", str(e.exception))
+        pj.release()
+        # measuring is always allowed, and so is an explicit override
+        exposure.run(self.args(dry_run=True), pj)
+        self.assertEqual(pj.status("exposure"), "pending")      # a dry run changes no status
+        pj.release()
+        exposure.run(self.args(force=True), pj)
+        self.assertEqual(pj.status("exposure"), "done")
 
     def test_dry_run_and_restore_together_is_an_error(self):
         pj = self.solved_project()
@@ -898,3 +913,43 @@ class MonoRig(Base):
         self.assertEqual(len(json.load(open(out))["frames"]), 2)
         with self.assertRaises(events.StageError):
             views.build_path(pj, [0], out, "R")
+
+
+# ------------------------------------------------------------------ views: the grain ceiling
+class ViewsEdgeMetric(Base):
+    """retained_edge_energy_norm divides out the share of the metric that photographic grain
+    owns, so a run is comparable with a run on another clip (see hs/stages/views.py)."""
+
+    def photo_and_renders(self):
+        import cv2
+        rng = np.random.default_rng(0)
+        base = np.zeros((512, 512), np.float32)
+        for i in range(8):
+            base[:, 64 * i:64 * i + 32] = 200.0
+        base[:64], base[448:] = 30, 230
+        base = cv2.GaussianBlur(base, (0, 0), 1.2)                 # the scene, as optics deliver it
+        photo = np.clip(base + rng.normal(0, 4, base.shape), 0, 255).astype(np.float32)   # + sensor grain
+        return photo, base
+
+    def test_a_perfect_noise_free_render_scores_near_one_normalised(self):
+        from hs.stages.views import compare
+        photo, base = self.photo_and_renders()
+        r = compare(photo, base, (256, 256), 200, 4.0)
+        # raw looks like a third of the detail is missing; all of it is grain the render cannot have
+        self.assertLess(r["retained_edge_energy"], 0.75)
+        self.assertGreater(r["retained_edge_energy_norm"], 0.95)
+        self.assertLess(r["grain_ceiling"], 0.75)
+        self.assertAlmostEqual(r["retained_edge_energy"] / r["grain_ceiling"],
+                               r["retained_edge_energy_norm"], places=2)
+
+    def test_blur_lowers_it_monotonically_and_the_ceiling_is_the_photographs(self):
+        import cv2
+        from hs.stages.views import compare
+        photo, base = self.photo_and_renders()
+        rows = [compare(photo, cv2.GaussianBlur(base, (0, 0), s) if s else base, (256, 256), 200, 4.0)
+                for s in (0, 0.5, 1.0)]
+        norms = [r["retained_edge_energy_norm"] for r in rows]
+        self.assertEqual(norms, sorted(norms, reverse=True))
+        self.assertGreater(norms[0] - norms[-1], 0.15)
+        # the ceiling describes the photograph, so it does not move when the render does
+        self.assertEqual(len({r["grain_ceiling"] for r in rows}), 1)

@@ -77,6 +77,34 @@ metrics, checks and artifacts in `manifest.json`. `-v` also streams the child's 
 `running` whose recorded pid is gone becomes `failed — interrupted`, so a ^C'd or crashed run
 reports that instead of blocking the next stage with "solve is running".
 
+## The grain ceiling in `hs views` (2026-09-17)
+
+`retained_edge_energy` is the render's 90th-percentile |Laplacian| over contrast divided by the
+photograph's. A splat render carries no sensor noise and a photograph does, so **removing the
+photograph's grain alone** — a 3×3 median, which moves no edge — already costs a large share of
+the metric:
+
+| operation on the photograph | array GA (KOMODO-X, ISO 800, 4K) | head cap004 (Hydrogen) |
+|---|---:|---:|
+| 3×3 median (grain gone, edges kept) | 0.600 | 0.774 |
+| 5×5 median | 0.403 | 0.622 |
+| Gaussian 0.5 px | 1.000 | 0.928 |
+| Gaussian 1.0 px | 0.800 | 0.541 |
+| Gaussian 1.5 px | 0.400 | 0.391 |
+
+That share is the ceiling: the most a noise-free render can score on that clip. So `views` now
+reports `src_denoised_sharpness`, `grain_ceiling` (= denoised/raw source sharpness) and
+**`retained_edge_energy_norm` = render sharpness / denoised source sharpness**, with medians
+`retained_edge_energy_norm_median` and `grain_ceiling_median`, and
+`edge_energy_consistent_across_views` now spans the normalised values. **Compare runs by
+`_norm`**; the raw number carries the clip's grain and is not comparable between clips.
+
+What it is worth: the 2026-04-03 array scored 0.457 raw on views that match the photographs at
+42 dB PSNR with a black difference image — 0.76 of its ceiling, i.e. sub-half-pixel blur. The
+head hold-out baseline scored 0.44 raw = 0.57 of its 0.77 ceiling, about 1 px equivalent. The
+synthetic harness in `tests/test_lifecycle.py::ViewsEdgeMetric` makes the same point: a
+geometrically exact, noise-free render of a grainy photograph scores 0.65 raw and 0.99 norm.
+
 ## Array source: R3D camera arrays (2026-09-17)
 
 The pipeline also takes a **camera array** — one photograph per camera, every camera the same
@@ -259,6 +287,14 @@ back. 2.49x → **1.03x** on this set, gains 0.76–2.08x, 11 s for 140 views.
 Result on the golden four views: worst displaced fraction 40.5% → 28.3%,
 `edge_energy_consistent_across_views` flipped to pass. PSNR is *not* comparable across the two
 trains — the reference images changed too.
+
+`hs exposure` **refuses an array project** (`source.kind == "array"`) unless `--force`:
+median-matching is a correction only when every view frames the same thing. On the 2026-04-03
+take 067 the A-column cameras fill the frame with the lit cyc (median linear luma 0.08–0.15) and
+the D column with black drape (0.008) — a 19× spread that is framing, not exposure, and matching
+it would darken the A column ~7× and brighten the D column ~2×. `--dry-run` always measures.
+Matching an array's exposure properly means using a shared neutral target (the gray sphere, gray
+card or Macbeth in the frame); that is not built.
 
 ### `hs masks`
 

@@ -49,6 +49,8 @@ def add_parser(sub):
                    help="rgb also neutralises white-balance drift (default); luma matches brightness only")
     p.add_argument("--restore", action="store_true", help="put the original undistorted images back")
     p.add_argument("--dry-run", action="store_true", help="measure and report, write nothing")
+    p.add_argument("--force", action="store_true",
+                   help="run on an array project anyway (see the warning in run(); measure first with --dry-run)")
     return p
 
 
@@ -91,6 +93,20 @@ def run(a, pj):
     if pj.status("solve") not in ("done", "stale"):
         raise events.StageError(f"stage 'solve' is {pj.status('solve')}; 'exposure' needs it done",
                                 hint=f"run `hs solve --project {pj.root}` first")
+    # The method matches each view's median onto the set's. That is only a correction when every
+    # view frames the same thing, which is true of one camera orbiting a subject and false of an
+    # array: on the 2026-04-03 take 067 the A-column cameras fill the frame with the lit cyc
+    # (median linear luma 0.08-0.15) and the D column with black drape (0.008), a 19x spread that
+    # is framing, not exposure. Matching it would darken the A column ~7x and brighten the D column
+    # ~2x, giving one physical surface a different brightness in each camera -- the fault this
+    # stage exists to remove. An array's exposure should be matched on a shared neutral target
+    # (the gray sphere, gray card or Macbeth in the frame), which this does not do yet.
+    if pj.m.get("source", {}).get("kind") == "array" and not (a.force or a.dry_run or a.restore):
+        raise events.StageError(
+            "refusing to match medians across an array: the views frame different content, so the "
+            "gains would be framing, not exposure",
+            hint="measure it with --dry-run; if the cameras really do differ in exposure and frame "
+                 "the same content, --force")
     images = os.path.join(pj.dataset_dir, "images")
     if not os.path.isdir(images):
         raise events.StageError("no train/dataset/images", hint="hs solve first")

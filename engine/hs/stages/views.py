@@ -12,6 +12,11 @@ about a subject-centred crop:
 
   retained edge energy   render's edge response / the source's, per unit contrast.
                          Blur in the capture, or a model too soft to reproduce it, lowers it.
+                         Reported twice: raw, and `_norm` divided by the same measurement of
+                         a 3x3-median (grain-free) copy of the photograph. A render carries no
+                         sensor noise, so the raw ratio can never reach 1 and its ceiling is a
+                         property of the clip (0.60 on the 2026-04-03 KOMODO array, 0.77 on the
+                         Hydrogen head) rather than of the model. Compare runs by `_norm`.
   agreement              PSNR and correlation against the photograph.
   displacement           phase correlation on 64 px patches: how far the model puts
                          structure from where the photograph puts it, and what fraction of
@@ -190,10 +195,23 @@ def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP):
     off_mag = np.hypot(*off.T) if len(off) else np.zeros(0)
     off_coh = float(np.hypot(*off_mean)) / float(off_mag.mean()) if len(off) and off_mag.mean() else None
     off_deg = float(np.degrees(np.arctan2(off_mean[1], off_mean[0]))) if len(off) else None
+    # The grain ceiling. sharp() is 90th-percentile |Laplacian| over contrast, and a splat
+    # render carries no sensor noise while a photograph does, so removing the photograph's
+    # grain alone -- a 3x3 median, which leaves edges where they are -- already costs a large
+    # share of the metric: 40% on the 2026-04-03 KOMODO array frames, 23% on the Hydrogen
+    # head. That share is the most any model can lose "for free", so a bare
+    # retained_edge_energy is not comparable between clips and understates every model.
+    # The 2026-04-03 array measured 0.457 raw on views that match at 42 dB PSNR with a black
+    # difference image: 0.76 of ITS ceiling, i.e. sub-half-pixel blur. Normalised, the number
+    # means "of the edge energy a noise-free render could possibly keep, this model kept x".
+    ceiling = sharp(cv2.medianBlur(s, 3))
     ss, rs = sharp(s), sharp(r)
     return {
         "src_sharpness": round(ss, 4), "render_sharpness": round(rs, 4),
+        "src_denoised_sharpness": round(ceiling, 4),
+        "grain_ceiling": round(ceiling / ss, 3) if ss else None,
         "retained_edge_energy": round(rs / ss, 3) if ss else None,
+        "retained_edge_energy_norm": round(rs / ceiling, 3) if ceiling else None,
         "psnr_db": round(10 * np.log10(255.0 ** 2 / max(mse, 1e-9)), 2),
         "correlation": round(float(np.corrcoef(s.ravel(), r.ravel())[0, 1]), 4),
         "patches": len(m),
@@ -312,7 +330,8 @@ def run(a, pj):
             continue
         c = by_cap.get(v["capture"], {})
         label = (f"{v['view']}  az {c.get('azimuth_deg', 0):+.0f} el {c.get('elevation_deg', 0):+.0f}  "
-                 f"{v['depth_mm']:.0f} mm  |  edge energy kept {100 * (res['retained_edge_energy'] or 0):.0f}%  "
+                 f"{v['depth_mm']:.0f} mm  |  edge energy kept {100 * (res['retained_edge_energy_norm'] or 0):.0f}% "
+                 f"of the grain ceiling ({100 * (res['retained_edge_energy'] or 0):.0f}% raw)  "
                  f"PSNR {res['psnr_db']:.1f} dB  displaced {100 * (res['displaced_fraction'] or 0):.0f}% "
                  f"(p90 {res['displacement_p90_px'] or 0:.1f} px = {(res['displacement_p90_px'] or 0) * v['depth_mm'] / fx:.2f} mm)"
                  f"  |  bulk {res['bulk_shift_px'] or 0:.1f} px coh {res['shift_coherence'] or 0:.2f}"
@@ -334,7 +353,8 @@ def run(a, pj):
                       registered_fraction=row["registered_fraction"],
                       displaced_dir_deg=row["displaced_dir_deg"],
                       displaced_dir_coherence=row["displaced_dir_coherence"],
-                      retained_edge_energy=row["retained_edge_energy"], psnr_db=row["psnr_db"])
+                      retained_edge_energy=row["retained_edge_energy"],
+                      retained_edge_energy_norm=row["retained_edge_energy_norm"], psnr_db=row["psnr_db"])
         if worst is None or (row["displaced_fraction"] or 0) > (worst["displaced_fraction"] or 0):
             worst = row
 
@@ -347,18 +367,25 @@ def run(a, pj):
 
     frac = [r["displaced_fraction"] or 0 for r in report]
     keep = [r["retained_edge_energy"] or 0 for r in report]
+    norm = [r["retained_edge_energy_norm"] or 0 for r in report]
+    ceil = [r["grain_ceiling"] or 0 for r in report]
     pj.metric(STAGE, "displaced_fraction_worst", max(frac))
     pj.metric(STAGE, "displaced_fraction_median", round(float(np.median(frac)), 3))
     pj.metric(STAGE, "retained_edge_energy_median", round(float(np.median(keep)), 3))
+    # compare runs by this one: the raw number carries the clip's grain, this does not
+    pj.metric(STAGE, "retained_edge_energy_norm_median", round(float(np.median(norm)), 3))
+    pj.metric(STAGE, "grain_ceiling_median", round(float(np.median(ceil)), 3))
     pj.check(STAGE, "model_registers_to_photographs", max(frac) <= a.max_displaced_fraction,
              value=f"worst view {worst['view']} (az {worst['azimuth_deg']:+.0f}) has "
                    f"{100 * (worst['displaced_fraction'] or 0):.0f}% of patches over {a.displaced_px:g} px "
                    f"(want ≤ {100 * a.max_displaced_fraction:.0f}%; rig6 golden: 3% at az −42, 24% at az +43)",
              needs_human=True)
     pj.check(STAGE, "edge_energy_consistent_across_views",
-             (max(keep) - min(keep)) <= 0.25 if len(keep) > 1 else True,
-             value=f"kept {100 * min(keep):.0f}–{100 * max(keep):.0f}% across {len(keep)} views "
-                   f"(a spread here means some views are blurrier than others; rig6 golden: 49–69%)")
+             (max(norm) - min(norm)) <= 0.25 if len(norm) > 1 else True,
+             value=f"kept {100 * min(norm):.0f}–{100 * max(norm):.0f}% of what a noise-free render could "
+                   f"(raw {100 * min(keep):.0f}–{100 * max(keep):.0f}%, grain ceiling "
+                   f"{100 * float(np.median(ceil)):.0f}%) across {len(norm)} views "
+                   f"(a spread here means some views are blurrier than others; rig6 golden raw: 49–69%)")
     if not a.keep_frames:
         shutil.rmtree(out_dir, ignore_errors=True)
     pj.finish(STAGE, ok=True)
