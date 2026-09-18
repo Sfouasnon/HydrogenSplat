@@ -36,6 +36,8 @@ ELEVATION_BANDS = ((-25.0, 5.0, "low"), (5.0, 20.0, "mid"), (20.0, 45.0, "high")
 
 DWELL_S = 1.5              # seconds inside a cell before it counts as covered
 SLOW_DEG_S = 25.0          # above this angular rate the frames smear; dwell does not accrue
+BACK_COST = 3.0            # one band backwards costs as much as this many bands ahead
+FLIP_DEG = 30.0            # net backward travel that means the operator has turned round
 
 
 def wrap180(deg):
@@ -110,6 +112,9 @@ class Grid:
 
     def __init__(self, band=AZIMUTH_BAND, dwell=DWELL_S, slow_deg_s=SLOW_DEG_S):
         self.band, self.dwell, self.slow = band, float(dwell), float(slow_deg_s)
+        self.direction = +1        # +1 walking the way azimuth increases ("right"), −1 the other
+        self._last_az = None
+        self._backward = 0.0       # net travel against self.direction since last going forward
         self.time = {c: 0.0 for c in all_cells(band)}
 
     def mark(self, az, el, dt, rate_deg_s=0.0):
@@ -130,23 +135,54 @@ class Grid:
     def ring_complete(self, name):
         return all(self.time[c] >= self.dwell for c in self.time if c[1] == name)
 
-    def nearest_missing(self, az, el):
-        """The uncovered cell that is the least work to reach from here, or None if done.
+    def observe(self, az):
+        """Track which way round the operator is walking.
 
-        Cost is the azimuth turn in degrees plus a fixed penalty per ring you would have to
-        change — walking 40° round the subject is easier than raising the camera a ring, and
-        this keeps the guide from ping-ponging between rings on every step.
+        Direction flips only after FLIP_DEG of net travel the other way, so hand jitter and a
+        step back to re-frame do not reverse the guide; turning round and walking does.
         """
+        if self._last_az is not None:
+            step = wrap180(az - self._last_az) * self.direction
+            self._backward = min(0.0, self._backward + step)
+            if self._backward <= -FLIP_DEG:
+                self.direction, self._backward = -self.direction, 0.0
+        self._last_az = az
+
+    def _band_steps(self, az, lo):
+        """(bands ahead, bands behind) from the band holding ``az`` to band ``lo``."""
+        n = 360 // self.band
+        i = (azimuth_band_lo(az, self.band) + 180) // self.band
+        j = (lo + 180) // self.band
+        ahead = ((j - i) * self.direction) % n
+        return ahead, (n - ahead) % n
+
+    def _plan(self, az, el):
+        """(target cell, go ahead?) or (None, None) when the grid is full."""
         miss = self.missing()
         if not miss:
-            return None
+            return None, None
         here_i = min(max(ring_position(el), 0), len(ELEVATION_BANDS) - 1)
+        best = None
+        for lo, name in miss:
+            ahead, behind = self._band_steps(az, lo)
+            fwd = ahead <= BACK_COST * behind
+            walk = ahead if fwd else BACK_COST * behind
+            key = (walk, abs(ring_index(name) - here_i))
+            if best is None or key < best[0]:
+                best = (key, (lo, name), fwd)
+        return best[1], best[2]
 
-        def cost(c):
-            lo, name = c
-            return abs(wrap180(band_centre(lo, self.band) - az)) + 60.0 * abs(ring_index(name) - here_i)
+    def nearest_missing(self, az, el):
+        """The uncovered cell to go to next, or None if done.
 
-        return min(miss, key=cost)
+        One pass, all rings: finish every ring in the band you are standing in before moving
+        on — nearest ring first, so consecutive bands run low→high then high→low — then go to
+        the next band *ahead* in the direction you are walking. A band behind costs BACK_COST
+        bands ahead: a gap one band back is only worth turning round for once nothing is
+        missing within three bands ahead. take04 is why — at +150° walking right, a gap one
+        band behind made the old nearest-by-angle rule say left, right, left for 15 s.
+        """
+        return self._plan(az, el)[0]
 
     def cue(self, az, el):
         """(instruction, target cell) for where to go next — ('done', None) when the grid is full.
@@ -155,17 +191,17 @@ class Grid:
         ring, otherwise turn left or right round the subject, otherwise hold still because the
         cell you are in has not clocked its dwell yet.
         """
-        target = self.nearest_missing(az, el)
+        target, fwd = self._plan(az, el)
         if target is None:
             return "done", None
         lo, name = target
-        here = elevation_band(el)
-        if here != name:
+        if lo != azimuth_band_lo(az, self.band):
+            # walk first, change ring on arrival — the walk is the bigger move
+            way = self.direction if fwd else -self.direction
+            return ("right" if way > 0 else "left"), target
+        if elevation_band(el) != name:
             return ("raise" if ring_index(name) > ring_position(el) else "lower"), target
-        delta = wrap180(band_centre(lo, self.band) - az)
-        if abs(delta) <= self.band / 2.0:
-            return "hold", target
-        return ("right" if delta > 0 else "left"), target
+        return "hold", target
 
     def report(self):
         """Serialisable coverage, cells in grid order."""

@@ -261,6 +261,7 @@ def run(samples, grid, voice, out=None, duration=None, quiet=False, stats=None):
         elif rate > grid.slow:
             stats["too_fast_s"] += dt
 
+        grid.observe(az)
         done_cell = grid.mark(az, el, dt, rate)
         if done_cell:
             voice.tick()

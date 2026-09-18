@@ -89,13 +89,42 @@ class TestBands(unittest.TestCase):
                 g.mark(bands.band_centre(lo), bands.ring_centre(ring), 1.0)
         return g
 
-    def test_a_ring_change_costs_sixty_degrees_of_turn(self):
-        # standing in (0, mid) at az 20: the cell above is 2.5° away in azimuth, so the rule is
-        # "prefer the turn while it is under 60°, otherwise change ring"
-        near = self._grid_missing_only((45, "mid"), (0, "high"))    # turn of 47.5°
-        self.assertEqual(near.cue(20.0, 10.0), ("right", (45, "mid")))
-        far = self._grid_missing_only((90, "mid"), (0, "high"))     # turn of 92.5°
-        self.assertEqual(far.cue(20.0, 10.0), ("raise", (0, "high")))
+    def test_finish_the_band_you_are_in_before_moving_on(self):
+        # standing in (0, mid) at az 20: the ring above is owed here, the next band can wait
+        g = self._grid_missing_only((45, "mid"), (0, "high"))
+        self.assertEqual(g.cue(20.0, 10.0), ("raise", (0, "high")))
+
+    def test_next_band_starts_on_the_nearest_ring(self):
+        # finished band 0 at the high ring: band 45 is taken high first, not low (serpentine)
+        g = self._grid_missing_only((45, "low"), (45, "high"))
+        self.assertEqual(g.cue(20.0, 30.0), ("right", (45, "high")))
+
+    def test_prefers_a_gap_ahead_over_a_nearer_one_behind(self):
+        # take04: at +150 walking right, (90, low) one band behind, (-180, low) one band ahead
+        g = self._grid_missing_only((90, "low"), (-180, "low"))
+        self.assertEqual(g.cue(150.0, -5.0), ("right", (-180, "low")))
+
+    def test_turns_back_for_a_lone_gap_just_behind(self):
+        g = self._grid_missing_only((90, "low"))
+        self.assertEqual(g.cue(150.0, -5.0), ("left", (90, "low")))
+
+    def test_a_far_gap_ahead_loses_to_a_gap_just_behind(self):
+        # four bands ahead costs 4, one behind costs BACK_COST=3
+        g = self._grid_missing_only((90, "low"), (-45, "low"))
+        self.assertEqual(g.cue(150.0, -5.0), ("left", (90, "low")))
+
+    def test_direction_flips_after_a_real_reversal_not_jitter(self):
+        g = bands.Grid()
+        for az in (0, 5, 10, 4, 9, 2):            # jitter and a step back: still walking right
+            g.observe(az)
+        self.assertEqual(g.direction, +1)
+        for az in range(2, -40, -3):              # 40° the other way: turned round
+            g.observe(az)
+        self.assertEqual(g.direction, -1)
+        # now the same gap layout resolves the other way round
+        h = self._grid_missing_only((90, "low"), (-180, "low"))
+        h.direction = -1
+        self.assertEqual(h.cue(150.0, -5.0), ("left", (90, "low")))
 
     def test_out_of_band_cues_point_back_into_the_rings(self):
         g = bands.Grid()
