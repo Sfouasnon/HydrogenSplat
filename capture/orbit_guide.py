@@ -21,8 +21,10 @@ afterwards a correlation of cues against cues rather than two unsynchronised clo
 What it measures, and what it does not
 --------------------------------------
 Elevation comes from the Gravity sensor and is exact: with the rear camera looking along the
-device −Z axis, the camera's elevation above the subject is ``asin(−ĝz)``, assuming you keep
-the subject centred in frame.
+device −Z axis, the camera's elevation above the subject is ``asin(ĝz)``, assuming you keep
+the subject centred in frame. Android's Gravity sensor reports the *reaction* to gravity, as the
+accelerometer does — it points up, not down: the H1 lying screen-up reads (−0.47, 0.96, +9.75),
+and its Game Rotation Vector agrees that device +Z was pointing at the ceiling.
 
 Azimuth comes from Game Rotation Vector — gyro and accelerometer, magnetometer deliberately
 excluded. Magnetic heading is absolute but wrong near steel, and walking a circle round a
@@ -62,13 +64,19 @@ RATE_SMOOTH = 0.5          # weight on the newest turn-rate estimate
 # ------------------------------------------------------------------ orientation
 
 def elevation_from_gravity(g):
-    """Camera elevation above the subject, degrees, from a device-frame gravity vector."""
+    """Camera elevation above the subject, degrees, from a device-frame Gravity reading.
+
+    The reading points *up* (Android convention, +9.81 on Z lying screen-up), so world up in
+    the device frame is ĝ, the view direction is −Z, and the view pitch is asin(−ĝz). The camera
+    sits above the subject by minus its view pitch: asin(+ĝz). Screen-up, camera at the floor,
+    reads +90 — directly above.
+    """
     if len(g) < 3:
         return None
     n = math.sqrt(sum(c * c for c in g[:3]))
     if n < 1e-6:
         return None
-    return math.degrees(math.asin(max(-1.0, min(1.0, -g[2] / n))))
+    return math.degrees(math.asin(max(-1.0, min(1.0, g[2] / n))))
 
 
 def yaw_from_quaternion(v):
@@ -198,18 +206,22 @@ CUE_WORDS = {"raise": "raise", "lower": "lower", "left": "left", "right": "right
              "hold": "hold", "done": "all bands covered"}
 
 
-def run(samples, grid, voice, out=None, duration=None, quiet=False):
+def run(samples, grid, voice, out=None, duration=None, quiet=False, stats=None):
     """Consume (sample, clock) pairs, guide, log. Returns (grid report, run stats).
 
     The stats exist because "0 of 24 cells covered" on its own does not say whether the
     operator moved too fast, held the phone outside every elevation ring, or the stream stopped
     after two samples — three different problems with the same summary line.
     """
-    stats = {"samples": 0, "elapsed_s": 0.0, "rates": [], "out_of_band_s": 0.0, "too_fast_s": 0.0}
+    # passed in by main so that a Ctrl-C still reports what was measured — a stalled stream
+    # interrupted by hand then reads "0 samples", which is the diagnosis
+    if stats is None:
+        stats = new_stats()
     t0 = prev_t = None
     prev_az = prev_el = None
     rate = 0.0
     for sample, clock in samples:
+        g = q = None
         if isinstance(sample, dict) and "az" in sample:
             az, el = sample["az"], sample["el"]          # replay
         else:
@@ -261,7 +273,10 @@ def run(samples, grid, voice, out=None, duration=None, quiet=False):
                                   "rate": round(rate, 1), "cue": cue,
                                   "cue_spoken": bool(spoke),
                                   "ring": elevation_band(el),
-                                  "completed": list(done_cell) if done_cell else None}) + "\n")
+                                  "completed": list(done_cell) if done_cell else None,
+                                  # raw readings, so a take can be re-derived off-phone after a
+                                  # fix to the maths instead of being thrown away with it
+                                  "g": g, "q": q}) + "\n")
         if not quiet:
             n = len(grid.covered())
             sys.stderr.write(f"\r az {az:+7.1f}  el {el:+6.1f}  {rate:5.1f}°/s  "
@@ -272,6 +287,10 @@ def run(samples, grid, voice, out=None, duration=None, quiet=False):
     if not quiet:
         sys.stderr.write("\n")
     return grid.report(), stats
+
+
+def new_stats():
+    return {"samples": 0, "elapsed_s": 0.0, "rates": [], "out_of_band_s": 0.0, "too_fast_s": 0.0}
 
 
 def median(xs):
@@ -322,13 +341,17 @@ def main(argv=None):
     if out:
         out.write(json.dumps({"started": time.time(), "band": a.band, "dwell": a.dwell,
                               "slow_deg_s": a.slow, "source": a.replay or "termux-sensor"}) + "\n")
-    stats = None
+    stats = new_stats()
     try:
-        report, stats = run(samples, grid, voice, out=out, duration=a.duration, quiet=a.quiet)
+        report, stats = run(samples, grid, voice, out=out, duration=a.duration, quiet=a.quiet,
+                            stats=stats)
     except KeyboardInterrupt:
         report = grid.report()
         if not a.quiet:
             sys.stderr.write("\n")
+        if stats["samples"] == 0:
+            sys.stderr.write("no sensor samples arrived — termux-sensor is stalled; "
+                             "run  termux-sensor -c  and try again\n")
     finally:
         if out:
             out.close()

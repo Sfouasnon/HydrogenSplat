@@ -30,3 +30,4 @@ app/.swiftpm/
 !app/Branding/**/*.png
 !app/Branding/*.png
 !app/Sources/HydrogenSplat/Resources/*.png
+capture/take*.jsonl

@@ -114,16 +114,29 @@ class TestBands(unittest.TestCase):
 
 class TestOrientation(unittest.TestCase):
     def test_elevation_from_gravity(self):
-        # phone upright, rear camera level: gravity down the screen
-        self.assertAlmostEqual(orbit_guide.elevation_from_gravity([0, -9.81, 0]), 0.0, places=4)
+        # Android Gravity points up (the reaction, like the accelerometer).
+        # phone upright, rear camera level: +9.81 up the screen
+        self.assertAlmostEqual(orbit_guide.elevation_from_gravity([0, 9.81, 0]), 0.0, places=4)
         # screen up, camera pointing at the floor: the camera is directly above the subject
-        self.assertAlmostEqual(orbit_guide.elevation_from_gravity([0, 0, -9.81]), 90.0, places=4)
+        self.assertAlmostEqual(orbit_guide.elevation_from_gravity([0, 0, 9.81]), 90.0, places=4)
         # screen down, camera at the ceiling
-        self.assertAlmostEqual(orbit_guide.elevation_from_gravity([0, 0, 9.81]), -90.0, places=4)
-        # tilted 30° down from upright
-        g = [0, -9.81 * math.cos(math.radians(30)), -9.81 * math.sin(math.radians(30))]
+        self.assertAlmostEqual(orbit_guide.elevation_from_gravity([0, 0, -9.81]), -90.0, places=4)
+        # tilted 30° down from upright (top of the phone tips away): looking down from above
+        g = [0, 9.81 * math.cos(math.radians(30)), 9.81 * math.sin(math.radians(30))]
         self.assertAlmostEqual(orbit_guide.elevation_from_gravity(g), 30.0, places=4)
         self.assertIsNone(orbit_guide.elevation_from_gravity([0, 0, 0]))
+
+    def test_real_h1_reading_lying_screen_up(self):
+        # termux-sensor on the H1, flat on the desk, 2026-09-17: camera at the floor, i.e. above
+        g = [-0.4744861423969269, 0.9563500881195068, 9.748366355895996]
+        q = [0.017459586262702942, 0.05164121091365814, 0.705216109752655, 0.7068935632705688]
+        self.assertGreater(orbit_guide.elevation_from_gravity(g), 80.0)
+        # the rotation vector must agree that device +Z points at the ceiling
+        x, y, z, w = q
+        self.assertGreater(1 - 2 * (x * x + y * y), 0.99)
+        sample = {"Gravity": {"values": g}, "Game Rotation Vector": {"values": q}}
+        self.assertEqual(orbit_guide.pick(sample, orbit_guide.GRAVITY), g)
+        self.assertEqual(orbit_guide.pick(sample, orbit_guide.ROTATION), q)
 
     def test_yaw_is_zero_upright_and_increases_as_you_turn_right(self):
         upright = axis_q("x", 90)                      # stand the phone up from face-down
