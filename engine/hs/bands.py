@@ -56,6 +56,19 @@ def elevation_band(el):
     return None
 
 
+def ring_position(el):
+    """Ring index holding ``el``; −1 below the lowest ring, len(ELEVATION_BANDS) above the top.
+
+    Out of band is not one place: below the low ring the fix is to raise the camera, above the
+    high ring it is to lower it. Treating both as ring 0 told an operator already under the low
+    ring to "lower", and take04 shows him doing it — from −26° to −46°.
+    """
+    ring = elevation_band(el)
+    if ring is not None:
+        return ring_index(ring)
+    return -1 if el < ELEVATION_BANDS[0][0] else len(ELEVATION_BANDS)
+
+
 def cell(az, el, band=AZIMUTH_BAND):
     """(azimuth band low edge, ring name) — or None if the elevation is outside every ring."""
     ring = elevation_band(el)
@@ -127,8 +140,7 @@ class Grid:
         miss = self.missing()
         if not miss:
             return None
-        here_ring = elevation_band(el)
-        here_i = ring_index(here_ring) if here_ring else 0
+        here_i = min(max(ring_position(el), 0), len(ELEVATION_BANDS) - 1)
 
         def cost(c):
             lo, name = c
@@ -149,7 +161,7 @@ class Grid:
         lo, name = target
         here = elevation_band(el)
         if here != name:
-            return ("raise" if ring_index(name) > (ring_index(here) if here else 0) else "lower"), target
+            return ("raise" if ring_index(name) > ring_position(el) else "lower"), target
         delta = wrap180(band_centre(lo, self.band) - az)
         if abs(delta) <= self.band / 2.0:
             return "hold", target

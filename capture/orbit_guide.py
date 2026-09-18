@@ -56,7 +56,8 @@ from hs.bands import (AZIMUTH_BAND, DWELL_S, SLOW_DEG_S, Grid,  # noqa: E402
 
 GRAVITY = "gravity"
 ROTATION = "game rotation"
-SPEAK_GAP_S = 2.5          # never repeat the same instruction faster than this
+SPEAK_GAP_S = 2.5          # never speak twice within this
+REPEAT_S = 6.0             # an instruction still standing is said again after this
 MIN_RATE_DT = 0.05         # shorter than this and the interval is clock noise, not a measurement
 RATE_SMOOTH = 0.5          # weight on the newest turn-rate estimate
 
@@ -188,7 +189,10 @@ class Voice:
             pass
 
     def say(self, text, now, force=False):
-        if not force and (text == self.last or now - self.last_t < SPEAK_GAP_S):
+        # A standing instruction is repeated, slowly: said once and never again, a missed "raise"
+        # became 27 silent samples in take04 while the operator waited to be told something.
+        gap = REPEAT_S if text == self.last else SPEAK_GAP_S
+        if not force and now - self.last_t < gap:
             return False
         self.last, self.last_t = text, now
         if self.speak_ok:

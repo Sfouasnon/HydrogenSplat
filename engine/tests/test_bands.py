@@ -97,6 +97,16 @@ class TestBands(unittest.TestCase):
         far = self._grid_missing_only((90, "mid"), (0, "high"))     # turn of 92.5°
         self.assertEqual(far.cue(20.0, 10.0), ("raise", (0, "high")))
 
+    def test_out_of_band_cues_point_back_into_the_rings(self):
+        g = bands.Grid()
+        # below the low ring (take04: −26°) the way back is up, not down
+        self.assertEqual(g.cue(20.0, -30.0)[0], "raise")
+        # above the high ring (phone lying flat, +83°) the way back is down
+        self.assertEqual(g.cue(20.0, 83.0)[0], "lower")
+        self.assertEqual(bands.ring_position(-30.0), -1)
+        self.assertEqual(bands.ring_position(83.0), len(bands.ELEVATION_BANDS))
+        self.assertEqual(bands.ring_position(10.0), 1)
+
     def test_cue_turns_the_short_way_round(self):
         g = self._grid_missing_only((-180, "mid"))
         self.assertEqual(g.cue(170.0, 10.0)[0], "right",
