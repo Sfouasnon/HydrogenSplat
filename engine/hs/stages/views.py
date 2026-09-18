@@ -47,6 +47,7 @@ import sys
 import numpy as np
 
 from .. import events, rig, runner
+from ..bands import AZIMUTH_BAND
 from .prune import final_export
 from .render import DEFAULT_RENDER, RE_FRAME, RE_LOADED, RE_PATH
 
@@ -55,7 +56,8 @@ PATCH, PATCH_STEP, PATCH_MIN_STD, PATCH_MIN_RESP = 64, 32, 12.0, 0.25
 # a view under this much of its grain ceiling is soft enough to look at; 0.45 sits below every
 # view of the three 2026-09-17 baselines except the head's two worst (0.39, 0.44)
 SOFT_VIEW_NORM = 0.45
-AZIMUTH_BAND = 45          # degrees per reporting band
+# AZIMUTH_BAND comes from hs.bands, which the phone's capture guide imports too — the band the
+# guide tells you to go and fill has to be the band this report scores.
 
 
 def add_parser(sub):
