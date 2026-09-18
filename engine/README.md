@@ -51,7 +51,7 @@ hs/
 ```
 hs ingest  -p P --clip VID_..._2x1.h4v [--link]                       copy, MD5, ffprobe, validate 2x1 video, match the calibration profile
 hs ingest  -p P --frames DIR | --r3d RDM_DIR --take 067 [--res 1]     array source: one frame per camera (REDline renders the R3Ds); select is marked done
-hs select  -p P [--residual 1.5 --max-gap 90 --end N --dry-run]      frames + selection.json + contact.jpg
+hs select  -p P [--residual 1.5 --max-gap 90 --end N --dry-run]      frames + selection.json + quality.json + thumbs/ + contact.jpg
 hs solve   -p P                                                       prep → sfm --float-rig → export; per_image.json, coverage.json
 hs solve   -p P --scale-pair GA,GB,700 [--focal-px F]                 array project: monocolmap.py, one shared camera, metric scale from a measured spacing
 hs exposure -p P [--mode rgb|luma] [--restore] [--dry-run]            match exposure + white balance across the training views

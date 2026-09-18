@@ -25,6 +25,10 @@ final class AppModel: ObservableObject {
     @Published var trainQueues: [String: RunQueue] = [:]
     /// Train panel settings per project path, kept for the session.
     @Published var trainSettings: [String: TrainSettings] = [:]
+    /// The select / solve run per project path, started from the Select frames panel.
+    @Published var selectQueues: [String: RunQueue] = [:]
+    /// Select panel settings per project path, kept for the session.
+    @Published var selectSettings: [String: SelectSettings] = [:]
     @Published var consoleHistory: [ConsoleSession] = []
 
     let store: ProjectStore

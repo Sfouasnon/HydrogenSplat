@@ -1,8 +1,11 @@
 """hs select — frame selection by parallax (strategy §4.3) = select_frames.py, unchanged.
 
 Defaults are the calibrated ones (residual 1.5 px at 480 wide, min gap 6, max 90, search 4,
-clip < 2%). Adds: a contact sheet, per-frame noise estimate, and the checks — frame count in
-30–120, median gap 6–15, fraction of max-gap picks < 15%.
+clip < 2%). Adds: the checks — frame count in 30–120, median gap 6–15, fraction of max-gap
+picks < 15% — and select/quality.json: every pick's sharpness (Laplacian variance), exposure off
+the set's median in stops, both eyes, noise, clipping, the sharpest frame in its interval, and
+report-only flags (hs/frame_quality.py). select/thumbs/ holds a left-eye thumbnail per pick for
+the app; select/contact.jpg is the same data drawn on one sheet.
 """
 import json
 import os
@@ -11,7 +14,7 @@ import sys
 
 import numpy as np
 
-from .. import events, runner
+from .. import events, frame_measure, frame_quality, runner
 
 STAGE = "select"
 SEL_RE = re.compile(r"^\s*sel\s+(\d+)\s+frame\s+(\d+)\s+gap\s+(\d+)\s+residual\s+([-\d.]+) px\s+sharp\s+([\d.]+)\s+clip\s+([\d.]+)%\s+\[(\w[\w-]*)\]")
@@ -90,58 +93,36 @@ def run(a, pj):
     pj.check(STAGE, "maxgap_fraction_low", frac_maxgap < 0.15,
              value=f"{100 * frac_maxgap:.1f}% of picks hit max-gap {a.max_gap} (want < 15%; high = phone stood still)")
 
+    select_dir = os.path.dirname(frames_dir)
+    measured = {}
+    if not a.dry_run:
+        events.start(STAGE, "measure")
+        try:
+            measured = frame_measure.measure(frames_dir, os.path.join(select_dir, "thumbs"),
+                                             work_width=a.work_width)
+        except Exception as e:
+            events.log(STAGE, f"[hs] measuring the written frames failed: {e!r}")
+    quality = frame_quality.analyse(sel, measured)
+    q_path = os.path.join(select_dir, "quality.json")
+    with open(q_path, "w") as fh:
+        json.dump(quality, fh, indent=1)
+    pj.artifact(STAGE, q_path, "json")
+    # report, don't judge: the flag thresholds are uncalibrated (frame_quality.py)
+    pj.metric(STAGE, "frames_flagged", quality["flagged"])
+    for name, count in sorted(quality["flag_counts"].items()):
+        pj.metric(STAGE, f"flag_{name}", count)
+    med = quality["medians"]
+    if med["noise"] is not None:
+        pj.metric(STAGE, "noise_median", med["noise"])
+    if med["eye_ev"] is not None:
+        pj.metric(STAGE, "eye_ev_median", med["eye_ev"])
+
     if not a.dry_run:
         events.start(STAGE, "contact")
         try:
-            contact, noise = contact_sheet_and_noise(frames_dir, selected)
+            contact = frame_measure.contact_sheet(frames_dir, quality, os.path.join(select_dir, "contact.jpg"))
             if contact:
                 pj.artifact(STAGE, contact, "image")
-            if noise is not None:
-                pj.metric(STAGE, "noise_median", noise)
-                # rig6 reference is not yet measured with this estimator; report, don't judge
         except Exception as e:
             events.log(STAGE, f"[hs] contact sheet failed: {e!r}")
     pj.finish(STAGE, ok=True)
-
-
-def contact_sheet_and_noise(frames_dir, selected, thumb_w=240, per_row=8):
-    import cv2
-    files = sorted(f for f in os.listdir(frames_dir) if f.lower().endswith(".jpg"))
-    if not files:
-        return None, None
-    by_frame = {s["frame"]: s for s in selected}
-    thumbs, noises = [], []
-    for f in files:
-        im = cv2.imread(os.path.join(frames_dir, f), cv2.IMREAD_COLOR)
-        if im is None:
-            continue
-        L = im[:, : im.shape[1] // 2]
-        # noise: median |Laplacian| where the image is flat (low gradient)
-        g = cv2.cvtColor(L, cv2.COLOR_BGR2GRAY)
-        gs = cv2.resize(g, (960, 540), interpolation=cv2.INTER_AREA)
-        gx = cv2.Sobel(gs, cv2.CV_32F, 1, 0, ksize=3)
-        gy = cv2.Sobel(gs, cv2.CV_32F, 0, 1, ksize=3)
-        flat = (np.abs(gx) + np.abs(gy)) < 8.0
-        lap = np.abs(cv2.Laplacian(gs, cv2.CV_32F, ksize=1))
-        if flat.sum() > 1000:
-            noises.append(float(lap[flat].mean()))
-        th = cv2.resize(L, (thumb_w, int(round(thumb_w * L.shape[0] / L.shape[1]))), interpolation=cv2.INTER_AREA)
-        m = re.match(r"VID_(\d+)_(\d+)_2x1", f)
-        label = f"{int(m.group(1))}:{int(m.group(2))}" if m else f
-        s = by_frame.get(int(m.group(2))) if m else None
-        if s:
-            label += f" r{s['residual']:.1f} c{100 * s['clip']:.0f}%"
-        cv2.rectangle(th, (0, 0), (th.shape[1], 16), (0, 0, 0), -1)
-        cv2.putText(th, label, (3, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
-        thumbs.append(th)
-    if not thumbs:
-        return None, None
-    h, w = thumbs[0].shape[:2]
-    rows = (len(thumbs) + per_row - 1) // per_row
-    sheet = np.zeros((rows * h, per_row * w, 3), np.uint8)
-    for i, th in enumerate(thumbs):
-        r, c = divmod(i, per_row)
-        sheet[r * h:(r + 1) * h, c * w:(c + 1) * w] = th
-    out = os.path.join(os.path.dirname(frames_dir), "contact.jpg")
-    cv2.imwrite(out, sheet, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    return out, (round(float(np.median(noises)), 3) if noises else None)

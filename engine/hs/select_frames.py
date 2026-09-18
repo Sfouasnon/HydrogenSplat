@@ -27,6 +27,11 @@ Do NOT add a "flow > N" escape hatch — it reintroduces the pan problem.
 Output: DIR/VID_NNN_FFFF_2x1.jpg (full-resolution 2x1 frames, NNN = selection index,
 FFFF = source frame index) plus DIR/selection.json. --dry-run writes only the JSON.
 
+selection.json also carries a per-frame "trace" of every frame read (left eye, at work width):
+Laplacian variance, contrast (grey std), linear-light mean luma, clipped and crushed fractions — and, for each pick,
+the candidates it beat. hs select turns those into quality.json: what the picks look like
+against their neighbours, and where a better frame sat.
+
 Usage:
   python3 select_frames.py capture_video/VID_..._2x1.h4v -o capture_video/frames5
         [--residual 1.5] [--min-gap 6] [--max-gap 90] [--search 4] [--max-clip 0.02]
@@ -82,6 +87,19 @@ def clipping(gray_full):
     return float((gray_full >= 250).mean())
 
 
+# 8-bit sRGB-ish code value -> linear light (gamma 2.2), so an exposure offset reads in stops
+_LINEAR = ((np.arange(256) / 255.0) ** 2.2).astype(np.float64)
+
+
+def linear_luma(gray):
+    """Mean linear-light luminance, 0..1. log2 of a ratio of these is an offset in stops."""
+    return float(_LINEAR[gray].mean())
+
+
+def crushed(gray):
+    return float((gray <= 5).mean())
+
+
 def features(gray_small):
     return cv2.goodFeaturesToTrack(gray_small, maxCorners=1500, qualityLevel=0.01, minDistance=6, blockSize=7)
 
@@ -115,6 +133,7 @@ def main():
     last_sel = None
     pending = []           # candidates past the crossing: (frame_idx, frame_bgr, res, sharp, clip)
     crossing_at = None
+    trace = {"frame": [], "sharp": [], "std": [], "luma": [], "clip": [], "dark": [], "residual": []}
     fi = -1
     while True:
         ok, frame = cap.read()
@@ -127,6 +146,14 @@ def main():
             break
         gl = cv2.cvtColor(left_eye(frame), cv2.COLOR_BGR2GRAY)
         small = prep(gl, a.work_width)
+        # every frame read, not only the picks: the picks are judged against their neighbours
+        trace["frame"].append(fi)
+        trace["sharp"].append(round(sharpness(small), 2))
+        trace["std"].append(round(float(small.std()), 3))
+        trace["luma"].append(round(linear_luma(small), 6))
+        trace["clip"].append(round(clipping(gl), 5))
+        trace["dark"].append(round(crushed(small), 5))
+        trace["residual"].append(None)
 
         if ref is None:
             # first frame is always selected
@@ -140,6 +167,7 @@ def main():
         if gap < a.min_gap:
             continue
         res, ntr = parallax_residual(ref[0], ref[1], small)
+        trace["residual"][-1] = None if res is None else round(res, 3)
         crossed = (res is not None and res >= a.residual) or gap >= a.max_gap or (res is None and gap >= a.min_gap * 2)
         if crossing_at is None and crossed:
             crossing_at = fi
@@ -153,7 +181,8 @@ def main():
                 pfi, pframe, pres, psharp, pclip = pick
                 k = len(selected)
                 selected.append({"sel": k, "frame": pfi, "residual": pres, "sharpness": psharp, "clip": pclip,
-                                 "tracked": ntr, "gap": pfi - last_sel})
+                                 "tracked": ntr, "gap": pfi - last_sel,
+                                 "candidates": [[p[0], round(p[3], 2), round(p[4], 5)] for p in pending]})
                 if not a.dry_run:
                     cv2.imwrite(os.path.join(a.out, f"VID_{k:03d}_{pfi:04d}_2x1.jpg"), pframe, [cv2.IMWRITE_JPEG_QUALITY, 97])
                 pg = cv2.cvtColor(left_eye(pframe), cv2.COLOR_BGR2GRAY)
@@ -169,7 +198,7 @@ def main():
     print(f"\n{len(selected)} frames selected of {fi+1}; gaps {min(gaps) if gaps else 0}-{max(gaps) if gaps else 0} "
           f"(median {int(np.median(gaps)) if gaps else 0})")
     json.dump({"clip": os.path.abspath(a.clip), "fps": fps, "frames_total": fi + 1,
-               "params": vars(a), "selected": selected},
+               "params": vars(a), "selected": selected, "trace": trace},
               open(os.path.join(a.out, "selection.json"), "w"), indent=1)
     print(f"wrote {os.path.join(a.out, 'selection.json')}" + ("" if a.dry_run else f" and {len(selected)} frames"))
 

@@ -3,7 +3,8 @@ import AppKit
 import HSCore
 
 /// One project: its source, every stage's state, and a stage's metrics / checks / log.
-/// M1 runs ingest only; the other stages are read from the manifest the CLI writes.
+/// The app runs ingest, select (+ solve) and train; the other stages are read from the manifest
+/// the CLI writes.
 struct ProjectDetailView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: ProjectStore
@@ -23,6 +24,7 @@ struct ProjectDetailView: View {
                 }
                 if let m = project.manifest {
                     sourceBox(m)
+                    SelectView(project: project, manifest: m)
                     TrainView(project: project, manifest: m)
                     stagesBox(m)
                     GradeView(project: project)
