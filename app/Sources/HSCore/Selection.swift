@@ -66,6 +66,17 @@ public struct FrameQuality: Decodable, Sendable {
         }
     }
 
+    /// The pick hs select suggests matching every view's exposure to (frame_quality.pick_reference).
+    public struct ExposureReference: Decodable, Sendable, Hashable {
+        public let sel: Int
+        public let frame: Int
+        public let cap: String
+        public let ev: Double?
+        public let clip: Double?
+        public let relaxed: Bool?
+        public let why: String
+    }
+
     public struct Nearby: Decodable, Sendable, Hashable {
         public let frame: Int
         public let sharp: Double?
@@ -137,6 +148,7 @@ public struct FrameQuality: Decodable, Sendable {
     public let flagged: Int
     /// Problems with the whole set rather than one frame (every pick clips; a soft stretch).
     public let warnings: [String]?
+    public let exposureReference: ExposureReference?
     public let frames: [Frame]
     public let trace: Trace
 
@@ -146,6 +158,13 @@ public struct FrameQuality: Decodable, Sendable {
         case flagText = "flag_text"
         case measuredEyes = "measured_eyes"
         case flagCounts = "flag_counts"
+        case exposureReference = "exposure_reference"
+    }
+
+    /// The pick that became capture `capNNN` in the solved dataset (pick N is capture N).
+    public func frame(cap: String) -> Frame? {
+        guard let n = Int(cap.lowercased().replacingOccurrences(of: "cap", with: "")) else { return nil }
+        return frames.first { $0.sel == n }
     }
 
     public static func path(project: String) -> String {
@@ -195,5 +214,55 @@ public enum QualitySort: String, CaseIterable, Identifiable, Sendable {
         case .flags:
             return frames.sorted { (-$0.flags.count, $0.frame) < (-$1.flags.count, $1.frame) }
         }
+    }
+}
+
+// MARK: - hs exposure settings
+
+/// What `hs exposure` matches every training view to, and how.
+public struct ExposureSettings: Equatable, Sendable {
+    public enum Reference: String, CaseIterable, Identifiable, Sendable {
+        case auto, chosen, median
+        public var id: String { rawValue }
+        public var title: String {
+            switch self {
+            case .auto: return "Best frame"
+            case .chosen: return "A frame I pick"
+            case .median: return "Median of all views"
+            }
+        }
+    }
+
+    public var reference: Reference = .auto
+    /// The capture number used when reference == .chosen (pick N is capture N).
+    public var chosenCapture: Int?
+    /// true: exposure and white balance (--mode rgb); false: brightness only (--mode luma)
+    public var whiteBalance = true
+
+    public init() {}
+
+    public var referenceArgument: String? {
+        switch reference {
+        case .auto: return "auto"
+        case .median: return "median"
+        case .chosen: return chosenCapture.map { String(format: "cap%03d", $0) }
+        }
+    }
+
+    public var problem: String? {
+        reference == .chosen && chosenCapture == nil
+            ? "pick a frame: right-click one in the contact sheet, or type its number" : nil
+    }
+
+    public func arguments(project: String, dryRun: Bool = false) -> [String] {
+        var a = ["exposure", "-p", project]
+        if let r = referenceArgument, r != "median" { a += ["--reference", r] }
+        if !whiteBalance { a += ["--mode", "luma"] }
+        if dryRun { a.append("--dry-run") }
+        return a
+    }
+
+    public static func restoreArguments(project: String) -> [String] {
+        ["exposure", "-p", project, "--restore"]
     }
 }

@@ -54,7 +54,7 @@ hs ingest  -p P --frames DIR | --r3d RDM_DIR --take 067 [--res 1]     array sour
 hs select  -p P [--residual 1.5 --max-gap 90 --end N --dry-run]      frames + selection.json + quality.json + thumbs/ + contact.jpg
 hs solve   -p P                                                       prep → sfm --float-rig → export; per_image.json, coverage.json
 hs solve   -p P --scale-pair GA,GB,700 [--focal-px F]                 array project: monocolmap.py, one shared camera, metric scale from a measured spacing
-hs exposure -p P [--mode rgb|luma] [--restore] [--dry-run]            match exposure + white balance across the training views
+hs exposure -p P [--reference median|auto|capNNN] [--mode rgb|luma] [--restore] [--dry-run]   match every view to one reference (auto = select's best-exposed clean pick)
 hs masks   -p P [--radius 0.10] [--margin-mm 5] [--min-opacity 0.2]   per-view subject silhouettes for Brush's mask channel
 hs train   -p P [--brush PATH]                                        brush → train/exports/export_NNNNN.ply   (Mac only)
 hs move    -p P --preset sweep|boom|custom [--keys ...] [--name N]    move/N.json + move/N_aim_check.jpg

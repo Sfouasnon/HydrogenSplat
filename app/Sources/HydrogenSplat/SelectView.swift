@@ -326,12 +326,38 @@ struct SelectView: View {
 
     // MARK: contact sheet
 
+    private var exposureSettings: ExposureSettings {
+        model.exposureSettings[project.path] ?? ExposureSettings()
+    }
+
+    /// "reference" if this pick is what hs exposure will match to, "suggested" if it is the
+    /// report's best frame but another reference is chosen, else nil.
+    private func referenceRole(_ f: FrameQuality.Frame, _ q: FrameQuality) -> String? {
+        let e = exposureSettings
+        switch e.reference {
+        case .auto: return q.exposureReference?.sel == f.sel ? "exposure reference" : nil
+        case .chosen:
+            if e.chosenCapture == f.sel { return "exposure reference" }
+            return q.exposureReference?.sel == f.sel ? "suggested reference" : nil
+        case .median: return q.exposureReference?.sel == f.sel ? "suggested reference" : nil
+        }
+    }
+
+    private func useAsReference(_ f: FrameQuality.Frame) {
+        var e = exposureSettings
+        e.reference = .chosen
+        e.chosenCapture = f.sel
+        model.exposureSettings[project.path] = e
+    }
+
     private func contactSheet(_ q: FrameQuality) -> some View {
         let frames = visible(q)
         return LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 10, alignment: .top)],
                          alignment: .leading, spacing: 10) {
             ForEach(frames) { f in
-                FrameCard(project: project.path, frame: f, quality: q)
+                FrameCard(project: project.path, frame: f, quality: q,
+                          referenceRole: referenceRole(f, q),
+                          useAsReference: { useAsReference(f) })
             }
         }
     }
@@ -342,6 +368,8 @@ struct FrameCard: View {
     let project: String
     let frame: FrameQuality.Frame
     let quality: FrameQuality
+    var referenceRole: String? = nil
+    var useAsReference: (() -> Void)? = nil
 
     private var selectDir: String { (project as NSString).appendingPathComponent("select") }
     private var framePath: String? {
@@ -356,12 +384,21 @@ struct FrameCard: View {
                 } else {
                     Rectangle().fill(Color.secondary.opacity(0.12)).aspectRatio(16 / 9, contentMode: .fit)
                 }
-                Text("#\(frame.sel)")
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Capsule().fill(.black.opacity(0.6)))
-                    .foregroundStyle(.white)
-                    .padding(4)
+                HStack(spacing: 4) {
+                    Text("#\(frame.sel)")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(.black.opacity(0.6)))
+                        .foregroundStyle(.white)
+                    if let role = referenceRole {
+                        Label(role, systemImage: "sun.max.fill")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.yellow.opacity(0.85)))
+                            .foregroundStyle(.black)
+                    }
+                }
+                .padding(4)
             }
             .overlay(RoundedRectangle(cornerRadius: 3)
                 .stroke(frame.flagged ? Color.orange : Color.clear, lineWidth: 2))
@@ -406,6 +443,9 @@ struct FrameCard: View {
             Button("Reveal in Finder") {
                 if let p = framePath { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)]) }
             }.disabled(framePath == nil)
+            if let use = useAsReference {
+                Button("Use as exposure reference") { use() }
+            }
             if let n = frame.sharperNearby {
                 Button("Copy sharper frame number (\(n.frame))") {
                     NSPasteboard.general.clearContents()

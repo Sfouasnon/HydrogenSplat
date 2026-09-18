@@ -29,6 +29,9 @@ final class AppModel: ObservableObject {
     @Published var selectQueues: [String: RunQueue] = [:]
     /// Select panel settings per project path, kept for the session.
     @Published var selectSettings: [String: SelectSettings] = [:]
+    /// The exposure run per project path, and its panel settings.
+    @Published var exposureQueues: [String: RunQueue] = [:]
+    @Published var exposureSettings: [String: ExposureSettings] = [:]
     @Published var consoleHistory: [ConsoleSession] = []
 
     let store: ProjectStore

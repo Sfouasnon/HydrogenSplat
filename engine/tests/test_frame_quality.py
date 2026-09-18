@@ -148,6 +148,28 @@ class TestFrameQuality(unittest.TestCase):
         self.assertIsNone(f["eye_ev"])
         self.assertFalse(q["measured_eyes"])
 
+    def test_reference_is_the_least_clipped_clean_pick_near_the_median(self):
+        frames = [
+            {"sel": 0, "frame": 0, "ev": 0.0, "clip": 0.05, "flags": []},
+            {"sel": 1, "frame": 10, "ev": -0.6, "clip": 0.00, "flags": ["exposure"]},   # darkest: out
+            {"sel": 2, "frame": 20, "ev": 0.1, "clip": 0.01, "clip_R": 0.03, "flags": []},
+            {"sel": 3, "frame": 30, "ev": -0.2, "clip": 0.02, "flags": []},
+            {"sel": 4, "frame": 40, "ev": 0.0, "clip": 0.00, "flags": ["soft"]},         # blocked
+            {"sel": 5, "frame": 50, "ev": 0.2, "clip": 0.01, "flags": ["sharper_nearby"]},  # allowed
+        ]
+        r = fq.pick_reference(frames)
+        self.assertEqual((r["sel"], r["cap"]), (5, "cap005"))    # 1% beats 2%, and 2's right eye is 3%
+        self.assertFalse(r["relaxed"])
+        self.assertIn("1.0%", r["why"])
+        # nothing clean: falls back to every pick, and says so
+        r = fq.pick_reference([{"sel": 0, "frame": 0, "ev": 0.5, "clip": 0.1, "flags": ["exposure"]}])
+        self.assertTrue(r["relaxed"])
+        self.assertIsNone(fq.pick_reference([]))
+
+    def test_analyse_names_a_reference(self):
+        q = fq.analyse(clip())
+        self.assertEqual(q["exposure_reference"]["cap"], "cap000")
+
     def test_every_flag_has_text_for_the_app(self):
         codes = {"soft", "sharper_nearby", "exposure", "eye_exposure", "right_soft", "clipped",
                  "crushed", "noisy", "stood_still", "untracked"}

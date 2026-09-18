@@ -20,6 +20,13 @@ centred and no view is privileged). Medians, not means, so a blown window or a s
 highlight does not drag the gain. Clipped highlights are not recoverable -- a view that
 was already clipping still clips, and the report says how much.
 
+`--reference` changes what the views are matched TO. `median` (the default) is the centred
+reference above. `auto` takes the pick hs select's quality report names (frame_quality.
+pick_reference: a clean pick within a third of a stop of the median with the least clipping),
+and `capNNN` / `NNN` names a capture. With a single-frame reference that frame's left eye keeps
+its exposure and white point exactly (gain 1.0), every other view — both eyes — is scaled onto
+it, so the set looks like that photograph and the left/right sensor offset goes too.
+
 The originals are copied to solve/exposure_backup/ first, so `--restore` puts them back and
 a second run always starts from the untouched export.
 
@@ -47,6 +54,9 @@ def add_parser(sub):
     p = sub.add_parser("exposure", help="match exposure and white balance across the training views")
     p.add_argument("--mode", choices=("rgb", "luma"), default="rgb",
                    help="rgb also neutralises white-balance drift (default); luma matches brightness only")
+    p.add_argument("--reference", default="median",
+                   help="match to: median (of all views, default) | auto (hs select's best-exposed clean pick) "
+                        "| capNNN or NNN (that capture's left eye)")
     p.add_argument("--restore", action="store_true", help="put the original undistorted images back")
     p.add_argument("--dry-run", action="store_true", help="measure and report, write nothing")
     p.add_argument("--force", action="store_true",
@@ -148,8 +158,10 @@ def run(a, pj):
         shutil.copytree(images, backup)
 
     lut = _srgb_to_linear_lut()
-    views, med, clip, M, ref, gains, luma = _measure_set(a, images, views, lut)
+    views, med, clip, M, ref, gains, luma, ref_label, ref_why = _measure_set(a, images, views, lut, pj)
     pj.metric(STAGE, "views", len(views))
+    pj.metric(STAGE, "reference", ref_label)
+    pj.metric(STAGE, "reference_why", ref_why)
     pj.metric(STAGE, "luma_spread_before", round(float(luma.max() / max(luma.min(), 1e-9)), 3))
     pj.metric(STAGE, "gain_min", round(float(gains.min()), 3))
     pj.metric(STAGE, "gain_max", round(float(gains.max()), 3))
@@ -186,11 +198,12 @@ def run(a, pj):
             for (e, f), g in zip(views, gains)]
     json.dump({"note": "hs exposure: per-view gains applied in linear light to the undistorted "
                        "training images; the solve is untouched",
-               "mode": a.mode, "reference_linear_bgr": [float(x) for x in ref],
+               "mode": a.mode, "reference": ref_label, "reference_why": ref_why,
+               "reference_linear_bgr": [float(x) for x in ref],
                "backup": pj.rel(backup), "views": rows},
               open(report_path, "w"), indent=1)
     pj.artifact(STAGE, report_path, "json")
-    pj.m["exposure"] = {"mode": a.mode, "views": len(views),
+    pj.m["exposure"] = {"mode": a.mode, "views": len(views), "reference": ref_label,
                         "luma_spread_before": round(float(luma.max() / max(luma.min(), 1e-9)), 3),
                         "luma_spread_after": round(spread, 3),
                         "argv": list(sys.argv)}
@@ -198,23 +211,65 @@ def run(a, pj):
     _done(pj)
 
 
-def _measure_set(a, src_dir, views, lut):
-    """Per-view linear medians, clipped fraction and the gains that would centre them."""
+def _view_for(views, cap):
+    """The left-eye view of capture ``cap`` ("cap042"): cap042.jpg, or cap042_L.jpg style names."""
+    for eye, f in views:
+        stem = os.path.splitext(f)[0]
+        if eye == "L" and (stem == cap or stem.startswith(cap + "_")):
+            return (eye, f)
+    return None
+
+
+def _reference(a, pj, views, med, M):
+    """(linear BGR target, label, why) for --reference."""
+    r = str(getattr(a, "reference", None) or "median").strip()
+    if r.lower() == "median":
+        return np.median(M, axis=0), "median", "the median of every view's channel medians"
+    if r.lower() == "auto":
+        from .. import frame_quality
+        qp = pj.path("select", "quality.json")
+        if not os.path.exists(qp):
+            raise events.StageError("--reference auto needs select/quality.json",
+                                    hint="re-run hs select (it writes the quality report), or name a capture")
+        q = json.load(open(qp))
+        n_caps = sum(1 for e, _ in views if e == "L")
+        if n_caps != len(q.get("frames", [])):
+            raise events.StageError(f"the quality report has {len(q.get('frames', []))} picks but the dataset "
+                                    f"has {n_caps} captures, so pick N is not capture N",
+                                    hint="re-run hs select and hs solve, or name a capture")
+        pick = q.get("exposure_reference") or frame_quality.pick_reference(q["frames"])
+        if not pick:
+            raise events.StageError("no pick in the quality report has an exposure measurement")
+        cap, why = pick["cap"], f"auto: {pick['why']} (source frame {pick['frame']})"
+    else:
+        digits = r.lower().removeprefix("cap")
+        if not digits.isdigit():
+            raise events.StageError(f"--reference {r!r}: use median, auto, capNNN or NNN")
+        cap, why = f"cap{int(digits):03d}", "chosen by hand"
+    key = _view_for(views, cap)
+    if key is None:
+        raise events.StageError(f"--reference {cap}: no left-eye view {cap} in the dataset")
+    return med[key], cap, why
+
+
+def _measure_set(a, src_dir, views, lut, pj):
+    """Per-view linear medians, clipped fraction, the reference, and the gains onto it."""
     med, clip = {}, {}
     events.start(STAGE, "measure")
     for i, (eye, f) in enumerate(views):
         med[(eye, f)], clip[(eye, f)] = measure(os.path.join(src_dir, eye, f), lut)
         events.progress(STAGE, i + 1, len(views), step="measure")
     M = np.array([med[k] for k in views])                        # (n, 3) B G R
-    ref = np.median(M, axis=0)
+    ref, ref_label, ref_why = _reference(a, pj, views, med, M)
     if a.mode == "luma":
-        y = M @ np.array([0.0722, 0.7152, 0.2126])               # BGR weights
-        gains = np.repeat((np.median(y) / y)[:, None], 3, axis=1)
+        w = np.array([0.0722, 0.7152, 0.2126])                   # BGR weights
+        y = M @ w
+        gains = np.repeat((float(ref @ w) / y)[:, None], 3, axis=1)
     else:
         gains = ref[None, :] / M
     gains = np.clip(gains, GAIN_MIN, GAIN_MAX)
     luma = (M @ np.array([0.0722, 0.7152, 0.2126]))
-    return views, med, clip, M, ref, gains, luma
+    return views, med, clip, M, ref, gains, luma, ref_label, ref_why
 
 
 def _dry_run(a, pj, images, backup):
@@ -225,8 +280,8 @@ def _dry_run(a, pj, images, backup):
     if not views:
         raise events.StageError(f"no images in {pj.rel(src_dir)}")
     lut = _srgb_to_linear_lut()
-    views, med, clip, M, ref, gains, luma = _measure_set(a, src_dir, views, lut)
-    metrics = {"views": len(views),
+    views, med, clip, M, ref, gains, luma, ref_label, ref_why = _measure_set(a, src_dir, views, lut, pj)
+    metrics = {"views": len(views), "reference": ref_label, "reference_why": ref_why,
                "luma_spread_before": round(float(luma.max() / max(luma.min(), 1e-9)), 3),
                "gain_min": round(float(gains.min()), 3), "gain_max": round(float(gains.max()), 3),
                "clipped_fraction_max": round(float(max(clip.values())), 4),

@@ -289,6 +289,46 @@ class ExposureDryRun(Base):
         exposure.run(self.args(force=True), pj)
         self.assertEqual(pj.status("exposure"), "done")
 
+    def reference_project(self):
+        pj = self.solved_project()
+        write_jpg(os.path.join(pj.dataset_dir, "images", "L", "cap001_L.jpg"), 80)   # 60 vs 80: no clamp
+        return pj
+
+    def gains(self, pj):
+        rep = json.load(open(os.path.join(pj.dataset_dir, "exposure.json")))
+        return rep, {v["image"]: v["gain_bgr"] for v in rep["views"]}
+
+    def test_a_named_reference_keeps_its_exposure_and_moves_the_rest(self):
+        pj = self.reference_project()
+        exposure.run(self.args(reference="cap001"), pj)
+        rep, g = self.gains(pj)
+        self.assertEqual(rep["reference"], "cap001")
+        self.assertEqual(g["cap001_L.jpg"], [1.0, 1.0, 1.0])
+        self.assertTrue(all(x > 1.5 for x in g["cap000_L.jpg"]), g)       # 60 lifted to 80
+        self.assertEqual(pj.stage("exposure")["metrics"]["reference"], "cap001")
+        # plain number means the same capture
+        pj.release()
+        exposure.run(self.args(reference="1"), pj)
+        self.assertEqual(self.gains(pj)[1]["cap001_L.jpg"], [1.0, 1.0, 1.0])
+
+    def test_auto_reference_comes_from_the_select_quality_report(self):
+        pj = self.reference_project()
+        os.makedirs(pj.path("select"), exist_ok=True)
+        frames = [{"sel": 0, "frame": 0, "ev": -0.1, "clip": 0.01, "flags": []},
+                  {"sel": 1, "frame": 9, "ev": 0.1, "clip": 0.001, "flags": []}]
+        json.dump({"frames": frames}, open(pj.path("select", "quality.json"), "w"))
+        exposure.run(self.args(reference="auto", dry_run=True), pj)
+        m = pj.stage("exposure")["dry_run"]["metrics"]
+        self.assertEqual(m["reference"], "cap001")                        # the less clipped pick
+        self.assertIn("source frame 9", m["reference_why"])
+        # a report that does not line up with the dataset is refused, not guessed
+        frames.append({"sel": 2, "frame": 20, "ev": 0.0, "clip": 0.0, "flags": []})
+        json.dump({"frames": frames}, open(pj.path("select", "quality.json"), "w"))
+        with self.assertRaises(events.StageError):
+            exposure.run(self.args(reference="auto", dry_run=True), pj)
+        with self.assertRaises(events.StageError):
+            exposure.run(self.args(reference="cap007", dry_run=True), pj)
+
     def test_dry_run_and_restore_together_is_an_error(self):
         pj = self.solved_project()
         with self.assertRaises(events.StageError):

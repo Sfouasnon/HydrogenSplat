@@ -55,6 +55,42 @@ FLAG_TEXT = {
 }
 
 
+# flags that disqualify a frame as the exposure reference ("sharper_nearby" and "stood_still"
+# say nothing about how the frame is exposed)
+REFERENCE_BLOCKERS = {"soft", "exposure", "eye_exposure", "right_soft", "clipped", "crushed", "noisy",
+                      "untracked"}
+
+
+def pick_reference(frames, ev_tol=EV_TOL):
+    """The pick to match every view's exposure to, with the reason, or None.
+
+    Among picks with none of REFERENCE_BLOCKERS and within ev_tol of the set's median exposure,
+    the one with the least clipping (worse eye). Least clipping because a gain can only move
+    what was recorded: matching to a hotter frame pushes every darker view's highlights into
+    the clipping that frame has, while matching to the cleanest frame in the family mostly
+    darkens, which loses nothing. The ev window keeps that from drifting to the darkest frame —
+    the whole set moves by at most ev_tol. Ties go to the smaller |ev|, then the higher focus.
+    Falls back to all picks with an exposure if nothing qualifies.
+    """
+    def worst_clip(f):
+        return max(f.get("clip") or 0.0, f.get("clip_R") or 0.0)
+
+    usable = [f for f in frames if f.get("ev") is not None]
+    family = [f for f in usable if abs(f["ev"]) <= ev_tol and not (set(f.get("flags", [])) & REFERENCE_BLOCKERS)]
+    pool, relaxed = (family, False) if family else (usable, True)
+    if not pool:
+        return None
+    best = min(pool, key=lambda f: (round(worst_clip(f), 4), abs(f["ev"]), -(f.get("focus_rel") or 0.0)))
+    clips = sorted(worst_clip(f) for f in usable)
+    med = clips[len(clips) // 2] if clips else 0.0
+    why = (f"least clipping of the {len(pool)} {'picks' if relaxed else 'clean picks within ' + format(ev_tol, '.2f') + ' EV of the median'}: "
+           f"{100 * worst_clip(best):.1f}% at 250+ vs {100 * med:.1f}% median, {best['ev']:+.2f} EV"
+           + (f", focus {best['focus_rel']:.2f}x" if best.get("focus_rel") is not None else ""))
+    return {"sel": best["sel"], "frame": best["frame"], "cap": f"cap{best['sel']:03d}",
+            "ev": best["ev"], "clip": round(worst_clip(best), 5), "relaxed": relaxed, "why": why,
+            "pool": len(pool)}
+
+
 def _median(xs):
     xs = [x for x in xs if x is not None and not (isinstance(x, float) and math.isnan(x))]
     return float(np.median(xs)) if xs else None
@@ -230,6 +266,7 @@ def analyse(selection, measured=None):
         "measured_eyes": bool(measured),
         "flag_counts": counts,
         "flagged": sum(1 for fr in frames if fr["flags"]),
+        "exposure_reference": pick_reference(frames),
         "frames": frames,
         "trace": {"frame": t_frames, "sharp": tr.get("sharp", []),
                   "focus_rel": [_r(x / med_focus, 3) if x and med_focus else None for x in t_focus],
