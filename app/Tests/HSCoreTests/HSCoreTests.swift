@@ -1,4 +1,5 @@
 import XCTest
+import simd
 @testable import HSCore
 
 final class EventTests: XCTestCase {
@@ -344,5 +345,128 @@ final class ProjectStoreWatchTests: XCTestCase {
         XCTAssertEqual(store.project(at: dir)?.manifest?.stage("train")?.status, .done)
         XCTAssertNil(store.project(at: dir)?.lock)
         try? FileManager.default.removeItem(atPath: root)
+    }
+}
+
+// MARK: - Splat viewer
+
+final class ViewerTests: XCTestCase {
+    func cameras() throws -> CameraSet {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "cameras_fixture", withExtension: "json", subdirectory: "Fixtures"))
+        return try CameraSet.load(path: url.path)
+    }
+
+    /// The fixture is real `hs cameras` output (engine/hs/cameras.py), not hand-written JSON.
+    func testDecodesEngineOutput() throws {
+        let c = try cameras()
+        XCTAssertEqual(c.schema, 1)
+        XCTAssertTrue(c.stereo)
+        XCTAssertEqual(c.views.count, 6)
+        XCTAssertEqual(c.captures, ["cap000", "cap001", "cap002"])
+        XCTAssertEqual(c.rigNpzMD5, "06fcd8d17eb03f11bfe7ea2eeffb0a05")
+        let v = try XCTUnwrap(c.view(capture: "cap001", eye: "R"))
+        XCTAssertEqual(v.name, "cap001_R")
+        XCTAssertEqual([v.w, v.h], [1909, 1071])                 // the right eye's own canvas
+        XCTAssertEqual(simd_length(c.up), 1, accuracy: 1e-5)
+        XCTAssertTrue(try XCTUnwrap(c.view(capture: "cap001", eye: "L")).label.hasPrefix("cap001 L · az "))
+    }
+
+    /// A world point must land where numpy says the capture's own pinhole puts it, after the
+    /// OpenCV->Metal flip and the fit into a drawable of a different shape. Reference values
+    /// computed in numpy from the same fixture: pixel (1030.2045, 488.0155) in cap001_L,
+    /// drawable 2400x1200, near 0.02, far 200.
+    func testCapturePoseProjectsLikeThePinhole() throws {
+        let pose = try XCTUnwrap(try cameras().views[2].pose)
+        XCTAssertEqual(pose.w, 1913)
+        let P = ViewerMath.projection(pose: pose, drawableWidth: 2400, drawableHeight: 1200, near: 0.02, far: 200)
+        let V = ViewerMath.viewMatrix(c2w: pose.c2w)
+        let clip = P * V * SIMD4<Float>(0.03, -0.02, 0.01, 1)
+        XCTAssertEqual(clip.x / clip.w, 0.06869016, accuracy: 2e-4)
+        XCTAssertEqual(clip.y / clip.w, 0.09037191, accuracy: 2e-4)
+        XCTAssertEqual(clip.z / clip.w, 0.96736098, accuracy: 1e-3)
+        XCTAssertGreaterThan(clip.w, 0)                           // in front of the camera
+    }
+
+    func testCentredPinholeIsTheOrdinaryPerspective() {
+        let fovy: Float = 65 * .pi / 180
+        let fy = 600 / tan(fovy / 2)
+        let pose = ViewerPose(c2w: matrix_identity_float4x4, w: 2400, h: 1200, fx: fy, fy: fy, cx: 1200, cy: 600)
+        let a = ViewerMath.projection(pose: pose, drawableWidth: 2400, drawableHeight: 1200)
+        let b = ViewerMath.perspective(fovy: fovy, aspect: 2)
+        for c in 0..<4 { for r in 0..<4 { XCTAssertEqual(a[c][r], b[c][r], accuracy: 1e-5, "col \(c) row \(r)") } }
+        XCTAssertEqual(pose.verticalFOV, fovy, accuracy: 1e-6)
+    }
+
+    /// Looking from a capture's position along its axis, with its own "up", is the capture.
+    func testLookAtReproducesACapturePose() throws {
+        let pose = try XCTUnwrap(try cameras().views[0].pose)
+        let L = ViewerMath.lookAt(eye: pose.position, target: pose.position + pose.forward, up: -pose.down)
+        let V = ViewerMath.viewMatrix(c2w: pose.c2w)
+        for c in 0..<4 { for r in 0..<4 { XCTAssertEqual(L[c][r], V[c][r], accuracy: 1e-4, "col \(c) row \(r)") } }
+    }
+
+    func testOrbitKeepsDistanceAndLeavesAPoseWithoutJumping() throws {
+        let set = try cameras()
+        let pose = try XCTUnwrap(set.views[0].pose)
+        var o = OrbitCamera(leaving: pose, subject: set.subject, up: set.up)
+        XCTAssertEqual(simd_length(o.eye - pose.position), 0, accuracy: 1e-6)           // same place
+        XCTAssertEqual(simd_dot(simd_normalize(o.target - o.eye), pose.forward), 1, accuracy: 1e-5)   // same direction
+        XCTAssertEqual(o.distance, 0.603, accuracy: 0.01)                                 // the ring is 603 mm out
+        let d = o.distance
+        let e0 = asin(simd_dot(simd_normalize(o.eye - o.target), o.up))
+        o.rotate(yaw: 0.7, pitch: 0.2)
+        XCTAssertEqual(o.distance, d, accuracy: 1e-4)
+        let e1 = asin(simd_dot(simd_normalize(o.eye - o.target), o.up))
+        XCTAssertEqual(e1 - e0, 0.2, accuracy: 1e-3)                                      // pitch up raises the eye
+        o.rotate(yaw: 0, pitch: 10)                                                       // and it cannot go over the top
+        XCTAssertLessThan(asin(simd_dot(simd_normalize(o.eye - o.target), o.up)), .pi / 2)
+        o.dolly(factor: 0.5)
+        XCTAssertEqual(o.distance, d / 2, accuracy: 1e-4)
+        let t = o.target
+        o.pan(dx: 0.1, dy: 0)
+        XCTAssertEqual(o.distance, d / 2, accuracy: 1e-4)
+        XCTAssertGreaterThan(simd_length(o.target - t), 0)
+    }
+
+    func testMovePathDecodesTheEngineFormat() throws {
+        let json = #"{"note":"x","width":1913,"height":1073,"K":[[1500,0,956.5],[0,1498,536.5],[0,0,1]],"fps":30,"frames":[{"c2w":[[1,0,0,0.1],[0,1,0,0.2],[0,0,1,-0.6],[0,0,0,1]]}]}"#
+        let m = try JSONDecoder().decode(MovePath.self, from: Data(json.utf8))
+        let p = try XCTUnwrap(m.pose(at: 0))
+        XCTAssertEqual(p.position, SIMD3<Float>(0.1, 0.2, -0.6))
+        XCTAssertEqual([p.fx, p.fy, p.cx, p.cy], [1500, 1498, 956.5, 536.5])
+        XCTAssertNil(m.pose(at: 1))
+    }
+
+    func testModelListingPairsEachPlyWithItsCameras() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("hsviewer-\(UUID().uuidString)").path
+        defer { try? fm.removeItem(atPath: root) }
+        for d in ["archive/base", "archive/no-rig", "train/exports", "prune"] {
+            try fm.createDirectory(atPath: root + "/" + d, withIntermediateDirectories: true)
+        }
+        for f in ["archive/base/export_40000.ply", "archive/base/rig.npz", "archive/no-rig/export_40000.ply",
+                  "train/exports/export_5000.ply", "train/exports/export_40000.ply", "prune/export_40000_pruned_r100.ply"] {
+            fm.createFile(atPath: root + "/" + f, contents: Data("x".utf8))
+        }
+        let list = ViewerModelFile.list(project: root)
+        XCTAssertEqual(list.map(\.name), ["base", "current", "prune/export_40000_pruned_r100.ply"])   // no rig, no entry
+        XCTAssertTrue(list[1].ply.hasSuffix("export_40000.ply"))          // 40000 > 5000 as numbers ("5000" > "40000" as strings)
+        XCTAssertEqual(list[0].camerasArguments, ["cameras", "-p", root, "--archive", "base"])
+        XCTAssertTrue(list[0].camerasPath.hasSuffix("viewer/cameras_base.json"))
+        XCTAssertEqual(list[1].camerasArguments, ["cameras", "-p", root])
+        XCTAssertTrue(list[2].camerasPath.hasSuffix("viewer/cameras_current.json"))
+    }
+
+    /// MIT's one condition: the copyright and permission notices ship with the app.
+    func testAcknowledgementsCarryTheRequiredNotices() {
+        let names = Acknowledgements.bundled.map(\.name)
+        XCTAssertEqual(names, ["MetalSplatter", "spz-swift"])
+        for a in Acknowledgements.bundled {
+            XCTAssertTrue(a.licenseText.contains("Permission is hereby granted, free of charge"), a.name)
+            XCTAssertTrue(a.licenseText.contains("The above copyright notice and this permission notice shall be included"), a.name)
+            XCTAssertTrue(a.licenseText.contains("THE SOFTWARE IS PROVIDED \"AS IS\""), a.name)
+        }
+        XCTAssertTrue(Acknowledgements.bundled[0].licenseText.contains("Copyright (c) 2026 Sean Cier"))
+        XCTAssertTrue(Acknowledgements.bundled[1].licenseText.contains("Copyright (c) 2024 Niantic Labs"))
     }
 }

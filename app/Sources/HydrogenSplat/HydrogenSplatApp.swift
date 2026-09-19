@@ -27,6 +27,7 @@ struct HydrogenSplatApp: App {
                 .tint(Brand.tally)
         }
         .commands {
+            CommandGroup(replacing: .appInfo) { AboutCommand() }
             CommandGroup(after: .newItem) {
                 Button("New Project from Clip…") { model.selection = .ingest }
                     .keyboardShortcut("n")
@@ -34,5 +35,22 @@ struct HydrogenSplatApp: App {
                     .keyboardShortcut("r")
             }
         }
+
+        // One model per window; two windows side by side is the A/B. No state restoration:
+        // reopening a 500 MB model at every launch is not a favour.
+        WindowGroup("Model", id: "viewer", for: ViewerModelFile.self) { $file in
+            if let f = file {
+                SplatViewerWindow(file: f)
+                    .environmentObject(model)
+                    .frame(minWidth: 900, minHeight: 600)
+                    .tint(Brand.tally)
+            }
+        }
+        .restorationBehavior(.disabled)
+        .defaultSize(width: 1280, height: 800)
+
+        Window("About HydrogenSplat", id: "about") { AboutView() }
+            .windowResizability(.contentSize)
+            .restorationBehavior(.disabled)
     }
 }

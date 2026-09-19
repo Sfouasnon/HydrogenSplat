@@ -27,6 +27,7 @@ struct ProjectDetailView: View {
                     SelectView(project: project, manifest: m)
                     ExposureView(project: project, manifest: m)
                     TrainView(project: project, manifest: m)
+                    ModelsBox(project: project)
                     stagesBox(m)
                     GradeView(project: project)
                     if let name = selectedStage ?? m.lastDone, let st = m.stage(name) {
