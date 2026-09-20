@@ -19,6 +19,8 @@ struct SelectView: View {
     @State private var only: String?          // a flag code, or "flagged" / "clean"
     @State private var showAdvanced = false
     @State private var confirmRedo = false
+    /// The contact sheet can run to hundreds of stills; closed unless asked for, and remembered.
+    @AppStorage("select.stillsOpen") private var stillsOpen = false
 
     private var settings: Binding<SelectSettings> {
         Binding(get: { model.selectSettings[project.path] ?? SelectSettings() },
@@ -48,7 +50,7 @@ struct SelectView: View {
                         Divider()
                         summary(q)
                         charts(q)
-                        contactSheet(q)
+                        stills(q)
                     } else if selectDone {
                         Text("This selection was made before the app measured frames. Press Select Frames to redo it with the quality report.")
                             .foregroundStyle(.secondary)
@@ -220,7 +222,7 @@ struct SelectView: View {
 
     private func chip(_ title: String, code: String?, count: Int) -> some View {
         let on = only == code
-        return Button { only = code } label: {
+        return Button { only = code; stillsOpen = true } label: {
             Text("\(title) \(count)")
                 .font(.caption.weight(on ? .semibold : .regular))
                 .padding(.horizontal, 8).padding(.vertical, 3)
@@ -348,6 +350,31 @@ struct SelectView: View {
         e.reference = .chosen
         e.chosenCapture = f.sel
         model.exposureSettings[project.path] = e
+    }
+
+    /// A header that opens and closes the contact sheet. Closed, no thumbnail is built or read.
+    private func stills(_ q: FrameQuality) -> some View {
+        let shown = visible(q).count
+        return VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { stillsOpen.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .rotationEffect(.degrees(stillsOpen ? 90 : 0))
+                        .frame(width: 12)
+                    Text(stillsOpen ? "Hide stills" : "Show stills").font(.subheadline.weight(.semibold))
+                    Text(shown == q.frames.count ? "\(shown)" : "\(shown) of \(q.frames.count)")
+                        .foregroundStyle(.secondary).monospacedDigit()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("The contact sheet: every pick's thumbnail and numbers. The chips above filter it.")
+            if stillsOpen {
+                contactSheet(q)
+            }
+        }
     }
 
     private func contactSheet(_ q: FrameQuality) -> some View {

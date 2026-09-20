@@ -12,6 +12,7 @@ is how a move is actually described on set ("boom down, decelerate, pull back, a
     arc    left 24         speed 2
     hold   0.5s
     arc    right 90        speed 3
+    hull   50              # optional: the hull limit in mm for this move (default 25)
 
 Speed is tenths: 10/10 is 30 deg/s of orbit and 150 mm/s of dolly, and `4>1` ramps across the
 cue, which is how a deceleration into a landing is written. Every cue is walked one frame at a
@@ -59,6 +60,10 @@ def parse(text):
                 start = {"az": float(d["az"]), "el": float(d["el"]), "off": float(d.get("dolly", 0))}
             elif head == "aim":
                 opts["aim"] = [float(x) for x in re.split(r"[,\s]+", " ".join(w[1:])) if x]
+            elif head == "hull":
+                opts["hull"] = float(w[1].lower().rstrip("m"))
+                if not 5.0 <= opts["hull"] <= 200.0:
+                    raise ScriptError("hull must be 5-200 mm")
             elif head == "fps":
                 opts["fps"] = float(w[1])
             elif head == "hold":
@@ -113,19 +118,33 @@ def _speed(words):
     return a, a
 
 
+def radius_grid(cr, hull=HULL_MM):
+    """The radii a bearing's shell is searched over. It has to cover the captures' own distance
+    plus the hull either side: a fixed 120-600 mm (the coins sat 220-315 mm out) made every
+    start on a person captured from 0.6-1.7 m "out of reach", including a real camera's own
+    position. The grid keeps its 2 mm steps on the old origin, so sets inside 120-600 mm
+    compile exactly as before."""
+    lo = min(R_LO, float(np.min(cr)) - 2 * hull)
+    hi = max(R_HI, float(np.max(cr)) + 2 * hull)
+    lo = R_LO - R_STEP * np.ceil(max(R_LO - max(lo, R_STEP), 0.0) / R_STEP)
+    return np.arange(lo, hi + 1e-9, R_STEP)
+
+
 class Reach:
     """Where a virtual camera may stand, measured against the real camera centres."""
 
     SIGMA_DEG = 8.0        # angular width of the shell smoother
 
-    def __init__(self, CL, subject, up, ref, right):
+    def __init__(self, CL, subject, up, ref, right, hull=HULL_MM):
         self.CL, self.subject, self.up, self.ref, self.right = CL, subject, up, ref, right
+        self.hull = float(hull)
         self._cache = {}
         V = CL - subject
         self.cr = np.linalg.norm(V, axis=1)
         self.cel = np.degrees(np.arcsin(np.clip(V @ up / self.cr, -1, 1)))
         Hh = V - np.outer(V @ up, up)
         self.caz = np.degrees(np.arctan2(Hh @ right, Hh @ ref))
+        self.radii = radius_grid(self.cr, self.hull)
 
     def smooth_radius(self, az, el):
         """The captured shell as a continuous function of bearing.
@@ -148,15 +167,15 @@ class Reach:
         if key in self._cache:
             return self._cache[key]
         d = self.direction(az, el)
-        rs = np.arange(R_LO, R_HI + 1e-9, R_STEP)
+        rs = self.radii
         P = self.subject[None, :] + rs[:, None] * d[None, :]
         near = np.sqrt(((P[:, None, :] - self.CL[None, :, :]) ** 2).sum(-1)).min(1)
         k = int(np.argmin(near))
         out = None
-        if near[k] <= HULL_MM:
+        if near[k] <= self.hull:
             # the run containing the closest radius, not the outer bounds: two cameras at
             # different depths on one bearing leave a gap between them that is NOT reachable
-            ok = near <= HULL_MM
+            ok = near <= self.hull
             lo_i = k
             while lo_i > 0 and ok[lo_i - 1]:
                 lo_i -= 1
@@ -234,15 +253,18 @@ def walk(start, cues, reach, fps=30.0):
     return samples, reports
 
 
-def build(rig_npz, text, out_path, fps=30.0, aim_point=None):
-    """Compile a script into the move JSON the path renderer reads. -> report dict."""
+def frame(rig_npz, aim_point=None):
+    """The script's coordinate frame: subject, up, and the azimuth reference, from rig.npz.
+
+    Azimuth 0 is the mean horizontal bearing of the captures seen from the median of the sparse
+    points; `right` (positive azimuth) is the cameras' mean x axis. `ref` and `right` are always
+    measured about the SfM median, even when an aim point moves the subject, so an `aim` line
+    does not rotate the script's azimuths."""
     G = np.load(rig_npz, allow_pickle=True)
     names = [str(x) for x in G["names"]]
     L = rig.left_indices(G, names)
     C = G["C"].astype(np.float64)
     R = G["R"].astype(np.float64)
-    t = G["t"].astype(np.float64)
-    K = G["K"].astype(np.float64)
     pts = G["pts"].astype(np.float64)
     subject = np.array(aim_point, float) if aim_point is not None else np.median(pts, axis=0)
 
@@ -257,13 +279,62 @@ def build(rig_npz, text, out_path, fps=30.0, aim_point=None):
     ref -= (ref @ up) * up
     ref /= np.linalg.norm(ref)
     right = xr - (xr @ up) * up
+    # Gram-Schmidt against ref: azimuth is atan2(H.right, H.ref) one way and
+    # cos(az) ref + sin(az) right the other, which are inverses only on an orthonormal basis.
+    # The cameras' mean x axis is ~90 deg from ref on a narrow set (coins: 97 deg) and nothing
+    # like it on a wide one (Stormtrooper: 69 deg), where a capture's own az/el pointed 260 mm
+    # away from it.
+    right -= (right @ ref) * ref
     right /= np.linalg.norm(right)
+    return {"G": G, "names": names, "L": L, "subject": subject, "up": up, "down": down,
+            "ref": ref, "right": right, "CL": CL}
+
+
+def locate(rig_npz, p_mm, aim_point=None, hull=HULL_MM, _fr=None, _reach=None):
+    """Where a camera centre (solve coordinates, mm) sits in script terms: az, el, and the dolly
+    offset from the captured shell at that bearing. -> dict; `reachable` says whether a `start`
+    line there would compile (within the hull, and inside the reachable band on its ray)."""
+    fr = _fr or frame(rig_npz, aim_point)
+    reach = _reach or Reach(fr["CL"], fr["subject"], fr["up"], fr["ref"], fr["right"], hull)
+    V = np.asarray(p_mm, float) - fr["subject"]
+    r = float(np.linalg.norm(V))
+    if r < 1e-6:
+        return {"reachable": False, "why": "that is the subject itself"}
+    el = float(np.degrees(np.arcsin(np.clip(V @ fr["up"] / r, -1, 1))))
+    Hh = V - (V @ fr["up"]) * fr["up"]
+    az = float(np.degrees(np.arctan2(Hh @ fr["right"], Hh @ fr["ref"])))
+    near = np.linalg.norm(fr["CL"] - np.asarray(p_mm, float), axis=1)
+    k = int(np.argmin(near))
+    out = {"az": az, "el": el, "r_mm": r, "nearest_capture": rig.capture_name(fr["names"][fr["L"][k]]),
+           "nearest_mm": float(near[k])}
+    sh = reach.shell(az, el)
+    if sh is None:
+        out.update(reachable=False, why=f"nothing was captured within {hull:.0f} mm of this bearing")
+        return out
+    rnom, rlo, rhi, _ = sh
+    off = r - rnom
+    out.update(shell_mm=rnom, band_mm=[rlo, rhi], dolly=off, reachable=bool(rlo - 1e-6 <= r <= rhi + 1e-6))
+    if not out["reachable"]:
+        out["why"] = (f"{r:.0f} mm from the subject; the capture reaches {rlo:.0f}-{rhi:.0f} mm on this bearing "
+                      f"— a start here is pulled to {min(max(r, rlo), rhi):.0f} mm")
+    return out
+
+
+def build(rig_npz, text, out_path, fps=30.0, aim_point=None):
+    """Compile a script into the move JSON the path renderer reads. -> report dict."""
+    fr = frame(rig_npz, aim_point)
+    G, names, L = fr["G"], fr["names"], fr["L"]
+    R = G["R"].astype(np.float64)
+    t = G["t"].astype(np.float64)
+    K = G["K"].astype(np.float64)
+    subject, up, down, ref, right, CL = fr["subject"], fr["up"], fr["down"], fr["ref"], fr["right"], fr["CL"]
 
     start, cues, opts = parse(text)
     fps = opts.get("fps", fps)
     if "aim" in opts and aim_point is None:
         subject = np.array(opts["aim"], float)
-    reach = Reach(CL, subject, up, ref, right)
+    hull = opts.get("hull", HULL_MM)
+    reach = Reach(CL, subject, up, ref, right, hull)
     samples, reports = walk(start, cues, reach, fps)
     if reports and reports[0].get("error"):
         raise ScriptError(reports[0]["error"] + f" (az {start['az']:+.0f} el {start['el']:+.0f})")
@@ -337,6 +408,12 @@ def build(rig_npz, text, out_path, fps=30.0, aim_point=None):
         "spike": {"frame": spike, "t": spike / fps, "mm_s": float(d[spike])} if has_spike else None,
         "distance_mm": [float(dist.min()), float(dist.max())],
         "hull_mm": [float(near.min()), float(near.max()), float(np.median(near))],
-        "aim": aim, "cues": reports, "start": start,
+        "aim": aim, "cues": reports, "start": start, "hull_limit_mm": hull,
         "clamped": [r for r in reports if r.get("clamped")],
+        # for the app's move panel: the path and the captures in the script's own coordinates
+        "track": [[round(s_["az"], 2), round(s_["el"], 2), round(s_["r"], 1), s_["seg"]] for s_ in samples],
+        "captures": [[round(float(a_), 2), round(float(e_), 2), round(float(r_), 1)]
+                     for a_, e_, r_ in zip(reach.caz, reach.cel, reach.cr)],
+        "capture_names": [rig.capture_name(names[v]) for v in L],
+        "view": names[vmid],
     }

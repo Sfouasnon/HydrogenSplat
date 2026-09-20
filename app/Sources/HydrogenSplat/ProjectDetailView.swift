@@ -11,7 +11,47 @@ struct ProjectDetailView: View {
     let project: ProjectSummary
     @State private var selectedStage: String?
 
+    private var page: Binding<ProjectPage> {
+        Binding(get: { model.projectPage[project.path] ?? .pipeline },
+                set: { model.projectPage[project.path] = $0 })
+    }
+
     var body: some View {
+        Group {
+            if page.wrappedValue == .viewer, project.manifest != nil {
+                ModelViewerPane(scene: model.viewerScene, project: project)
+            } else {
+                pipeline
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("Page", selection: page) {
+                    ForEach(ProjectPage.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .disabled(project.manifest == nil)
+                .help("Pipeline: every stage. Viewer: look at a trained model (⌘1 / ⌘2).")
+            }
+            ToolbarItemGroup {
+                Button { store.reload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)])
+                } label: { Label("Reveal in Finder", systemImage: "folder") }
+            }
+        }
+        .background {
+            // ⌘1 / ⌘2 switch pages without reaching for the toolbar
+            Group {
+                Button("") { page.wrappedValue = .pipeline }.keyboardShortcut("1")
+                Button("") { page.wrappedValue = .viewer }.keyboardShortcut("2")
+            }
+            .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+        }
+    }
+
+    private var pipeline: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
@@ -27,6 +67,7 @@ struct ProjectDetailView: View {
                     SelectView(project: project, manifest: m)
                     ExposureView(project: project, manifest: m)
                     TrainView(project: project, manifest: m)
+                    ModelsBox(scene: model.viewerScene, project: project)
                     stagesBox(m)
                     GradeView(project: project)
                     if let name = selectedStage ?? m.lastDone, let st = m.stage(name) {
@@ -38,14 +79,6 @@ struct ProjectDetailView: View {
             }
             .padding(24)
             .frame(maxWidth: 1100, alignment: .leading)
-        }
-        .toolbar {
-            ToolbarItemGroup {
-                Button { store.reload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)])
-                } label: { Label("Reveal in Finder", systemImage: "folder") }
-            }
         }
     }
 

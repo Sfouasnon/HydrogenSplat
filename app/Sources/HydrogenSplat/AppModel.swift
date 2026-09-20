@@ -1,6 +1,12 @@
 import SwiftUI
 import HSCore
 
+enum ProjectPage: String, CaseIterable, Identifiable {
+    case pipeline = "Pipeline"
+    case viewer = "Viewer"
+    var id: String { rawValue }
+}
+
 enum SidebarItem: Hashable {
     case setup
     case ingest
@@ -33,6 +39,25 @@ final class AppModel: ObservableObject {
     @Published var exposureQueues: [String: RunQueue] = [:]
     @Published var exposureSettings: [String: ExposureSettings] = [:]
     @Published var consoleHistory: [ConsoleSession] = []
+    /// Pipeline or Viewer, per project path.
+    @Published var projectPage: [String: ProjectPage] = [:]
+    /// The model chosen in the Viewer page, per project path.
+    @Published var viewerFile: [String: ViewerModelFile] = [:]
+    /// The in-window viewer's scene: one model held at a time, kept loaded while the page is
+    /// switched away so coming back is instant. Separate model windows own their own scenes.
+    let viewerScene = SplatScene()
+    /// The move panel's build / render run per project path, and the script it has open.
+    @Published var moveQueues: [String: RunQueue] = [:]
+    @Published var moveSelection: [String: String] = [:]
+    /// The keyframe editor per project path (it outlives leaving the Viewer page).
+    private var moveEditors: [String: MoveEditor] = [:]
+
+    func moveEditor(project: String) -> MoveEditor {
+        if let e = moveEditors[project] { return e }
+        let e = MoveEditor(project: project, scene: viewerScene)
+        moveEditors[project] = e
+        return e
+    }
 
     let store: ProjectStore
     private static let key = "engineConfig.v1"

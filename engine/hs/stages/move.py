@@ -253,10 +253,14 @@ def _from_script(a, pj, rig, name, out):
     pj.metric(STAGE, f"{name}.cues", cues)
 
     hmin, hmax, hmed = rep["hull_mm"]
+    limit = float(rep.get("hull_limit_mm", HULL_MAX_MM))
     pj.metric(STAGE, f"{name}.hull_max_mm", round(hmax, 1))
-    pj.check(STAGE, "hull_within_25mm", hmax <= HULL_MAX_MM,
+    pj.metric(STAGE, f"{name}.hull_limit_mm", limit)
+    # the script may set its own limit (`hull 50`); the check says so rather than pretending 25
+    pj.check(STAGE, "hull_within_25mm" if limit == HULL_MAX_MM else f"hull_within_{limit:g}mm", hmax <= limit + 0.05,
              value=f"virtual camera never more than {hmax:.0f} mm from a real camera "
-                   f"(median {hmed:.0f}; pass \u2264 {HULL_MAX_MM:.0f})", move=name)
+                   f"(median {hmed:.0f}; pass \u2264 {limit:.0f}"
+                   + ("" if limit == HULL_MAX_MM else f" set by the script, default {HULL_MAX_MM:.0f}") + ")", move=name)
 
     short = [c for c in rep["cues"] if c.get("clamped")]
     pj.check(STAGE, "every_cue_completed", not short,
