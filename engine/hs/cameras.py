@@ -64,7 +64,21 @@ def compute(rig_npz):
         "subject_m": [x / 1000.0 for x in cov["subject_mm"]],
         "up_world": cov["up_world"],
         "views": views,
+        # the solve's sparse points (metres, evenly thinned): what a click in the viewer snaps
+        # to when a move's anchor is placed on a person
+        "points_m": _points(G),
     }
+
+
+MAX_POINTS = 20000
+
+
+def _points(G):
+    if "pts" not in G.files:
+        return []
+    P = G["pts"].astype(np.float64) / 1000.0
+    step = max(1, int(np.ceil(len(P) / MAX_POINTS)))
+    return [[round(float(x), 5) for x in p] for p in P[::step]]
 
 
 def write(rig_npz, out_path):

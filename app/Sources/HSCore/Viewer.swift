@@ -130,10 +130,16 @@ public struct CameraSet: Decodable, Sendable {
     public let subjectM: [Double]
     public let upWorld: [Double]
     public let views: [ViewerCamera]
+    /// The solve's sparse points in metres, thinned (hs cameras); empty from older exports.
+    public let pointsM: [[Double]]?
 
     enum CodingKeys: String, CodingKey {
         case schema, stereo, views
-        case rigNpzMD5 = "rig_npz_md5", subjectM = "subject_m", upWorld = "up_world"
+        case rigNpzMD5 = "rig_npz_md5", subjectM = "subject_m", upWorld = "up_world", pointsM = "points_m"
+    }
+
+    public var points: [SIMD3<Float>] {
+        (pointsM ?? []).compactMap { ViewerMath.vector($0) }
     }
 
     public static func load(path: String) throws -> CameraSet {
@@ -202,12 +208,19 @@ public enum CameraExport {
 // MARK: - Camera moves (move/*.json)
 
 public struct MovePath: Decodable, Sendable {
-    public struct Frame: Decodable, Sendable { public let c2w: [[Double]] }
+    public struct Frame: Decodable, Sendable {
+        public let c2w: [[Double]]
+        public init(c2w: [[Double]]) { self.c2w = c2w }
+    }
     public let width: Int
     public let height: Int
     public let K: [[Double]]
     public let fps: Double
     public let frames: [Frame]
+
+    public init(width: Int, height: Int, K: [[Double]], fps: Double, frames: [Frame]) {
+        self.width = width; self.height = height; self.K = K; self.fps = fps; self.frames = frames
+    }
 
     public static func load(path: String) throws -> MovePath {
         try JSONDecoder().decode(MovePath.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
