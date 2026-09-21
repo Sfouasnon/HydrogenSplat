@@ -35,7 +35,15 @@ against their neighbours, and where a better frame sat.
 Usage:
   python3 select_frames.py capture_video/VID_..._2x1.h4v -o capture_video/frames5
         [--residual 1.5] [--min-gap 6] [--max-gap 90] [--search 4] [--max-clip 0.02]
-        [--work-width 480] [--start 0] [--end -1] [--dry-run]
+        [--work-width 480] [--start 0] [--end -1] [--dry-run] [--mono]
+
+--mono: the clip is one ordinary camera, not a 2x1 pair — an iPhone orbit, say. Nothing about
+the selection changes, because none of it was ever stereo: the residual is fitted between two
+frames of ONE view (rotation is a homography, translation is not), and the left-eye crop was
+only ever a way to get one view out of a side-by-side frame. In mono the whole frame is that
+view, and the picks are written as selNNN-FFFFF.jpg, a name `hs ingest --frames` accepts as a view name
+(letters, digits and '-' only). Scale is the thing a mono clip loses,
+not selection: see monocolmap.py --scale / --scale-pair.
 """
 import argparse, json, os, sys
 import numpy as np
@@ -44,6 +52,11 @@ import cv2
 
 def left_eye(frame):
     return frame[:, : frame.shape[1] // 2]
+
+
+def whole(frame):
+    """--mono: the frame already IS one view."""
+    return frame
 
 
 def prep(gray_full, work_width):
@@ -117,7 +130,15 @@ def main():
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--end", type=int, default=-1, help="last frame index to consider (-1 = end of clip)")
     ap.add_argument("--dry-run", action="store_true", help="write selection.json only, no frames")
+    ap.add_argument("--mono", action="store_true",
+                    help="one ordinary camera, not a 2x1 stereo pair: use the whole frame as the view")
     a = ap.parse_args()
+    view = whole if a.mono else left_eye
+    # Stereo picks keep the VID_NNN_FFFF_2x1 name hs select's measurements parse. A mono pick
+    # becomes a *view name* in `hs ingest --frames`, which allows only letters, digits and '-'
+    # (an underscore would collide with the _L/_R suffix rig.py strips), so: selNNN-FFFFF.
+    def pick_name(k, fi):
+        return f"sel{k:03d}-{fi:05d}.jpg" if a.mono else f"VID_{k:03d}_{fi:04d}_2x1.jpg"
 
     cap = cv2.VideoCapture(a.clip)
     if not cap.isOpened():
@@ -125,7 +146,8 @@ def main():
     n_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS)
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); Hh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"{a.clip}: {n_total} frames at {fps:.2f} fps, {W}x{Hh} (2x1 -> {W//2}x{Hh} per eye)")
+    print(f"{a.clip}: {n_total} frames at {fps:.2f} fps, {W}x{Hh}"
+          + (" (mono)" if a.mono else f" (2x1 -> {W//2}x{Hh} per eye)"))
     os.makedirs(a.out, exist_ok=True)
 
     selected = []          # dicts: sel, frame, residual, sharpness, clip
@@ -144,7 +166,7 @@ def main():
             continue
         if a.end >= 0 and fi > a.end:
             break
-        gl = cv2.cvtColor(left_eye(frame), cv2.COLOR_BGR2GRAY)
+        gl = cv2.cvtColor(view(frame), cv2.COLOR_BGR2GRAY)
         small = prep(gl, a.work_width)
         # every frame read, not only the picks: the picks are judged against their neighbours
         trace["frame"].append(fi)
@@ -160,7 +182,7 @@ def main():
             selected.append({"sel": 0, "frame": fi, "residual": 0.0, "sharpness": sharpness(small), "clip": clipping(gl)})
             ref = (small, features(small)); last_sel = fi
             if not a.dry_run:
-                cv2.imwrite(os.path.join(a.out, f"VID_000_{fi:04d}_2x1.jpg"), frame, [cv2.IMWRITE_JPEG_QUALITY, 97])
+                cv2.imwrite(os.path.join(a.out, pick_name(0, fi)), frame, [cv2.IMWRITE_JPEG_QUALITY, 97])
             continue
 
         gap = fi - last_sel
@@ -184,8 +206,8 @@ def main():
                                  "tracked": ntr, "gap": pfi - last_sel,
                                  "candidates": [[p[0], round(p[3], 2), round(p[4], 5)] for p in pending]})
                 if not a.dry_run:
-                    cv2.imwrite(os.path.join(a.out, f"VID_{k:03d}_{pfi:04d}_2x1.jpg"), pframe, [cv2.IMWRITE_JPEG_QUALITY, 97])
-                pg = cv2.cvtColor(left_eye(pframe), cv2.COLOR_BGR2GRAY)
+                    cv2.imwrite(os.path.join(a.out, pick_name(k, pfi)), pframe, [cv2.IMWRITE_JPEG_QUALITY, 97])
+                pg = cv2.cvtColor(view(pframe), cv2.COLOR_BGR2GRAY)
                 psmall = prep(pg, a.work_width)
                 ref = (psmall, features(psmall)); last_sel = pfi
                 pending = []; crossing_at = None
@@ -197,7 +219,7 @@ def main():
     gaps = [s["gap"] for s in selected if "gap" in s]
     print(f"\n{len(selected)} frames selected of {fi+1}; gaps {min(gaps) if gaps else 0}-{max(gaps) if gaps else 0} "
           f"(median {int(np.median(gaps)) if gaps else 0})")
-    json.dump({"clip": os.path.abspath(a.clip), "fps": fps, "frames_total": fi + 1,
+    json.dump({"clip": os.path.abspath(a.clip), "fps": fps, "frames_total": fi + 1, "mono": bool(a.mono),
                "params": vars(a), "selected": selected, "trace": trace},
               open(os.path.join(a.out, "selection.json"), "w"), indent=1)
     print(f"wrote {os.path.join(a.out, 'selection.json')}" + ("" if a.dry_run else f" and {len(selected)} frames"))

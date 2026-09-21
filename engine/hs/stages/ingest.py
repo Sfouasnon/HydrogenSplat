@@ -135,6 +135,15 @@ def transcode_r3d(exe, r3d, dst_png, res, log):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _where(pj, path):
+    """Provenance for a source path: project-relative when it lives inside the project, so the
+    record survives a move and reads the same from any machine that mounts the folder (a VM sees
+    /sessions/.../mnt/X where the host sees /Users/.../X); absolute only when it truly is outside."""
+    ap = os.path.abspath(path)
+    root = os.path.abspath(pj.root)
+    return pj.rel(ap) if ap == root or ap.startswith(root + os.sep) else ap
+
+
 def run_array(a, pj):
     """--frames DIR or --r3d DIR --take NNN -> source/frames/<cam>.png, select marked done."""
     import cv2
@@ -177,7 +186,7 @@ def run_array(a, pj):
                 os.symlink(os.path.join(src_root, f), dst)
             else:
                 shutil.copy2(os.path.join(src_root, f), dst)
-            origin[cam] = os.path.join(src_root, f)
+            origin[cam] = _where(pj, os.path.join(src_root, f))
 
     events.start(STAGE, "probe")
     frames, sizes = [], {}
@@ -204,7 +213,7 @@ def run_array(a, pj):
         raise events.StageError("array rejected", hint="one size for every camera, at least three of them")
     pj.m["profile_id"] = None
     pj.m["profile_path"] = None
-    pj.m["source"] = {"kind": "array", "frames": pj.rel(fdir), "md5": digest, "original_path": src_root,
+    pj.m["source"] = {"kind": "array", "frames": pj.rel(fdir), "md5": digest, "original_path": _where(pj, src_root),
                       "take": a.take, "cameras": frames,
                       "probe": {"width": frames[0]["width"], "height": frames[0]["height"], "nb_frames": n}}
     for k, v in tool_versions().items():
@@ -215,7 +224,12 @@ def run_array(a, pj):
     pj.begin("select", argv=_argv(a))
     os.makedirs(pj.frames_dir, exist_ok=True)
     for fr in frames:
-        os.symlink(os.path.join(fdir, fr["file"]), os.path.join(pj.frames_dir, fr["file"]))
+        # RELATIVE, not absolute: this link points from one folder of the project into another,
+        # so it must survive the project being moved — or being reached down two paths at once
+        # (a folder shared with a VM is /sessions/.../mnt/X there and /Users/.../X on the host;
+        # an absolute link written on one side dangles on the other, and every frame reads None).
+        link = os.path.join(pj.frames_dir, fr["file"])
+        os.symlink(os.path.relpath(os.path.join(fdir, fr["file"]), os.path.dirname(link)), link)
     pj.metric("select", "selected", n)
     pj.metric("select", "note", "array source: one frame per camera, nothing to select")
     pj.finish("select", ok=True)

@@ -1090,6 +1090,65 @@ class ViewsRegions(Base):
         self.assertEqual(azimuth_table([]), [])
 
 
+class ArrayIngestLinks(Base):
+    """select/frames links into source/frames — relatively, so the project can move.
+
+    An absolute link breaks the moment the project is reached down a second path: a folder
+    shared with a VM is /sessions/.../mnt/X there and /Users/.../X on the host, and a link
+    written on one side reads as None on the other. Every frame, silently, at solve prep.
+    """
+
+    def test_select_frames_links_are_relative(self):
+        src = os.path.join(self.root, "src_frames")
+        os.makedirs(src)
+        for i in range(3):
+            write_jpg(os.path.join(src, f"cam{i}.jpg"), 60 + i)
+        args = Namespace(project=self.root, frames=src, r3d=None, take=None, res=1,
+                         redline="REDline", link=False, clip=None, phone=None, remote=None,
+                         adb="adb", profile=None, ffprobe="ffprobe")
+        pj = Project(self.root, create=True)
+        ingest.run_array(args, pj)
+
+        d = pj.frames_dir
+        links = sorted(f for f in os.listdir(d))
+        self.assertEqual(len(links), 3)
+        for f in links:
+            p = os.path.join(d, f)
+            self.assertTrue(os.path.islink(p), f"{f} is not a link")
+            target = os.readlink(p)
+            self.assertFalse(os.path.isabs(target), f"{f} -> {target} is absolute")
+            self.assertTrue(os.path.exists(p), f"{f} -> {target} does not resolve")
+        # and it still resolves after the whole project is moved
+        moved = self.root + "_moved"
+        shutil.move(self.root, moved)
+        try:
+            for f in links:
+                self.assertTrue(os.path.exists(os.path.join(moved, "select", "frames", f)),
+                                f"{f} stopped resolving when the project moved")
+        finally:
+            shutil.move(moved, self.root)
+
+
+class ArrayIngestProvenance(Base):
+    """Frames that live inside the project are recorded project-relative, never by a path that
+    only one machine can see."""
+
+    def test_in_project_source_is_recorded_relative(self):
+        pj = Project(self.root, create=True)
+        src = os.path.join(self.root, "picks")
+        os.makedirs(src)
+        for i in range(3):
+            write_jpg(os.path.join(src, f"cam{i}.jpg"), 60 + i)
+        args = Namespace(project=self.root, frames=src, r3d=None, take=None, res=1,
+                         redline="REDline", link=False, clip=None, phone=None, remote=None,
+                         adb="adb", profile=None, ffprobe="ffprobe")
+        ingest.run_array(args, pj)
+        s = json.load(open(os.path.join(self.root, "manifest.json")))["source"]
+        self.assertEqual(s["original_path"], "picks")
+        blob = json.dumps(s)
+        self.assertNotIn(self.root, blob, "an absolute project path leaked into provenance")
+
+
 class TrainLayer(TrainResume):
     """--layer names which part of the scene a model explains; the masks are how Brush is told.
 
