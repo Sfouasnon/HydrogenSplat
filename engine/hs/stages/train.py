@@ -38,6 +38,17 @@ apps/brush-cli/src/lib.rs) — the "still open" items of strategy §9:
   the init cloud is still ``sparse/points3D.ply``. The view is rebuilt on every run and the
   loaded view count is checked against it.
 
+* Layers: one model explains one part of the scene, named by ``--layer``. ``full`` trains without
+  masks at all (the whole room; what ``--no-masks`` has always done). ``subject`` trains with
+  ``train/dataset/masks`` as they are. ``background`` trains the complement from those same files
+  through Brush's ``--invert-masks`` — the masks are written once and read both ways. The default
+  is ``subject`` when the folder exists and ``full`` when it does not, so old invocations are
+  unchanged. ``--alpha-mode`` picks what the mask means to the loss (see ``hs masks``): Brush's
+  default ``masked`` leaves those pixels out of the loss, ``transparent`` turns on the L1 on
+  rendered alpha that pushes the model to be empty outside the silhouette. Both land in the
+  manifest (``layer``, ``brush_config.alpha_mode``, ``brush_config.invert_masks``) and in
+  ``dataset_fingerprint``, so two models trained off one dataset can always be told apart.
+
 Keep-awake: cli.py holds ``caffeinate -d -i -m -s`` for the whole ``hs`` process (keepawake.py);
 runner.py notices sleeps anyway (lid closed, Apple menu > Sleep) and train records ``slept_s``.
 
@@ -94,6 +105,15 @@ def add_parser(sub):
                    help="views to leave out, comma separated: L/cap064,R/cap069 (cap064_L also accepted)")
     p.add_argument("--no-masks", action="store_true",
                    help="train without train/dataset/masks even though it exists")
+    p.add_argument("--layer", choices=("full", "subject", "background"), default=None,
+                   help="which part of the scene this model explains. full: no masks, the whole room. "
+                        "subject: the masks as they are. background: the same masks inverted, the room "
+                        "without the subject. Default: subject if train/dataset/masks exists, else full")
+    p.add_argument("--alpha-mode", choices=("masked", "transparent"), default=None,
+                   help="how Brush reads the mask alpha. masked (Brush's default): masked-out pixels are "
+                        "left out of the loss, so outside the silhouette is unsupervised, not empty. "
+                        "transparent: the ground truth is premultiplied and an L1 on rendered alpha "
+                        "(--match-alpha-weight, default 0.1) pushes the model to be empty out there")
     return p
 
 
@@ -118,10 +138,32 @@ def brush_info(brush):
         info["git_dirty"] = bool(dirty) if dirty is not None else None
     try:
         r = subprocess.run([brush, "--help"], capture_output=True, text=True, timeout=30)
-        info["flags"] = sorted(set(re.findall(r"(--[a-z][a-z0-9-]+)", r.stdout + r.stderr)))
+        help_text = r.stdout + r.stderr
+        info["flags"] = sorted(set(re.findall(r"(--[a-z][a-z0-9-]+)", help_text)))
+        # clap prints a value placeholder only for options that take one:
+        #   --invert-masks            (bare: ArgAction::SetTrue)
+        #   --alpha-mode <ALPHA_MODE> (takes a value)
+        # A flag can appear twice (usage line, then the options list); a placeholder anywhere wins.
+        takes = {}
+        for m in re.finditer(r"(--[a-z][a-z0-9-]+)([ \t]*[<=][^>\n]*>?)?", help_text):
+            takes[m.group(1)] = takes.get(m.group(1), False) or bool(m.group(2))
+        info["flag_args"] = takes
     except (OSError, subprocess.TimeoutExpired):
         info["flags"] = None
+        info["flag_args"] = None
     return info
+
+
+def brush_flag(binfo, name, value=None):
+    """argv for a Brush flag, asking the binary itself whether it wants the value spelled out.
+
+    `--invert-masks` is `#[arg(long, default_value = "false")] bool`, which clap renders as a bare
+    flag; a future build could give it an explicit value. Read it off --help rather than guess.
+    """
+    args = (binfo.get("flag_args") or {})
+    if value is None:
+        return [name, "true"] if args.get(name) else [name]
+    return [name, str(value)]
 
 
 def ply_vertex_count(path):
@@ -203,7 +245,29 @@ def run(a, pj):
     # the STAGES chain so they cannot block, but training on a dataset whose normalisation or
     # silhouettes were deleted underneath it is a silent wrong answer, not a warning.
     exclude = parse_exclude(getattr(a, "exclude", ""))
-    use_masks = not getattr(a, "no_masks", False)
+    # One model explains one part of the scene. `--layer` names which; masks are how Brush is told.
+    layer = getattr(a, "layer", None)
+    alpha_mode = getattr(a, "alpha_mode", None)
+    no_masks = bool(getattr(a, "no_masks", False))
+    have_masks = os.path.isdir(os.path.join(dataset, "masks"))
+    if layer == "full":
+        no_masks = True
+    elif layer in ("subject", "background"):
+        if no_masks:
+            raise events.StageError(f"--layer {layer} is trained with the masks; --no-masks contradicts it",
+                                    hint="drop --no-masks, or ask for --layer full")
+        if not have_masks:
+            raise events.StageError(f"--layer {layer} needs train/dataset/masks, which is not there",
+                                    hint=f"hs masks --project {pj.root}")
+    use_masks = not no_masks
+    if alpha_mode and not (use_masks and have_masks):
+        raise events.StageError("--alpha-mode describes how Brush reads the masks, and this run has none",
+                                hint="drop --alpha-mode, or ask for --layer subject")
+    if layer is None:
+        layer = "subject" if (use_masks and have_masks) else "full"
+    invert_masks = layer == "background"
+    # what Brush will actually do: no masks at all, or masked (its default) unless asked otherwise
+    effective_alpha = (alpha_mode or "masked") if (use_masks and have_masks) else None
     for opt in ("exposure", "masks") if use_masks else ("exposure",):
         st_opt = pj.status(opt)
         if st_opt == "stale":
@@ -240,6 +304,7 @@ def run(a, pj):
         brush_root = view
         pj.metric(STAGE, "excluded_views", sorted(exclude))
         pj.metric(STAGE, "masks_used", use_masks and bool(view_counts.get("masks")))
+        pj.metric(STAGE, "layer", layer)
         pj.metric(STAGE, "view", {"path": pj.rel(view), **view_counts})
     else:
         if os.path.islink(view) or os.path.isdir(view):
@@ -247,6 +312,7 @@ def run(a, pj):
         brush_root = dataset
         pj.metric(STAGE, "excluded_views", [])
         pj.metric(STAGE, "masks_used", os.path.isdir(os.path.join(dataset, "masks")))
+        pj.metric(STAGE, "layer", layer)
     init_ply = os.path.join(brush_root, "init.ply")
     if os.path.exists(init_ply):
         os.remove(init_ply)  # a stale resume file would silently seed a fresh run
@@ -280,7 +346,8 @@ def run(a, pj):
           "images": {"digest": img_d, "count": img_n},
           "masks": {"digest": msk_d, "count": msk_n} if msk_n else None,
           "exposure": pj.status("exposure"), "masks_stage": pj.status("masks"),
-          "excluded_views": sorted(exclude), "masks_used": use_masks and bool(msk_n)}
+          "excluded_views": sorted(exclude), "masks_used": use_masks and bool(msk_n),
+          "layer": layer, "alpha_mode": effective_alpha, "invert_masks": invert_masks}
     pj.metric(STAGE, "dataset_fingerprint", fp)
 
     argv = [brush, brush_root,
@@ -302,8 +369,22 @@ def run(a, pj):
                                 hint="update Brush to >= #541 (dd5ea36) or drop the option")
     else:
         msf = 0.0   # pre-#541 binaries have no 3D filter
+    # the layer, spelled out to Brush. Both flags are recorded whether or not they are passed,
+    # so a manifest says which part of the scene the model was asked to explain.
+    if invert_masks and "--invert-masks" not in a.brush_args:
+        if flags is not None and "--invert-masks" not in flags:
+            raise events.StageError("--layer background needs Brush's --invert-masks, and this binary has no such flag",
+                                    hint="update the Brush fork (brush-dataset/src/config.rs: invert_masks)")
+        argv += brush_flag(binfo, "--invert-masks")
+    if alpha_mode and "--alpha-mode" not in a.brush_args:
+        if flags is not None and "--alpha-mode" not in flags:
+            raise events.StageError("--alpha-mode given but this brush has no such flag",
+                                    hint="update the Brush fork, or drop the option")
+        argv += brush_flag(binfo, "--alpha-mode", alpha_mode)
     pj.metric(STAGE, "brush_config", {"min_scale_factor": msf, "commit": binfo.get("git_commit"),
-                                      "branch": binfo.get("git_branch"), "dirty": binfo.get("git_dirty")})
+                                      "branch": binfo.get("git_branch"), "dirty": binfo.get("git_dirty"),
+                                      "layer": layer, "alpha_mode": effective_alpha,
+                                      "invert_masks": invert_masks})
     if a.split_at_screen_size is not None:
         argv += ["--split-at-screen-size", str(a.split_at_screen_size)]
     if start_iter:
@@ -409,7 +490,7 @@ def run(a, pj):
         got = pj.stage(STAGE).get("metrics", {}).get("train_views")
         pj.check(STAGE, "view_count_matches", got == view_counts["images"],
                  value=f"brush loaded {got} views; train/view holds {view_counts['images']} "
-                       f"({len(exclude)} excluded, masks {'on' if use_masks else 'off'})")
+                       f"({len(exclude)} excluded, layer {layer}, masks {'on' if use_masks else 'off'})")
     ok_final = pj.check(STAGE, "final_export_present", bool(final),
                         value=os.path.basename(final[0]) if final else f"no export_{total:05d}.ply in train/exports")
     if final:

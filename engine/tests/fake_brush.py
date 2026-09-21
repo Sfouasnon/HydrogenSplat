@@ -9,9 +9,11 @@
 import sys, os, time, numpy as np
 args = sys.argv[1:]
 if "--help" in args or "-h" in args:
-    # an old binary's help: the flag list hs checks for; HS_FAKE_BRUSH_FLAGS adds more
+    # an old binary's help: the flag list hs checks for; HS_FAKE_BRUSH_FLAGS adds more.
+    # A trailing "=" means the flag takes a value, as clap renders it; bare means a SetTrue flag.
+    _extra = [f for f in os.environ.get("HS_FAKE_BRUSH_FLAGS", "").split(",") if f]
     print("Usage: brush [OPTIONS] [SOURCE]\n      --total-train-iters <N>\n      --export-path <P>\n"
-          + "".join(f"      {f} <V>\n" for f in os.environ.get("HS_FAKE_BRUSH_FLAGS", "").split(",") if f))
+          + "".join(f"      {f[:-1]} <V>\n" if f.endswith("=") else f"      {f}\n" for f in _extra))
     sys.exit(0)
 def opt(name, default):
     return args[args.index(name)+1] if name in args else default

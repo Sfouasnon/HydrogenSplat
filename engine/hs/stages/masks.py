@@ -7,8 +7,19 @@ fitting refracted correspondences it cannot bend a ray to reach
 (3DGS_4DGS_Challenging_Materials_Guide.docx §1: "duplicate or ghosted objects through glass →
 mask glass and retrain background"). A mask is the one lever that guide recommends which Brush
 actually has: its dataset loader looks for a `masks/` tree mirroring `images/`, matches by file
-stem, and takes white as keep. `match_alpha_weight` then puts an L1 on the rendered alpha, so
-the model is pushed to be *empty* outside the silhouette rather than merely unsupervised.
+stem, and takes white as keep.
+
+What Brush does with it then depends on the alpha mode, and its default is not what this stage
+used to claim here. A `masks/` folder on its own selects `AlphaMode::Masked`, and brush-train's
+train.rs computes `do_alpha_match = has_alpha && !masked_alpha && match_alpha_weight > 0.0` — so
+with masks the alpha L1 is OFF, and everything outside the silhouette is merely *unsupervised*
+rather than pushed empty. That is exactly the coins `exposure-masks` result: best subject,
+shredded room. To get an empty outside, train with `hs train --alpha-mode transparent`, which
+premultiplies the ground truth and turns the L1 on rendered alpha back on
+(`--match-alpha-weight`, default 0.1 in the current fork).
+
+The same files serve the other half: `hs train --layer background` reads them through Brush's
+`--invert-masks` and trains the room without the subject. Nothing is written twice.
 
 No segmentation model is needed. The solve already knows where the subject is: take the splats
 (or SfM points) within `--radius` of the subject centre, project them into every view with that

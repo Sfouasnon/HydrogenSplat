@@ -104,7 +104,7 @@ class TrainResume(Base):
         base = dict(brush=os.path.join(FAKEBIN, "brush"), total_train_iters=self.TOTAL, growth_stop_iter=30,
                     refine_every=10, split_at_screen_size=None, export_every=10, resume_from=None,
                     start_iter=None, no_caffeinate=True, brush_args="", exclude="", no_masks=False,
-                    min_scale_factor=None)
+                    min_scale_factor=None, layer=None, alpha_mode=None)
         base.update(kw)
         return Namespace(**base)
 
@@ -1088,3 +1088,135 @@ class ViewsRegions(Base):
         self.assertEqual(t[1]["displaced_median"], 0.05)
         self.assertEqual(t[0]["surround_median"], 0.45)
         self.assertEqual(azimuth_table([]), [])
+
+
+class TrainLayer(TrainResume):
+    """--layer names which part of the scene a model explains; the masks are how Brush is told.
+
+    full = no masks · subject = the masks as written · background = the same files read inverted.
+    A Brush flag is only passed when the binary advertises it in --help, and whether
+    --invert-masks wants its value spelled out is read off --help too rather than assumed.
+    """
+
+    def masked_project(self):
+        pj = self.solved_project()
+        for eye in ("L", "R"):
+            for c in ("cap000", "cap001"):
+                write_jpg(os.path.join(pj.dataset_dir, "images", eye, f"{c}.jpg"), 90)
+                d = os.path.join(pj.dataset_dir, "masks", eye)
+                os.makedirs(d, exist_ok=True)
+                open(os.path.join(d, f"{c}.png"), "wb").close()
+        return pj
+
+    def unmasked_project(self):
+        pj = self.masked_project()
+        shutil.rmtree(os.path.join(pj.dataset_dir, "masks"))
+        return pj
+
+    def brush_argv(self, pj):
+        return pj.stage("train")["brush_argv"]
+
+    def advertise(self, flags):
+        """What the fake binary's --help lists. A trailing '=' means the flag takes a value."""
+        os.environ["HS_FAKE_BRUSH_FLAGS"] = flags
+        self.addCleanup(os.environ.pop, "HS_FAKE_BRUSH_FLAGS", None)
+
+    # ---- defaults: old invocations keep their behaviour, and now say what they did
+    def test_default_is_subject_when_masks_exist(self):
+        pj = self.masked_project()
+        train.run(self.train_args(), pj)
+        m = pj.stage("train")["metrics"]
+        self.assertEqual(m["layer"], "subject")
+        self.assertEqual(m["brush_config"]["alpha_mode"], "masked")
+        self.assertFalse(m["brush_config"]["invert_masks"])
+        fp = m["dataset_fingerprint"]
+        self.assertEqual((fp["layer"], fp["alpha_mode"], fp["invert_masks"]),
+                         ("subject", "masked", False))
+        self.assertNotIn("--invert-masks", self.brush_argv(pj))
+
+    def test_default_is_full_without_masks(self):
+        pj = self.unmasked_project()
+        train.run(self.train_args(), pj)
+        m = pj.stage("train")["metrics"]
+        self.assertEqual(m["layer"], "full")
+        self.assertIsNone(m["brush_config"]["alpha_mode"])
+        self.assertEqual(m["dataset_fingerprint"]["layer"], "full")
+
+    def test_layer_full_leaves_the_masks_out_of_the_view(self):
+        pj = self.masked_project()
+        train.run(self.train_args(layer="full"), pj)
+        view = pj.path("train", "view")
+        self.assertFalse(os.path.exists(os.path.join(view, "masks")), "--layer full trained with masks")
+        m = pj.stage("train")["metrics"]
+        self.assertEqual(m["layer"], "full")
+        self.assertFalse(m["masks_used"])
+
+    # ---- background: the inverted read of the same files
+    def test_background_passes_invert_masks_as_a_bare_flag(self):
+        self.advertise("--invert-masks")
+        pj = self.masked_project()
+        train.run(self.train_args(layer="background"), pj)
+        argv = self.brush_argv(pj)
+        self.assertIn("--invert-masks", argv)
+        i = argv.index("--invert-masks")
+        self.assertNotEqual(argv[i + 1:i + 2], ["true"], "help showed no placeholder; the flag stays bare")
+        m = pj.stage("train")["metrics"]
+        self.assertEqual(m["layer"], "background")
+        self.assertTrue(m["brush_config"]["invert_masks"])
+        self.assertTrue(m["masks_used"], "background trains WITH the masks, read the other way")
+
+    def test_invert_masks_takes_its_value_when_help_says_so(self):
+        self.advertise("--invert-masks=")
+        pj = self.masked_project()
+        train.run(self.train_args(layer="background"), pj)
+        argv = self.brush_argv(pj)
+        self.assertEqual(argv[argv.index("--invert-masks") + 1], "true")
+
+    def test_background_needs_the_flag_to_exist(self):
+        pj = self.masked_project()          # the fake advertises nothing extra
+        with self.assertRaises(events.StageError) as e:
+            train.run(self.train_args(layer="background"), pj)
+        self.assertIn("--invert-masks", str(e.exception))
+
+    # ---- alpha mode: what a mask means to the loss
+    def test_alpha_mode_transparent_is_passed_and_recorded(self):
+        self.advertise("--alpha-mode=")
+        pj = self.masked_project()
+        train.run(self.train_args(layer="subject", alpha_mode="transparent"), pj)
+        argv = self.brush_argv(pj)
+        self.assertEqual(argv[argv.index("--alpha-mode") + 1], "transparent")
+        m = pj.stage("train")["metrics"]
+        self.assertEqual(m["brush_config"]["alpha_mode"], "transparent")
+        self.assertEqual(m["dataset_fingerprint"]["alpha_mode"], "transparent")
+
+    def test_alpha_mode_needs_the_flag_to_exist(self):
+        pj = self.masked_project()
+        with self.assertRaises(events.StageError) as e:
+            train.run(self.train_args(alpha_mode="transparent"), pj)
+        self.assertIn("--alpha-mode", str(e.exception))
+
+    def test_brush_args_wins_over_the_layer_flag(self):
+        self.advertise("--invert-masks")
+        pj = self.masked_project()
+        train.run(self.train_args(layer="background", brush_args="--invert-masks"), pj)
+        self.assertEqual(self.brush_argv(pj).count("--invert-masks"), 1, "flag passed twice")
+
+    # ---- the contradictions
+    def test_subject_contradicts_no_masks(self):
+        pj = self.masked_project()
+        with self.assertRaises(events.StageError) as e:
+            train.run(self.train_args(layer="subject", no_masks=True), pj)
+        self.assertIn("--no-masks", str(e.exception))
+
+    def test_subject_without_masks_on_disk(self):
+        pj = self.unmasked_project()
+        with self.assertRaises(events.StageError) as e:
+            train.run(self.train_args(layer="subject"), pj)
+        self.assertIn("train/dataset/masks", str(e.exception))
+        self.assertIn("hs masks", e.exception.hint)
+
+    def test_alpha_mode_without_masks(self):
+        pj = self.masked_project()
+        with self.assertRaises(events.StageError) as e:
+            train.run(self.train_args(layer="full", alpha_mode="transparent"), pj)
+        self.assertIn("--alpha-mode", str(e.exception))
