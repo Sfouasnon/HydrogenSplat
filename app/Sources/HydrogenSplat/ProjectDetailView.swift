@@ -9,7 +9,6 @@ struct ProjectDetailView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: ProjectStore
     let project: ProjectSummary
-    @State private var selectedStage: String?
 
     private var page: Binding<ProjectPage> {
         Binding(get: { model.projectPage[project.path] ?? .pipeline },
@@ -51,36 +50,120 @@ struct ProjectDetailView: View {
         }
     }
 
+    private func stageBinding(_ m: Manifest) -> Binding<PipelineStage> {
+        Binding(get: { model.pipelineStage[project.path] ?? PipelineStage.next(in: m, lock: project.lock) },
+                set: { item in
+                    model.pipelineStage[project.path] = item
+                    if item.inViewer { page.wrappedValue = .viewer }   // the move panel is unchanged
+                })
+    }
+
+    private func step(_ d: Int, _ m: Manifest) {
+        let all = PipelineStage.allCases
+        let cur = stageBinding(m).wrappedValue
+        guard let i = all.firstIndex(of: cur) else { return }
+        let j = min(max(i + d, 0), all.count - 1)
+        if j != i { stageBinding(m).wrappedValue = all[j] }
+    }
+
     private var pipeline: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                if let run = model.projectRuns[project.path] {
-                    Observing(run) { r in
-                        if r.isRunning || r.finishedAt.map({ Date().timeIntervalSince($0) < 600 }) == true {
-                            GroupBox { RunPanel(session: r, showMetrics: false).padding(4) }
-                        }
+        VStack(alignment: .leading, spacing: 0) {
+            header.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 8)
+            if let run = model.projectRuns[project.path] {
+                Observing(run) { r in
+                    if r.isRunning || r.finishedAt.map({ Date().timeIntervalSince($0) < 600 }) == true {
+                        // bounded: an expanded run (checks, 50 events) must never push the rail and
+                        // the header up under the toolbar
+                        ScrollView { RunPanel(session: r, showMetrics: false).padding(8) }
+                            .frame(maxHeight: 150)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+                            .padding(.horizontal, 20).padding(.bottom, 8)
                     }
-                }
-                if let m = project.manifest {
-                    sourceBox(m)
-                    SelectView(project: project, manifest: m)
-                    ExposureView(project: project, manifest: m)
-                    MasksView(project: project, manifest: m)
-                    TrainView(project: project, manifest: m)
-                    ModelsBox(scene: model.viewerScene, project: project)
-                    stagesBox(m)
-                    GradeView(project: project)
-                    if let name = selectedStage ?? m.lastDone, let st = m.stage(name) {
-                        StageDetail(project: project, stage: st)
-                    }
-                } else {
-                    Text(project.manifestError ?? "no manifest").foregroundStyle(.red)
                 }
             }
-            .padding(24)
-            .frame(maxWidth: 1100, alignment: .leading)
+            if let m = project.manifest {
+                let sel = stageBinding(m)
+                Divider()
+                PipelineRail(manifest: m, lock: project.lock, selection: sel)
+                Divider()
+                HStack(alignment: .top, spacing: 0) {
+                    ScrollView {
+                        workspace(sel.wrappedValue, m)
+                            .padding(20)
+                            .frame(maxWidth: 980, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Divider()
+                    ScrollView {
+                        inspector(sel.wrappedValue, m).padding(14)
+                    }
+                    .frame(width: 340)
+                }
+                .frame(maxHeight: .infinity)
+                .layoutPriority(1)
+                .background {
+                    // ⌘[ / ⌘] walk the rail
+                    Group {
+                        Button("") { step(-1, m) }.keyboardShortcut("[", modifiers: .command)
+                        Button("") { step(1, m) }.keyboardShortcut("]", modifiers: .command)
+                    }
+                    .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+                }
+            } else {
+                Text(project.manifestError ?? "no manifest").foregroundStyle(.red).padding(20)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder private func workspace(_ item: PipelineStage, _ m: Manifest) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            switch item {
+            case .source:
+                sourceBox(m)
+                stagesBox(m)
+            case .frames:
+                SelectView(project: project, manifest: m)
+            case .exposure:
+                ExposureView(project: project, manifest: m)
+            case .masks:
+                MasksView(project: project, manifest: m)
+            case .train:
+                TrainView(project: project, manifest: m)
+                ModelsBox(scene: model.viewerScene, project: project)
+            case .grade:
+                GradeView(project: project)
+            case .move, .render:
+                viewerCard(item)
+            }
+        }
+    }
+
+    private func viewerCard(_ item: PipelineStage) -> some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("\(item.title) is worked in the Viewer, beside the model: key the camera there, look at the first, middle and last frame, then render.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open the Viewer") { page.wrappedValue = .viewer }
+                    .keyboardShortcut(.defaultAction)
+                Text("⌘2 does the same from anywhere; ⌘1 comes back here.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: { Text(item.title).font(.headline) }
+    }
+
+    @ViewBuilder private func inspector(_ item: PipelineStage, _ m: Manifest) -> some View {
+        let states = item.engineStages.compactMap { m.stage($0) }.filter { $0.status != .pending }
+        VStack(alignment: .leading, spacing: 12) {
+            Text("CHECKS AND METRICS").font(.caption2.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary)
+            if states.isEmpty {
+                Text("Nothing has run here yet.").foregroundStyle(.secondary)
+            }
+            ForEach(states) { st in StageDetail(project: project, stage: st) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder private var header: some View {
@@ -131,7 +214,9 @@ struct ProjectDetailView: View {
 
     private func stagesBox(_ m: Manifest) -> some View {
         GroupBox("Stages") {
-            Table(m.stages, selection: Binding(get: { selectedStage ?? m.lastDone }, set: { selectedStage = $0 })) {
+            Table(m.stages, selection: Binding(get: { nil as String? }, set: { name in
+                if let n = name, let item = PipelineStage.containing(n) { stageBinding(m).wrappedValue = item }
+            })) {
                 TableColumn("Stage") { s in Text(s.name).font(.system(.body, design: .monospaced)) }
                     .width(76)
                 TableColumn("Status") { s in StatusBadge(status: s.status) }

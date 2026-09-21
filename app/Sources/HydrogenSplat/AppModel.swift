@@ -44,6 +44,8 @@ final class AppModel: ObservableObject {
     @Published var consoleHistory: [ConsoleSession] = []
     /// Pipeline or Viewer, per project path.
     @Published var projectPage: [String: ProjectPage] = [:]
+    /// The pipeline rail's selected stage, per project path. Unset means "the next thing to do".
+    @Published var pipelineStage: [String: PipelineStage] = [:]
     /// The model chosen in the Viewer page, per project path.
     @Published var viewerFile: [String: ViewerModelFile] = [:]
     /// The in-window viewer's scene: one model held at a time, kept loaded while the page is
