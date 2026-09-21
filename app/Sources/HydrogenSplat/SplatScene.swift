@@ -107,6 +107,107 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
 
     var orbit = OrbitCamera(eye: SIMD3(0, 0, -1), target: .zero, up: SIMD3(0, -1, 0), fovy: 50 * .pi / 180)
 
+    // MARK: live grade
+
+    /// The look being previewed: the same per-channel 256-entry tables `hs grade` bakes with ffmpeg
+    /// lutrgb, applied to the rendered 8-bit code values in a second pass. nil draws the model as-is.
+    @Published var look: GradeSettings?
+    /// Set when the grade pass could not be built; the viewer then draws ungraded and says so.
+    @Published var lookProblem: String?
+    private var offscreen: MTLTexture?
+    private var offscreenCodes: MTLTexture?        // the same pixels viewed as bgra8Unorm: raw code values
+    private var lutTexture: MTLTexture?
+    private var lutFor: GradeSettings?
+    private var gradePipeline: MTLRenderPipelineState?
+    private var gradeBuildFailed = false
+
+    private struct GradePass {
+        let source: MTLTexture, codes: MTLTexture, lut: MTLTexture, pipe: MTLRenderPipelineState
+    }
+
+    /// Full-screen triangle; the fragment looks each code value up in the grade tables and hands the
+    /// sRGB drawable the linear value that stores exactly that code — so the preview is the curve
+    /// ffmpeg applies to code values, not an approximation of it.
+    private static let gradeShader = """
+    #include <metal_stdlib>
+    using namespace metal;
+    struct VOut { float4 pos [[position]]; float2 uv; };
+    vertex VOut grade_vs(uint vid [[vertex_id]]) {
+        float2 p = float2(float((vid << 1) & 2), float(vid & 2));
+        VOut o; o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0); o.uv = float2(p.x, 1.0 - p.y); return o;
+    }
+    fragment float4 grade_fs(VOut in [[stage_in]], texture2d<float> src [[texture(0)]],
+                             texture2d<float> lut [[texture(1)]]) {
+        constexpr sampler s(filter::nearest);
+        float4 c = src.sample(s, in.uv);
+        float3 o;
+        for (int i = 0; i < 3; i++) {
+            uint k = uint(clamp(c[i], 0.0, 1.0) * 255.0 + 0.5);
+            o[i] = lut.read(uint2(k, 0))[i];
+        }
+        o = select(pow((o + 0.055) / 1.055, 2.4), o / 12.92, o <= 0.04045);
+        return float4(o, 1.0);
+    }
+    """
+
+    private func prepareGrade(_ g: GradeSettings, width: Int, height: Int) -> GradePass? {
+        guard let device = device, !gradeBuildFailed else { return nil }
+        if gradePipeline == nil {
+            do {
+                let lib = try device.makeLibrary(source: SplatScene.gradeShader, options: nil)
+                let d = MTLRenderPipelineDescriptor()
+                d.vertexFunction = lib.makeFunction(name: "grade_vs")
+                d.fragmentFunction = lib.makeFunction(name: "grade_fs")
+                d.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
+                gradePipeline = try device.makeRenderPipelineState(descriptor: d)
+            } catch {
+                gradeBuildFailed = true
+                let why = error.localizedDescription
+                DispatchQueue.main.async {
+                    self.lookProblem = "The live grade could not be built (\(why)); the viewer shows the model ungraded."
+                }
+                return nil
+            }
+        }
+        if offscreen == nil || offscreen!.width != width || offscreen!.height != height {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: width,
+                                                             height: height, mipmapped: false)
+            d.usage = [.renderTarget, .shaderRead, .pixelFormatView]
+            d.storageMode = .private
+            offscreen = device.makeTexture(descriptor: d)
+            offscreenCodes = offscreen?.makeTextureView(pixelFormat: .bgra8Unorm)
+        }
+        if lutTexture == nil || lutFor != g {
+            // a fresh texture per change: frames still in flight keep reading the one they had
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 256, height: 1,
+                                                             mipmapped: false)
+            d.usage = [.shaderRead]
+            let r = g.lut(0), gg = g.lut(1), b = g.lut(2)
+            var bytes = [UInt8](repeating: 255, count: 256 * 4)
+            for i in 0..<256 { bytes[i * 4] = r[i]; bytes[i * 4 + 1] = gg[i]; bytes[i * 4 + 2] = b[i] }
+            let t = device.makeTexture(descriptor: d)
+            t?.replace(region: MTLRegionMake2D(0, 0, 256, 1), mipmapLevel: 0, withBytes: bytes, bytesPerRow: 256 * 4)
+            lutTexture = t
+            lutFor = g
+        }
+        guard let src = offscreen, let codes = offscreenCodes, let lut = lutTexture, let pipe = gradePipeline
+        else { return nil }
+        return GradePass(source: src, codes: codes, lut: lut, pipe: pipe)
+    }
+
+    private func encodeGrade(_ g: GradePass, into target: MTLTexture, cb: MTLCommandBuffer) {
+        let rp = MTLRenderPassDescriptor()
+        rp.colorAttachments[0].texture = target
+        rp.colorAttachments[0].loadAction = .dontCare
+        rp.colorAttachments[0].storeAction = .store
+        guard let enc = cb.makeRenderCommandEncoder(descriptor: rp) else { return }
+        enc.setRenderPipelineState(g.pipe)
+        enc.setFragmentTexture(g.codes, index: 0)
+        enc.setFragmentTexture(g.lut, index: 1)
+        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        enc.endEncoding()
+    }
+
     let device: MTLDevice?
     private let queue: MTLCommandQueue?
     private var renderer: SplatRenderer?
@@ -368,9 +469,12 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
             viewport: MTLViewport(originX: 0, originY: 0, width: Double(drawableSize.width), height: Double(drawableSize.height), znear: 0, zfar: 1),
             projectionMatrix: m.projection, viewMatrix: m.view,
             screenSize: SIMD2(Int(drawableSize.width), Int(drawableSize.height)))
-        let drew = (try? renderer.render(viewports: [vp], colorTexture: drawable.texture, colorStoreAction: .store,
+        let graded = look.flatMap { prepareGrade($0, width: drawable.texture.width, height: drawable.texture.height) }
+        let drew = (try? renderer.render(viewports: [vp], colorTexture: graded?.source ?? drawable.texture,
+                                         colorStoreAction: .store,
                                          depthTexture: view.depthStencilTexture, rasterizationRateMap: nil,
                                          renderTargetArrayLength: 0, to: cb)) ?? false
+        if drew, let g = graded { encodeGrade(g, into: drawable.texture, cb: cb) }
         if drew { cb.present(drawable) }
         cb.commit()
     }

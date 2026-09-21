@@ -47,7 +47,7 @@ enum PipelineStage: String, CaseIterable, Identifiable {
 
     var optional: Bool { self == .exposure || self == .masks || self == .grade }
     /// Worked in the Viewer page's move panel, not here.
-    var inViewer: Bool { self == .move || self == .render }
+    var inViewer: Bool { self == .move || self == .grade || self == .render }
 
     static let groups: [(String, [PipelineStage])] = [
         ("Prepare", [.source, .frames]),

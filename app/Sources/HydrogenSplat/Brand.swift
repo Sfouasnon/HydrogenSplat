@@ -4,6 +4,9 @@ import AppKit
 /// Brand tokens (app/Branding/tokens.json). Red is the record tally: one red thing per screen.
 enum Brand {
     static let tally = Color(light: 0xC8102E, dark: 0xE0162B)
+    /// The control accent. Red is the record tally — one red thing per screen, and failures — so
+    /// buttons, sliders and progress take the second view colour instead.
+    static let accent = Color(light: 0x3F78D6, dark: 0x86B9F4)
     static let views: [Color] = [
         Color(light: 0x0E9AA6, dark: 0x5CE1E6), Color(light: 0x3F78D6, dark: 0x86B9F4),
         Color(light: 0x7359F0, dark: 0xA48CFF), Color(light: 0xA043DE, dark: 0xC88BFF),

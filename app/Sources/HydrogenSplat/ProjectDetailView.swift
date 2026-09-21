@@ -72,12 +72,7 @@ struct ProjectDetailView: View {
             if let run = model.projectRuns[project.path] {
                 Observing(run) { r in
                     if r.isRunning || r.finishedAt.map({ Date().timeIntervalSince($0) < 600 }) == true {
-                        // bounded: an expanded run (checks, 50 events) must never push the rail and
-                        // the header up under the toolbar
-                        ScrollView { RunPanel(session: r, showMetrics: false).padding(8) }
-                            .frame(maxHeight: 150)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
-                            .padding(.horizontal, 20).padding(.bottom, 8)
+                        RunStrip(run: r).padding(.horizontal, 20).padding(.bottom, 8)
                     }
                 }
             }
@@ -132,6 +127,7 @@ struct ProjectDetailView: View {
                 TrainView(project: project, manifest: m)
                 ModelsBox(scene: model.viewerScene, project: project)
             case .grade:
+                viewerCard(item)
                 GradeView(project: project)
             case .move, .render:
                 viewerCard(item)
@@ -142,7 +138,9 @@ struct ProjectDetailView: View {
     private func viewerCard(_ item: PipelineStage) -> some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                Text("\(item.title) is worked in the Viewer, beside the model: key the camera there, look at the first, middle and last frame, then render.")
+                Text(item == .grade
+                     ? "The look is set in the Viewer's move panel, live on the model, and Render bakes it. Below: the baked result, checked on a rendered frame."
+                     : "\(item.title) is worked in the Viewer, beside the model: key the camera, set the look, look at the first, middle and last frame, then render.")
                     .fixedSize(horizontal: false, vertical: true)
                 Button("Open the Viewer") { page.wrappedValue = .viewer }
                     .keyboardShortcut(.defaultAction)
@@ -325,5 +323,56 @@ struct StageDetail: View {
 
     private var logPath: String {
         (project.path as NSString).appendingPathComponent("logs/\(stage.name).log")
+    }
+}
+
+
+/// One line for the latest run: what, how it went, how long. The full panel — progress, checks,
+/// events — opens on click, bounded, so a run can never push the rail off the window.
+struct RunStrip: View {
+    @ObservedObject var run: RunSession
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { open.toggle() } label: {
+                HStack(spacing: 8) {
+                    icon
+                    Text(run.title).fontWeight(.semibold)
+                    Text(detail).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: 8)
+                    Text(Format.duration(elapsed)).monospacedDigit().foregroundStyle(.secondary)
+                    Image(systemName: open ? "chevron.up" : "chevron.down").font(.caption).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if open {
+                ScrollView { RunPanel(session: run, showMetrics: false) }.frame(maxHeight: 240)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+    }
+
+    @ViewBuilder private var icon: some View {
+        if run.isRunning {
+            ProgressView().controlSize(.small)
+        } else if run.succeeded {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        } else {
+            Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+        }
+    }
+
+    private var detail: String {
+        if run.isRunning { return run.currentStep ?? "running" }
+        if run.succeeded { return run.failedChecks.isEmpty ? "finished" : "finished · \(run.failedChecks.count) check(s) need you" }
+        return run.errors.last?.message ?? "failed"
+    }
+
+    private var elapsed: Double? {
+        guard let s = run.startedAt else { return nil }
+        return (run.finishedAt ?? Date()).timeIntervalSince(s)
     }
 }

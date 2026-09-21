@@ -200,6 +200,7 @@ struct SplatViewerPanel: View {
             ZStack {
                 Color.black
                 SplatMetalView(scene: scene)
+                    .overlay { LookFrame(look: scene.look) }
                 if let e = editor { EditorOverlayHost(editor: e) }
                 overlay
             }
@@ -386,5 +387,30 @@ private struct EditorTimelineHost: View {
             Divider()
             MoveTimeline(editor: editor, playback: editor.scene.playback, move: m, keys: keys)
         }
+    }
+}
+
+
+/// The look's crop, drawn over the live model: full-width bands of the chosen aspect. Centred here;
+/// the bake follows the head when the move has a head track.
+struct LookFrame: View {
+    let look: GradeSettings?
+
+    var body: some View {
+        GeometryReader { geo in
+            if let a = look?.aspect, a > 0, geo.size.width / max(geo.size.height, 1) < a {
+                let band = geo.size.width / a
+                let bar = (geo.size.height - band) / 2
+                VStack(spacing: 0) {
+                    Color.black.opacity(0.6).frame(height: bar)
+                    Color.clear.frame(height: band).overlay(alignment: .topLeading) {
+                        Text(String(format: "%.2f crop · centred here; the bake follows the head when the move has a track", a))
+                            .font(.caption2).foregroundStyle(.white.opacity(0.75)).padding(6)
+                    }
+                    Color.black.opacity(0.6).frame(height: bar)
+                }
+            }
+        }
+        .allowsHitTesting(false)
     }
 }

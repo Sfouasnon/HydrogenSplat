@@ -126,6 +126,15 @@ def probe(ffmpeg, path):
         raise events.StageError(f"cannot probe {path}", hint=(r.stderr or "")[-200:])
 
 
+def source_move(pj, render_name):
+    """The move a render was made from. A render of an archived model is named <move>_<model>
+    (shot02_exposure-excl), but the head track belongs to the move: move/shot02_frame.json.
+    hs render records the move under stages.render.runs.<name>.move; without that record the
+    render name is the move name (a render of the current export)."""
+    runs = pj.m.get("stages", {}).get("render", {}).get("runs") or {}
+    return (runs.get(render_name) or {}).get("move") or render_name
+
+
 def run(a, pj):
     ffmpeg = shutil.which(os.path.expanduser(a.ffmpeg))
     if not ffmpeg:
@@ -142,7 +151,11 @@ def run(a, pj):
 
     # ---- crop
     vf, cmds = [], None
-    track = framing.load_track(pj, a.move) if s["aspect"] > 0 else None
+    # the track is keyed by the MOVE; looking it up by the render name silently missed for every
+    # archive render and fell back to a centred crop
+    track_name = source_move(pj, a.move)
+    track = framing.load_track(pj, track_name) if s["aspect"] > 0 else None
+    events.metric(STAGE, "track_from", track_name)
     if s["aspect"] > 0:
         if track:
             if len(track["crown_row"]) != n:

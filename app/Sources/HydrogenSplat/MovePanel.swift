@@ -18,6 +18,10 @@ struct MoveInspector: View {
     @State private var naming: NameAction?
     @State private var newName = ""
     @State private var fileRevision = 0
+    /// The move's look, edited live on the model and baked by Render. Saved to grade/<move>.json.
+    @State private var look = GradeSettings()
+    @State private var lookOnDisk: GradeSettings?
+    @State private var showLook = false
     @FocusState private var timeFocused: Bool
     @AppStorage("render.width") private var renderWidth = 2400
     @AppStorage("render.crop") private var renderCrop = true
@@ -58,6 +62,8 @@ struct MoveInspector: View {
                         }
                         numbers(m)
                         lensSection(m)
+                        Divider()
+                        lookSection()
                         Divider()
                         renderSection(m)
                     }
@@ -324,6 +330,75 @@ struct MoveInspector: View {
 
     // MARK: render
 
+    // MARK: look
+
+    private var lookPath: String? {
+        editor.name.map { (project.path as NSString).appendingPathComponent("grade/\($0).json") }
+    }
+
+    private func applyLook() { scene.look = showLook ? look : nil }
+
+    private func loadLook() {
+        let saved = lookPath.flatMap { GradeSettings.load($0) }
+        lookOnDisk = saved
+        look = saved ?? GradeSettings()
+        applyLook()
+    }
+
+    /// Written only when it differs from what is on disk, so opening a move never creates a file.
+    private func saveLook() {
+        guard let p = lookPath, look != (lookOnDisk ?? GradeSettings()) else { return }
+        try? FileManager.default.createDirectory(atPath: (p as NSString).deletingLastPathComponent,
+                                                 withIntermediateDirectories: true)
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let d = try? enc.encode(look), (try? d.write(to: URL(fileURLWithPath: p))) != nil { lookOnDisk = look }
+    }
+
+    private func lookSlider(_ name: String, _ v: Binding<Double>, _ r: ClosedRange<Double>, _ fmt: String) -> some View {
+        HStack(spacing: 8) {
+            Text(name).frame(width: 52, alignment: .leading)
+            Slider(value: v, in: r) { EmptyView() }
+            Text(String(format: fmt, v.wrappedValue)).monospacedDigit().frame(width: 52, alignment: .trailing)
+        }
+        .controlSize(.small)
+    }
+
+    @ViewBuilder private func lookSection() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Look").font(.subheadline.weight(.semibold))
+                Spacer()
+                Toggle("Preview", isOn: $showLook).toggleStyle(.switch).controlSize(.mini)
+            }
+            Text("Lift, gamma and gain on the live model, through the same 256-entry tables hs grade bakes. With Preview on, Render grades the frames with this look. Sharpening is applied in the bake only.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            lookSlider("Lift", $look.lift, -0.2...0.2, "%+.3f")
+            lookSlider("Gamma", $look.gamma, 0.5...2.0, "%.2f")
+            lookSlider("Gain", $look.gain, 0.5...1.5, "%.2f")
+            HStack {
+                Picker("Crop", selection: $look.aspect) {
+                    Text("Full frame").tag(0.0)
+                    Text("1.85").tag(1.85)
+                    Text("2.00").tag(2.0)
+                    Text("2.35").tag(2.35)
+                    Text("2.39").tag(2.39)
+                }
+                .frame(width: 170)
+                Spacer()
+                Button("Reset") { look = GradeSettings() }.controlSize(.small)
+            }
+            .controlSize(.small)
+            if let p = scene.lookProblem {
+                Text(p).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .task(id: editor.name) { loadLook() }
+        .onChange(of: look) { _, _ in applyLook(); saveLook() }
+        .onChange(of: showLook) { _, _ in applyLook() }
+        .onDisappear { scene.look = nil }
+    }
+
     @ViewBuilder private func renderSection(_ m: KeyedMove) -> some View {
         let _ = fileRevision
         VStack(alignment: .leading, spacing: 8) {
@@ -355,9 +430,10 @@ struct MoveInspector: View {
                     let running = q?.isRunning ?? false
                     let why = renderBlocker(m)
                     HStack {
-                        Button(running ? "Rendering…" : "Render \(mf.name)") {
+                        Button(running ? "Rendering…" : (showLook ? "Render + grade \(mf.name)" : "Render \(mf.name)")) {
                             editor.flush()
-                            run(s.renderArguments(model: mf, width: renderWidth, keepFrames: keepFrames, crop: renderCrop))
+                            run(s.renderArguments(model: mf, width: renderWidth, keepFrames: keepFrames, crop: renderCrop),
+                                grade: showLook ? look.arguments(project: project.path, move: s.renderName(model: mf)) : nil)
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(running || why != nil)
@@ -395,8 +471,10 @@ struct MoveInspector: View {
         return nil
     }
 
-    private func run(_ args: [String]) {
-        let q = RunQueue(config: model.config, steps: [RunQueue.Step(title: "Render", arguments: args)])
+    private func run(_ args: [String], grade: [String]? = nil) {
+        var steps = [RunQueue.Step(title: "Render", arguments: args)]
+        if let g = grade { steps.append(RunQueue.Step(title: "Grade", arguments: g)) }
+        let q = RunQueue(config: model.config, steps: steps)
         let path = project.path
         q.onStep = { s in model.projectRuns[path] = s }
         q.onFinish = { _ in

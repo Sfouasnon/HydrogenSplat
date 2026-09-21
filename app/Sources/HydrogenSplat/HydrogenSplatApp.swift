@@ -24,7 +24,7 @@ struct HydrogenSplatApp: App {
                 .environmentObject(model)
                 .environmentObject(model.store)
                 .frame(minWidth: 980, minHeight: 640)
-                .tint(Brand.tally)
+                .tint(Brand.accent)
         }
         .commands {
             CommandGroup(replacing: .appInfo) { AboutCommand() }
@@ -43,7 +43,7 @@ struct HydrogenSplatApp: App {
                 SplatViewerWindow(file: f)
                     .environmentObject(model)
                     .frame(minWidth: 900, minHeight: 600)
-                    .tint(Brand.tally)
+                    .tint(Brand.accent)
             }
         }
         .restorationBehavior(.disabled)
