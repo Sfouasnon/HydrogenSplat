@@ -1,9 +1,9 @@
 import Foundation
 
-/// `hs masks` — a per-view silhouette of the subject, projected into every view from geometry
-/// the solve already has. No segmentation model: the splats (or the sparse SfM points) within
-/// the fitted radius of the subject centre are drawn as discs the size of their own projected
-/// footprint, closed, filled, and dilated outward by a share of that radius.
+/// `hs masks` — a per-view mask of the subject. Two methods: `vision` (default) finds objects with
+/// Apple Vision and keeps the one inside the geometric region; `geometry` is the region alone —
+/// the splats (or sparse SfM points) within the fitted radius of the subject centre, drawn as
+/// discs the size of their own projected footprint, closed, filled and dilated outward.
 ///
 /// One set of files serves both layers. `hs train --layer subject` reads them as written;
 /// `hs train --layer background` reads the same files inverted, through Brush's `--invert-masks`.
@@ -20,6 +20,19 @@ public struct MaskSettings: Equatable, Sendable {
         public var title: String { self == .model ? "Trained model" : "SfM points" }
     }
 
+    /// How the mask is made. The geometric region is built either way; Vision uses it to decide
+    /// which object is the subject.
+    public enum Method: String, CaseIterable, Identifiable, Sendable {
+        case vision
+        case geometry
+
+        public var id: String { rawValue }
+        public var title: String { self == .vision ? "Object (Vision)" : "Region only" }
+    }
+
+    public var method: Method = .vision
+    /// Vision: Gaussian sigma, in px, of the anti-aliased edge. 0 = hard binary.
+    public var featherPx = 1.0
     public var source: Source = .model
     /// Multiplies the radius the engine fits to the camera orbit. 1 = as fitted. There is no
     /// absolute radius here on purpose: a metric radius means nothing on an unscaled solve, and
@@ -40,12 +53,13 @@ public struct MaskSettings: Equatable, Sendable {
     public init() {}
 
     public func arguments(project: String) -> [String] {
-        var a = ["masks", "-p", project,
+        var a = ["masks", "-p", project, "--method", method.rawValue,
                  "--radius-scale", MaskSettings.num(radiusScale),
                  "--margin-frac", MaskSettings.num(marginFrac),
                  "--min-opacity", MaskSettings.num(minOpacity),
                  "--close-px", String(closePx),
                  "--preview", String(previewViews)]
+        if method == .vision { a += ["--feather-px", MaskSettings.num(featherPx)] }
         if source == .points { a.append("--from-points") }
         if !keepLargest { a.append("--no-keep-largest") }
         return a

@@ -21,7 +21,17 @@ premultiplies the ground truth and turns the L1 on rendered alpha back on
 The same files serve the other half: `hs train --layer background` reads them through Brush's
 `--invert-masks` and trains the room without the subject. Nothing is written twice.
 
-No segmentation model is needed. The solve already knows where the subject is: take the splats
+Two methods (--method). `vision` (default): Apple Vision's foreground instance masks, with the
+geometric silhouette below deciding which instance is the subject — an instance is kept when at
+least --select-frac of it lies inside the geometric mask — then a hard edge with a 1-2 px
+anti-aliased feather (--feather-px). Why: the geometric mask alone is a region, not an object. On
+2026-09-20_GreetingCard it covered 45% of every frame and swept in the backdrop, wall, table and
+box beside the card; a subject layer trained on it scored 2.5 dB under the full model on held-out
+views, all of it on that clutter (claude/subject-layer-holdout-2026-09-21.md). A view where Vision
+finds nothing, or nothing inside the geometric mask, falls back to the geometric mask and is
+counted, never silently.
+
+`geometry`: no segmentation model. The solve already knows where the subject is: take the splats
 (or SfM points) within `--radius` of the subject centre, project them into every view with that
 view's own K, R, t, splat each as a disc the size of its own projected footprint, close the
 gaps, fill, and dilate by a world-space margin so the silhouette errs outward. A mask that is a
@@ -50,11 +60,22 @@ STAGE = "masks"
 
 FRAME_FILL = 0.7          # subject radius, as a share of the frame half-width at the median camera distance
 MARGIN_FRAC = 0.05        # outward dilation, as a share of the radius (coins: 6 mm on 100)
+SELECT_FRAC = 0.5         # vision: share of an instance that must lie inside the geometric mask
+FEATHER_PX = 1.0          # vision: anti-aliased edge; the research report's "hard alpha + 1-2 px AA"
 POINT_FRAC = 0.02         # --from-points disc footprint, as a share of the radius (coins: 2 mm on 100)
 
 
 def add_parser(sub):
     p = sub.add_parser("masks", help="per-view subject silhouettes for Brush's mask channel")
+    p.add_argument("--method", choices=("vision", "geometry"), default="vision",
+                   help="vision (default): Apple Vision object masks, the geometric silhouette picks the "
+                        "subject; geometry: the projected silhouette alone")
+    p.add_argument("--select-frac", type=float, default=SELECT_FRAC,
+                   help="vision: keep an instance when at least this share of it lies inside the geometric mask")
+    p.add_argument("--feather-px", type=float, default=FEATHER_PX,
+                   help="vision: Gaussian sigma of the anti-aliased edge (0 = hard binary)")
+    p.add_argument("--grow-px", type=int, default=0,
+                   help="vision: dilate the object mask outward by this many px before feathering")
     p.add_argument("--radius", type=float, default=None,
                    help="metres about the subject centre; default: fitted to the camera orbit (works unscaled)")
     p.add_argument("--radius-scale", type=float, default=1.0,
@@ -90,6 +111,43 @@ def fill_holes(m):
     ff = cv2.copyMakeBorder(m, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
     cv2.floodFill(ff, np.zeros((h + 4, w + 4), np.uint8), (0, 0), 255)
     return m | cv2.bitwise_not(ff)[1:-1, 1:-1]
+
+
+def vision_mask(seg, prior, a):
+    """Pick the subject out of Vision's instances. -> (mask uint8, instances, selected, why_fell_back).
+
+    `prior` is the geometric silhouette. Each instance's hard area (soft >= 0.5) is tested against
+    it; instances mostly inside are the subject, the rest (a box beside it, a hand) are dropped.
+    The union of the chosen soft masks is thresholded to a hard edge, its holes filled, optionally
+    grown, and feathered by a Gaussian of --feather-px: an opaque subject gets a hard alpha with an
+    anti-aliased rim, not a wide soft matte."""
+    import cv2
+    h, w = prior.shape
+    if "error" in seg:
+        return prior, 0, 0, "vision error: " + str(seg["error"])[:80]
+    pri = prior > 0
+    chosen = []
+    for k in range(1, int(seg.get("instances", 0)) + 1):
+        sm = cv2.imread(os.path.join(seg["dir"], f"{k}.png"), cv2.IMREAD_GRAYSCALE)
+        if sm is None:
+            continue
+        if sm.shape != (h, w):
+            sm = cv2.resize(sm, (w, h), interpolation=cv2.INTER_LINEAR)
+        hard = sm >= 128
+        area = int(hard.sum())
+        if area and (hard & pri).sum() / area >= a.select_frac:
+            chosen.append(sm)
+    n = int(seg.get("instances", 0))
+    if not chosen:
+        return prior, n, 0, ("nothing inside the geometric mask" if n else "no foreground found")
+    m = np.where(np.maximum.reduce(chosen) >= 128, 255, 0).astype(np.uint8)
+    m = fill_holes(m)
+    if a.grow_px > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * a.grow_px + 1, 2 * a.grow_px + 1))
+        m = cv2.dilate(m, k)
+    if a.feather_px > 0:
+        m = cv2.GaussianBlur(m, (0, 0), a.feather_px)
+    return m, n, len(chosen), None
 
 
 def auto_radius(G, subject):
@@ -206,9 +264,25 @@ def run(a, pj):
     pj.metric(STAGE, "margin_mm", round(margin_units, 3))
     pj.metric(STAGE, "scene_scaled", scaled)   # False: every _m/_mm above is in the solve's own units
 
+    method = getattr(a, "method", "geometry")
+    pj.metric(STAGE, "method", method)
+    segs = {}
+    if method == "vision":
+        from .. import segment
+        events.start(STAGE, "segment")
+        todo = []
+        for v, name in enumerate(names):
+            img = os.path.join(pj.dataset_dir, "images", name[-1], name[:-2] + ".jpg")
+            if os.path.exists(img):
+                todo.append((v, img))
+        out = segment.run(STAGE, [p for _v, p in todo], pj.path("masks_vision"),
+                          progress=lambda d, n: events.progress(STAGE, d, n, step="segment"))
+        segs = {v: r for (v, _p), r in zip(todo, out)}
+
     events.start(STAGE, "project")
     mdir = os.path.join(pj.dataset_dir, "masks")
     cover, previews, empty = [], [], []
+    prior_cover, n_inst, n_sel, fell_back = [], [], [], []
     for v, name in enumerate(names):
         eye = name[-1]
         cap = name[:-2]
@@ -242,7 +316,15 @@ def run(a, pj):
         if margin_px > 0:
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * margin_px + 1, 2 * margin_px + 1))
             m = cv2.dilate(m, k)
-        frac = float((m > 0).mean())
+        prior = m
+        if method == "vision":
+            m, ni, ns, why = vision_mask(segs.get(v, {"error": "not segmented"}), prior, a)
+            prior_cover.append(float((prior > 0).mean()))
+            n_inst.append(ni)
+            n_sel.append(ns)
+            if why:
+                fell_back.append((name, why))
+        frac = float((m >= 128).mean())
         cover.append(frac)
         if frac < 0.01:
             empty.append(name)
@@ -250,9 +332,13 @@ def run(a, pj):
         cv2.imwrite(os.path.join(mdir, eye, cap + ".png"), m)
         if eye == "L" and len(previews) < a.preview and v % max(1, len(names) // (2 * a.preview)) == 0:
             im = cv2.imread(img)
-            edge = cv2.dilate(m, np.ones((3, 3), np.uint8)) - cv2.erode(m, np.ones((3, 3), np.uint8))
+            mb = np.where(m >= 128, 255, 0).astype(np.uint8)
+            if prior is not m:     # the geometric region, in magenta, under the object mask
+                pe = cv2.dilate(prior, np.ones((3, 3), np.uint8)) - cv2.erode(prior, np.ones((3, 3), np.uint8))
+                im[pe > 0] = (255, 0, 255)
+            edge = cv2.dilate(mb, np.ones((3, 3), np.uint8)) - cv2.erode(mb, np.ones((3, 3), np.uint8))
             im[edge > 0] = (0, 255, 255)
-            im = (im * (0.35 + 0.65 * (m[:, :, None] > 0))).astype(np.uint8)
+            im = (im * (0.35 + 0.65 * (mb[:, :, None] > 0))).astype(np.uint8)
             previews.append(cv2.resize(im, (im.shape[1] // 3, im.shape[0] // 3)))
         events.progress(STAGE, v + 1, len(names), step="project")
 
@@ -268,6 +354,19 @@ def run(a, pj):
         cv2.imwrite(sp, sheet, [cv2.IMWRITE_JPEG_QUALITY, 88])
         pj.artifact(STAGE, sp, "image")
 
+    if method == "vision":
+        pj.metric(STAGE, "prior_coverage_median", round(float(np.median(prior_cover)), 4))
+        pj.metric(STAGE, "vision_instances_median", float(np.median(n_inst)))
+        pj.metric(STAGE, "vision_selected_median", float(np.median(n_sel)))
+        pj.metric(STAGE, "vision_fell_back", len(fell_back))
+        if fell_back:
+            pj.metric(STAGE, "vision_fell_back_views", [f"{n}: {w}" for n, w in fell_back[:12]])
+        pj.check(STAGE, "vision_found_the_subject", len(fell_back) <= 0.1 * len(cover), needs_human=True,
+                 value=(f"object mask in {len(cover) - len(fell_back)} of {len(cover)} views; "
+                        f"{len(fell_back)} fell back to the geometric mask"
+                        + (f" (e.g. {fell_back[0][0]}: {fell_back[0][1]})" if fell_back else "")
+                        + f"; subject {100 * np.median(cover):.1f}% of frame vs region "
+                          f"{100 * np.median(prior_cover):.1f}%"))
     pj.check(STAGE, "every_view_has_a_silhouette", not empty,
              value="all views covered" if not empty else f"{len(empty)} views nearly empty: {empty[:5]}")
     pj.check(STAGE, "coverage_sane", bool(0.02 <= np.median(cover) <= 0.75),

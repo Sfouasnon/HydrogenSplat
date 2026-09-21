@@ -73,7 +73,8 @@ def build(root, k):
 def args(ply, **kw):
     a = dict(radius=None, radius_scale=1.0, ply=ply, min_opacity=0.1, margin_mm=None,
              margin_frac=masks.MARGIN_FRAC, close_px=25, keep_largest=True, preview=0,
-             max_points=60000, from_points=False, point_mm=None)
+             max_points=60000, from_points=False, point_mm=None, method="geometry",
+             select_frac=masks.SELECT_FRAC, feather_px=masks.FEATHER_PX, grow_px=0)
     a.update(kw)
     return Namespace(**a)
 
@@ -134,6 +135,88 @@ class ScaleFree(unittest.TestCase):
         for f in a:
             self.assertTrue((a[f] == b[f]).all(), f"{f} changed between identical runs")
         self.assertEqual(p1.stage("masks")["metrics"]["points_used"], 3000)
+
+
+FAKE_SEGMENT = os.path.join(HERE, "fake_segment.py")
+
+
+class Vision(unittest.TestCase):
+    """--method vision: Vision finds objects, the geometric mask decides which one is the subject."""
+
+    def setUp(self):
+        self.t = tempfile.TemporaryDirectory()
+        self.addCleanup(self.t.cleanup)
+        self.env = {k: os.environ.get(k) for k in ("HS_SEGMENT_BIN", "HS_FAKE_SEGMENT")}
+        os.environ["HS_SEGMENT_BIN"] = FAKE_SEGMENT
+        self.addCleanup(self.restore)
+        self.pj, self.ply = build(self.t.name, 1)
+
+    def restore(self):
+        for k, v in self.env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def disc(self, r=90):
+        import cv2
+        d = np.zeros((H, W), np.uint8)
+        cv2.circle(d, (W // 2, H // 2), r, 255, -1)
+        return d > 0
+
+    def test_the_instance_inside_the_region_is_kept_and_the_clutter_dropped(self):
+        masks.run(args(self.ply, method="vision"), self.pj)
+        disc = self.disc()
+        for f, m in load_masks(self.pj).items():
+            iou = (m & disc).sum() / (m | disc).sum()
+            self.assertGreater(iou, 0.97, f"{f}: IoU {iou:.3f} with the subject instance")
+            self.assertFalse(m[0:60, 0:80].any(), f"{f}: the corner block (not the subject) got in")
+        met = self.pj.stage("masks")["metrics"]
+        self.assertEqual(met["method"], "vision")
+        self.assertEqual(met["vision_instances_median"], 2)
+        self.assertEqual(met["vision_selected_median"], 1)
+        self.assertEqual(met["vision_fell_back"], 0)
+        self.assertLess(met["coverage_median"], met["prior_coverage_median"], "the object is tighter than the region")
+
+    def test_the_edge_is_hard_with_an_anti_aliased_rim(self):
+        import cv2
+        masks.run(args(self.ply, method="vision", feather_px=1.0), self.pj)
+        m = cv2.imread(os.path.join(self.pj.dataset_dir, "masks", "L", "cap000.png"), cv2.IMREAD_GRAYSCALE)
+        grey = ((m > 0) & (m < 255)).mean()
+        rim = self.disc(92) & ~self.disc(88)
+        self.assertGreater(grey, 0, "no anti-aliasing at all")
+        self.assertLess(grey, 1.5 * rim.mean(), "the soft zone is wider than a couple of px")
+        masks.run(args(self.ply, method="vision", feather_px=0), self.pj)
+        m = cv2.imread(os.path.join(self.pj.dataset_dir, "masks", "L", "cap000.png"), cv2.IMREAD_GRAYSCALE)
+        self.assertEqual(set(np.unique(m)) - {0, 255}, set(), "feather 0 must be binary")
+
+    def test_nothing_found_falls_back_to_the_region_and_says_so(self):
+        os.environ["HS_FAKE_SEGMENT"] = "none"
+        masks.run(args(self.ply, method="vision"), self.pj)
+        st = self.pj.stage("masks")
+        self.assertEqual(st["metrics"]["vision_fell_back"], N_CAM)
+        chk = {c["name"]: c for c in st["checks"]}["vision_found_the_subject"]
+        self.assertFalse(chk["ok"])
+        self.assertIn("fell back", chk["value"])
+        self.assertTrue(all(m.mean() > 0.01 for m in load_masks(self.pj).values()), "fallback masks empty")
+
+    def test_per_image_errors_fall_back_but_a_crash_stops_the_stage(self):
+        os.environ["HS_FAKE_SEGMENT"] = "error"
+        masks.run(args(self.ply, method="vision"), self.pj)
+        self.assertIn("vision error", self.pj.stage("masks")["metrics"]["vision_fell_back_views"][0])
+        os.environ["HS_FAKE_SEGMENT"] = "crash"
+        with self.assertRaises(events.StageError) as e:
+            masks.run(args(self.ply, method="vision"), self.pj)
+        self.assertIn("exited 3", str(e.exception))
+        self.assertIn("--method geometry", e.exception.hint)
+
+    def test_no_helper_off_macos_names_the_way_out(self):
+        os.environ.pop("HS_SEGMENT_BIN")
+        if sys.platform == "darwin":
+            self.skipTest("macOS builds the real helper")
+        with self.assertRaises(events.StageError) as e:
+            masks.run(args(self.ply, method="vision"), self.pj)
+        self.assertIn("--method geometry", e.exception.hint)
 
 
 class FillHoles(unittest.TestCase):

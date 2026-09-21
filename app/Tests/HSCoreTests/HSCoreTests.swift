@@ -270,8 +270,8 @@ final class TrainingTests: XCTestCase {
     func testMaskArgumentsMatchTheStage() {
         var m = MaskSettings()
         XCTAssertEqual(m.arguments(project: "/p"),
-                       ["masks", "-p", "/p", "--radius-scale", "1", "--margin-frac", "0.05",
-                        "--min-opacity", "0.1", "--close-px", "25", "--preview", "6"])
+                       ["masks", "-p", "/p", "--method", "vision", "--radius-scale", "1", "--margin-frac", "0.05",
+                        "--min-opacity", "0.1", "--close-px", "25", "--preview", "6", "--feather-px", "1"])
         XCTAssertFalse(m.arguments(project: "/p").contains("--radius"))      // never an absolute radius
         m.source = .points
         m.radiusScale = 0.8
@@ -279,6 +279,10 @@ final class TrainingTests: XCTestCase {
         let a = m.arguments(project: "/p")
         XCTAssertEqual(a.suffix(2), ["--from-points", "--no-keep-largest"])
         XCTAssertTrue(a.contains("0.8"))
+        m.method = .geometry
+        let g = m.arguments(project: "/p")
+        XCTAssertEqual(Array(g[3...4]), ["--method", "geometry"])
+        XCTAssertFalse(g.contains("--feather-px"))           // a Vision-only setting
     }
 
     func testLogFollowsTheLastRun() {

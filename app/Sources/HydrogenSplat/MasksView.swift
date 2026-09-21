@@ -101,7 +101,7 @@ struct MasksView: View {
     }
 
     private var intro: some View {
-        Text("A silhouette of the subject in every view, projected from geometry the solve already has — no segmentation model. White is what the trainer keeps. The same files serve both layers: the background model reads them inverted.")
+        Text("A mask of the subject in every view. Vision finds the objects in each photo; the region projected from the solve decides which one is the subject. White is what the trainer keeps. The same files serve both layers: the background model reads them inverted.")
             .font(.callout).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -110,6 +110,12 @@ struct MasksView: View {
 
     private var handles: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Handle(title: "Method", help: "Object (Vision): Apple Vision finds the objects in each photo and keeps the one that sits inside the projected region — a tight mask of the thing itself, with a hard edge and a 1–2 px anti-aliased rim. Region only: the projected region itself, which also takes in whatever is near the subject (on the greeting card: 45% of the frame, backdrop and table included). A view where Vision finds nothing inside the region falls back to the region and is counted in the checks.") {
+                Picker("", selection: settings.method) {
+                    ForEach(MaskSettings.Method.allCases) { Text($0.title).tag($0) }
+                }
+                .labelsHidden().pickerStyle(.segmented).frame(width: 260)
+            }
             Handle(title: "Built from", help: sourceHelp) {
                 Picker("", selection: settings.source) {
                     ForEach(MaskSettings.Source.allCases) { Text($0.title).tag($0) }
@@ -131,6 +137,14 @@ struct MasksView: View {
             }
             DisclosureGroup("Detail", isExpanded: $showAdvanced) {
                 VStack(alignment: .leading, spacing: 10) {
+                    if settings.wrappedValue.method == .vision {
+                        Handle(title: "Edge", help: "Softness of the object mask's rim: the sigma of a Gaussian over the hard edge, in pixels. 1 gives the 1–2 px anti-aliasing an opaque subject wants; 0 is a hard binary edge.") {
+                            Slider(value: settings.featherPx, in: 0...4, step: 0.5) { EmptyView() }
+                                .frame(width: 220)
+                            Text(String(format: "%.1f px", settings.wrappedValue.featherPx))
+                                .monospacedDigit().frame(width: 60, alignment: .leading)
+                        }
+                    }
                     Handle(title: "Minimum opacity", help: "Splats fainter than this are not drawn. Raise it when a decayed model leaves haze inside the radius; lower it when the silhouette comes out patchy.") {
                         Slider(value: settings.minOpacity, in: 0...0.6, step: 0.05) { EmptyView() }
                             .frame(width: 220)
@@ -225,10 +239,10 @@ struct MasksView: View {
                     ThumbImage(path: p)
                         .frame(maxWidth: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
-                    Text("Yellow is the silhouette edge; everything outside it is dimmed.")
+                    Text("Yellow is the mask edge; everything outside it is dimmed. With Vision, magenta is the projected region it chose from.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                MetricGrid(rows: rows(s.metrics, keys: ["source", "views", "points_available", "points_used",
+                MetricGrid(rows: rows(s.metrics, keys: ["method", "vision_fell_back", "prior_coverage_median", "source", "views", "points_available", "points_used",
                                                         "radius_source", "radius_scale",
                                                         "coverage_median", "coverage_min", "coverage_max"]))
                 if let r = s.metrics["radius_m"]?.double {
