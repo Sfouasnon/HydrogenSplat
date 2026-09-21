@@ -3,8 +3,8 @@ import AppKit
 import HSCore
 
 /// One project: its source, every stage's state, and a stage's metrics / checks / log.
-/// The app runs ingest, select (+ solve), exposure and train; the other stages are read from the manifest
-/// the CLI writes.
+/// The app runs ingest, select (+ solve), exposure, masks and train; the other stages are read from
+/// the manifest the CLI writes.
 struct ProjectDetailView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: ProjectStore
@@ -66,6 +66,7 @@ struct ProjectDetailView: View {
                     sourceBox(m)
                     SelectView(project: project, manifest: m)
                     ExposureView(project: project, manifest: m)
+                    MasksView(project: project, manifest: m)
                     TrainView(project: project, manifest: m)
                     ModelsBox(scene: model.viewerScene, project: project)
                     stagesBox(m)

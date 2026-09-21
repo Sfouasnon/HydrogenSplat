@@ -213,7 +213,7 @@ final class TrainingTests: XCTestCase {
         s.backgroundNoise = 0
         s.extraBrushArgs = "--opac-decay 0.006"
         s.excludeExtra = "L/cap064, R/cap069"
-        s.useMasks = false
+        s.layer = .full
         s.scoreBothEyes = true
         let steps = s.steps(project: "/p", captures: 84)
         let t = steps[0].arguments
@@ -221,11 +221,50 @@ final class TrainingTests: XCTestCase {
         XCTAssertTrue(t.contains("--min-scale-factor=0"))
         XCTAssertTrue(t.contains("--brush-args=--background-noise-strength 0 --opac-decay 0.006"))
         XCTAssertTrue(t.contains("--exclude=L/cap064,R/cap069"))
-        XCTAssertTrue(t.contains("--no-masks"))
+        XCTAssertTrue(t.contains("--layer=full"))
         XCTAssertEqual(steps.map(\.title), ["Train", "Score views (L)", "Score views (R)"])
         XCTAssertEqual(steps[2].arguments.suffix(4), ["--eye", "R", "--name", "views_latest_R"])
         s.archiveName = "bad name"
         XCTAssertNotNil(s.archiveNameProblem)
+    }
+
+    func testLayerAndAlphaModeReachTheEngine() {
+        var s = TrainSettings()
+        s.holdoutEvery = 0
+        // the default: masks as they are, Brush's own alpha mode, so no --alpha-mode is passed
+        XCTAssertTrue(s.trainArguments(project: "/p", captures: 70).contains("--layer=subject"))
+        XCTAssertFalse(s.trainArguments(project: "/p", captures: 70).contains { $0.hasPrefix("--alpha-mode") })
+
+        s.alphaMode = .transparent
+        XCTAssertTrue(s.trainArguments(project: "/p", captures: 70).contains("--alpha-mode=transparent"))
+
+        // the alpha mode describes the subject layer only; it must not follow the others out
+        s.layer = .background
+        let bg = s.trainArguments(project: "/p", captures: 70)
+        XCTAssertTrue(bg.contains("--layer=background"))
+        XCTAssertFalse(bg.contains { $0.hasPrefix("--alpha-mode") })
+
+        s.layer = .full
+        let full = s.trainArguments(project: "/p", captures: 70)
+        XCTAssertTrue(full.contains("--layer=full"))
+        XCTAssertFalse(full.contains { $0.hasPrefix("--alpha-mode") })
+    }
+
+    func testMaskArgumentsMatchTheStage() {
+        var m = MaskSettings()
+        XCTAssertEqual(m.arguments(project: "/p"),
+                       ["masks", "-p", "/p", "--radius", "0.12", "--min-opacity", "0.1",
+                        "--margin-mm", "5", "--close-px", "25", "--preview", "6"])
+        m.source = .points
+        m.radiusM = 0.1
+        m.minOpacity = 0.2
+        m.marginMM = 6
+        m.keepLargest = false
+        let a = m.arguments(project: "/p")
+        XCTAssertEqual(a.suffix(2), ["--from-points", "--no-keep-largest"])
+        XCTAssertTrue(a.contains("0.1"))
+        XCTAssertTrue(a.contains("0.2"))
+        XCTAssertTrue(a.contains("6"))
     }
 
     func testLogFollowsTheLastRun() {

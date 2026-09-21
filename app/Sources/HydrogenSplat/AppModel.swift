@@ -38,6 +38,9 @@ final class AppModel: ObservableObject {
     /// The exposure run per project path, and its panel settings.
     @Published var exposureQueues: [String: RunQueue] = [:]
     @Published var exposureSettings: [String: ExposureSettings] = [:]
+    /// The masks run per project path, and its panel settings.
+    @Published var maskQueues: [String: RunQueue] = [:]
+    @Published var maskSettings: [String: MaskSettings] = [:]
     @Published var consoleHistory: [ConsoleSession] = []
     /// Pipeline or Viewer, per project path.
     @Published var projectPage: [String: ProjectPage] = [:]

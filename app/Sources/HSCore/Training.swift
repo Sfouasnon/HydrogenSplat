@@ -44,6 +44,44 @@ public struct CaptureSet: Equatable, Sendable {
     }
 }
 
+/// Which part of the scene one model is responsible for.
+///
+/// `full` trains without masks at all. `subject` trains with train/dataset/masks as written.
+/// `background` reads those same files inverted, through Brush's `--invert-masks`, so one set of
+/// masks on disk serves both halves.
+public enum Layer: String, CaseIterable, Identifiable, Sendable {
+    case full, subject, background
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .full: return "Full scene"
+        case .subject: return "Subject"
+        case .background: return "Background"
+        }
+    }
+
+    public var needsMasks: Bool { self != .full }
+}
+
+/// What a mask means to the loss.
+///
+/// Brush's default is `masked`: those pixels are left out of the loss entirely, so everything
+/// outside the silhouette is *unsupervised* rather than empty — which is how a masked run ends up
+/// with a clean subject and a shredded room. `transparent` premultiplies the ground truth and
+/// turns on the L1 on rendered alpha (`--match-alpha-weight`, 0.1 by default), which pushes the
+/// model to be empty out there instead.
+public enum AlphaMode: String, CaseIterable, Identifiable, Sendable {
+    case masked, transparent
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        self == .masked ? "Left unsupervised" : "Pushed empty"
+    }
+}
+
 public struct TrainSettings: Equatable, Sendable {
     public var totalIters = 40_000
     public var growthStopIter = 30_000
@@ -57,7 +95,10 @@ public struct TrainSettings: Equatable, Sendable {
     /// 0 = off; otherwise hold out every Nth capture (both eyes) starting at `holdoutStart`
     public var holdoutEvery = 10
     public var holdoutStart = 5
-    public var useMasks = true
+    /// Which part of the scene this model explains. The masks are how Brush is told; see `hs masks`.
+    public var layer: Layer = .subject
+    /// What a mask means to the loss. Only reaches Brush for the subject layer.
+    public var alphaMode: AlphaMode = .masked
     /// extra views to leave out, e.g. "L/cap064,R/cap069"
     public var excludeExtra = ""
     public var extraBrushArgs = ""
@@ -108,7 +149,8 @@ public struct TrainSettings: Equatable, Sendable {
         if let s = splitAtScreenSize { a.append("--split-at-screen-size=\(TrainSettings.num(s))") }
         let ex = excludedViews(in: set)
         if !ex.isEmpty { a.append("--exclude=\(ex.joined(separator: ","))") }
-        if !useMasks { a.append("--no-masks") }
+        a.append("--layer=\(layer.rawValue)")
+        if layer == .subject && alphaMode == .transparent { a.append("--alpha-mode=transparent") }
         let b = brushArgs
         if !b.isEmpty { a.append("--brush-args=\(b)") }
         return a

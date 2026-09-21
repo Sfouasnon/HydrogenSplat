@@ -26,7 +26,7 @@ struct TrainView: View {
         var s = TrainSettings()
         // score with the crop size the last views run on this project used
         if let mm = manifest.stage("views")?.metrics["subject_extent_mm"]?.double { s.subjectMM = mm }
-        if !hasMasks { s.useMasks = false }
+        if !hasMasks { s.layer = .full }
         return s
     }
 
@@ -50,6 +50,14 @@ struct TrainView: View {
             }
         }
         return out.sorted()
+    }
+
+    private var layerHelp: String {
+        switch settings.wrappedValue.layer {
+        case .full: return "One model for the whole room, trained without masks at all. This is the working base on every project so far."
+        case .subject: return "One model for the subject alone, trained with train/dataset/masks. What happens outside the silhouette is the next setting."
+        case .background: return "One model for the room without the subject, from the same masks read inverted. Give it a smaller budget: it only has to hold up behind the subject."
+        }
     }
 
     private var hasMasks: Bool {
@@ -171,10 +179,30 @@ struct TrainView: View {
                         .foregroundStyle(.secondary).monospacedDigit()
                 }
             }
-            Handle(title: "Masks", help: hasMasks
-                   ? "This project has masks. With masks on, Brush ignores everything outside the subject: a cleaner subject, but no usable room."
-                   : "No masks in this project (run hs masks to make them).") {
-                Toggle("Train with masks", isOn: settings.useMasks).disabled(!hasMasks)
+            Handle(title: "Layer", help: layerHelp) {
+                Picker("", selection: settings.layer) {
+                    ForEach(Layer.allCases) { Text($0.title).tag($0) }
+                }
+                .labelsHidden().pickerStyle(.segmented).frame(width: 320)
+                .disabled(!hasMasks)
+            }
+            if !hasMasks {
+                Label("No masks in this project — build them in the Masks panel above to train a subject or background layer.",
+                      systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary).padding(.leading, 140)
+            }
+            if settings.wrappedValue.layer == .subject {
+                Handle(title: "Outside the mask", help: "Brush's default leaves the masked-out pixels out of the loss, so the room is unsupervised rather than empty — that is what produced the coins run's clean subject and shredded room. Pushed empty premultiplies the ground truth and turns on the L1 on rendered alpha, so the model is pushed to hold nothing out there. Untested on this rig; one mechanism per run.") {
+                    Picker("", selection: settings.alphaMode) {
+                        ForEach(AlphaMode.allCases) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden().pickerStyle(.segmented).frame(width: 320)
+                }
+            }
+            if settings.wrappedValue.layer == .background {
+                Label("The same masks, read inverted: the room without the subject. Pair it with a subject model and merge them.",
+                      systemImage: "square.on.square.dashed")
+                    .font(.caption).foregroundStyle(.secondary).padding(.leading, 140)
             }
             DisclosureGroup("Detail and experiments", isExpanded: $showAdvanced) {
                 VStack(alignment: .leading, spacing: 10) {
