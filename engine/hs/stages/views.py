@@ -85,6 +85,9 @@ def add_parser(sub):
                              "empty outside its silhouette on purpose and would otherwise be charged for it")
     region.add_argument("--outside-masks", dest="mask_region", action="store_const", const="outside",
                         help="score only where the masks are black: a background layer")
+    p.add_argument("--edge-px", type=int, default=EDGE_PX,
+                   help=f"with a mask region, also split PSNR into the region eroded by this many px "
+                        f"(interior) and the band removed (edge); default {EDGE_PX}, 0 turns it off")
     p.add_argument("--render-bin", default=os.environ.get("HS_PATH_RENDER", DEFAULT_RENDER))
     return p
 
@@ -150,9 +153,17 @@ def build_path(pj, captures, out_path, eye="L"):
 
 
 MASK_PATCH_MIN = 0.5      # a patch counts in a masked score when at least half of it is in-region
+# The silhouette band. A layer's PSNR over its region is dominated by the few pixels along the
+# mask edge: GreetingCard 2026-09-21, sel101, subject layer 27.1 dB over the region but 34.7 dB
+# once 5 px of the edge are dropped, against 36.8 for the full model -- 97% of the squared
+# error sat in ~10% of the pixels, black where the layer stopped short of the mask. With a
+# region, PSNR is therefore also reported split: interior (region eroded by this many px)
+# and edge (the band that erosion removed). The interior number compares a layer with a full
+# model; the edge number is what mask/alpha work has to move.
+EDGE_PX = 8
 
 
-def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP, region=None):
+def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP, region=None, edge_px=EDGE_PX):
     """Edge energy, agreement and displacement on one subject-centred crop.
 
     ``region``: an optional bool array the size of ``src`` saying which pixels count. A layer
@@ -180,6 +191,21 @@ def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP, region=None):
 
     d2 = (s - r) ** 2
     mse = float(d2[sel].mean() if sel is not None else d2.mean())
+    split = {}
+    if sel is not None and edge_px > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * edge_px + 1, 2 * edge_px + 1))
+        inner = cv2.erode(sel.astype(np.uint8), k, borderValue=1).astype(bool)
+        band = sel & ~inner
+
+        def db(e):
+            return round(10 * np.log10(255.0 ** 2 / max(e, 1e-9)), 2)
+        total = float(d2[sel].sum())
+        split = {
+            "psnr_interior_db": db(float(d2[inner].mean())) if inner.any() else None,
+            "psnr_edge_db": db(float(d2[band].mean())) if band.any() else None,
+            "edge_fraction": round(float(band.sum() / max(sel.sum(), 1)), 3),
+            "edge_error_share": round(float(d2[band].sum()) / total, 3) if total > 0 else None,
+        }
     win = cv2.createHanningWindow((PATCH, PATCH), cv2.CV_32F)
     mags = []
     for yy in range(0, s.shape[0] - PATCH, step):
@@ -255,6 +281,8 @@ def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP, region=None):
         "retained_edge_energy": round(rs / ss, 3) if ss else None,
         "retained_edge_energy_norm": round(rs / ceiling, 3) if ceiling else None,
         "psnr_db": round(10 * np.log10(255.0 ** 2 / max(mse, 1e-9)), 2),
+        "psnr_interior_db": split.get("psnr_interior_db"), "psnr_edge_db": split.get("psnr_edge_db"),
+        "edge_fraction": split.get("edge_fraction"), "edge_error_share": split.get("edge_error_share"),
         "correlation": round(float(np.corrcoef((s[sel] if sel is not None else s).ravel(),
                                                (r[sel] if sel is not None else r).ravel())[0, 1]), 4),
         "region_fraction": round(float(sel.mean()), 3) if sel is not None else None,
@@ -499,7 +527,7 @@ def run(a, pj):
             continue
         res = compare(cv2.cvtColor(src_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32),
                       cv2.cvtColor(ren_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32),
-                      v["subject_px"], half, a.displaced_px, a.patch_step, region=reg)
+                      v["subject_px"], half, a.displaced_px, a.patch_step, region=reg, edge_px=a.edge_px)
         if res is None:
             continue
         c = by_cap.get(v["capture"], {})
@@ -528,7 +556,9 @@ def run(a, pj):
                       displaced_dir_deg=row["displaced_dir_deg"],
                       displaced_dir_coherence=row["displaced_dir_coherence"],
                       retained_edge_energy=row["retained_edge_energy"],
-                      retained_edge_energy_norm=row["retained_edge_energy_norm"], psnr_db=row["psnr_db"])
+                      retained_edge_energy_norm=row["retained_edge_energy_norm"], psnr_db=row["psnr_db"],
+                      **({"psnr_interior_db": row["psnr_interior_db"], "psnr_edge_db": row["psnr_edge_db"],
+                          "edge_error_share": row["edge_error_share"]} if region_kind else {}))
         if worst is None or (row["displaced_fraction"] or 0) > (worst["displaced_fraction"] or 0):
             worst = row
 
@@ -549,6 +579,12 @@ def run(a, pj):
     # compare runs by this one: the raw number carries the clip's grain, this does not
     pj.metric(STAGE, "retained_edge_energy_norm_median", round(float(np.median(norm)), 3))
     pj.metric(STAGE, "grain_ceiling_median", round(float(np.median(ceil)), 3))
+    pj.metric(STAGE, "psnr_median", round(float(np.median([r["psnr_db"] for r in report])), 2))
+    if region_kind:
+        for key in ("psnr_interior_db", "psnr_edge_db", "edge_error_share"):
+            vals = [r[key] for r in report if r.get(key) is not None]
+            if vals:
+                pj.metric(STAGE, key.replace("_db", "") + "_median", round(float(np.median(vals)), 3))
     pj.check(STAGE, "model_registers_to_photographs", max(frac) <= a.max_displaced_fraction,
              value=f"worst view {worst['view']} (az {worst['azimuth_deg']:+.0f}) has "
                    f"{100 * (worst['displaced_fraction'] or 0):.0f}% of patches over {a.displaced_px:g} px "

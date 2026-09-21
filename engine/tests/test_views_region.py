@@ -84,6 +84,23 @@ class Region(unittest.TestCase):
         far[0:5, 0:5] = True
         self.assertIsNone(compare(self.src, self.src, UV, HALF, 4.0, region=far))
 
+    def test_a_short_silhouette_is_charged_to_the_edge_not_the_interior(self):
+        # the GreetingCard case: exact inside, black in a 4 px ring just inside the mask
+        import cv2
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        short = cv2.erode(self.sil.astype(np.uint8), k).astype(bool)
+        ren = np.where(short, self.src, 0.0).astype(np.float32)
+        r = compare(self.src, ren, UV, HALF, 4.0, region=self.sil)
+        self.assertGreater(r["psnr_interior_db"], 60.0, "the interior is exact")
+        self.assertLess(r["psnr_edge_db"], 15.0, "the ring is black")
+        self.assertLess(r["psnr_db"], 30.0, "and the whole-region number hides which is which")
+        self.assertGreater(r["edge_error_share"], 0.99)
+
+    def test_no_region_reports_no_split(self):
+        r = compare(self.src, self.src + 5.0, UV, HALF, 4.0)
+        self.assertIsNone(r["psnr_interior_db"])
+        self.assertIsNone(r["edge_error_share"])
+
 
 if __name__ == "__main__":
     unittest.main()
