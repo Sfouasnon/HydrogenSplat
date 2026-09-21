@@ -79,6 +79,12 @@ def add_parser(sub):
     p.add_argument("--max-displaced-fraction", type=float, default=0.10,
                    help="check threshold (rig6 golden: 0.03 on the well-covered side, 0.24 on the thin one)")
     p.add_argument("--keep-frames", action="store_true", help="keep the raw renders as well as the comparisons")
+    region = p.add_mutually_exclusive_group()
+    region.add_argument("--inside-masks", dest="mask_region", action="store_const", const="inside",
+                        help="score only where train/dataset/masks is white: a subject layer, which is "
+                             "empty outside its silhouette on purpose and would otherwise be charged for it")
+    region.add_argument("--outside-masks", dest="mask_region", action="store_const", const="outside",
+                        help="score only where the masks are black: a background layer")
     p.add_argument("--render-bin", default=os.environ.get("HS_PATH_RENDER", DEFAULT_RENDER))
     return p
 
@@ -143,8 +149,18 @@ def build_path(pj, captures, out_path, eye="L"):
     return views, subject_extent_mm(pts, subject), float(K[int(L[0])][0, 0])
 
 
-def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP):
-    """Edge energy, agreement and displacement on one subject-centred crop."""
+MASK_PATCH_MIN = 0.5      # a patch counts in a masked score when at least half of it is in-region
+
+
+def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP, region=None):
+    """Edge energy, agreement and displacement on one subject-centred crop.
+
+    ``region``: an optional bool array the size of ``src`` saying which pixels count. A layer
+    model is empty outside its silhouette on purpose; scored over the whole crop, every one of
+    those pixels reads as an error (coins, alpha-matched subject: 11.10 dB against 19.41 for the
+    masked model, almost all of it the absent room). With a region, PSNR, correlation and the
+    sharpness percentiles use only in-region pixels, and a patch is kept only when at least
+    MASK_PATCH_MIN of it lies in the region."""
     import cv2
     h, w = src.shape
     x0, x1 = max(0, int(uv[0] - half)), min(w, int(uv[0] + half))
@@ -152,17 +168,25 @@ def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP):
     s, r = src[y0:y1, x0:x1], ren[y0:y1, x0:x1]
     if min(s.shape) < PATCH * 2:
         return None
+    sel = region[y0:y1, x0:x1] if region is not None else None
+    if sel is not None and sel.sum() < PATCH * PATCH:
+        return None                                       # the region barely touches this crop
 
     def sharp(a):
-        contrast = np.percentile(a, 95) - np.percentile(a, 5)
-        return float(np.percentile(np.abs(cv2.Laplacian(a, cv2.CV_32F)), 90) / max(contrast, 1e-6))
+        lap = np.abs(cv2.Laplacian(a, cv2.CV_32F))
+        av, lv = (a[sel], lap[sel]) if sel is not None else (a, lap)
+        contrast = np.percentile(av, 95) - np.percentile(av, 5)
+        return float(np.percentile(lv, 90) / max(contrast, 1e-6))
 
-    mse = float(((s - r) ** 2).mean())
+    d2 = (s - r) ** 2
+    mse = float(d2[sel].mean() if sel is not None else d2.mean())
     win = cv2.createHanningWindow((PATCH, PATCH), cv2.CV_32F)
     mags = []
     for yy in range(0, s.shape[0] - PATCH, step):
         for xx in range(0, s.shape[1] - PATCH, step):
             a, b = s[yy:yy + PATCH, xx:xx + PATCH], r[yy:yy + PATCH, xx:xx + PATCH]
+            if sel is not None and sel[yy:yy + PATCH, xx:xx + PATCH].mean() < MASK_PATCH_MIN:
+                continue                                  # mostly outside the region being scored
             if a.std() < PATCH_MIN_STD:
                 continue                                  # flat patch: phase correlation is noise
             (dx, dy), resp = cv2.phaseCorrelate(a.copy(), b.copy(), win)
@@ -231,7 +255,9 @@ def compare(src, ren, uv, half, displaced_px, step=PATCH_STEP):
         "retained_edge_energy": round(rs / ss, 3) if ss else None,
         "retained_edge_energy_norm": round(rs / ceiling, 3) if ceiling else None,
         "psnr_db": round(10 * np.log10(255.0 ** 2 / max(mse, 1e-9)), 2),
-        "correlation": round(float(np.corrcoef(s.ravel(), r.ravel())[0, 1]), 4),
+        "correlation": round(float(np.corrcoef((s[sel] if sel is not None else s).ravel(),
+                                               (r[sel] if sel is not None else r).ravel())[0, 1]), 4),
+        "region_fraction": round(float(sel.mean()), 3) if sel is not None else None,
         "patches": len(m),
         "displacement_median_px": round(float(np.median(m)), 2) if len(m) else None,
         "displacement_p90_px": round(float(np.percentile(m, 90)), 2) if len(m) else None,
@@ -438,6 +464,25 @@ def run(a, pj):
     runner.run([rbin, ply, "--path", path_json, "-o", out_dir], STAGE, log_path=pj.log_path(STAGE),
                on_line=on_line, env={"RUST_LOG": os.environ.get("RUST_LOG", "warn")})
 
+    region_kind = getattr(a, "mask_region", None)
+    mdir = os.path.join(pj.dataset_dir, "masks", a.eye)
+    if region_kind:
+        if not os.path.isdir(mdir):
+            raise events.StageError(f"--{region_kind}-masks needs train/dataset/masks/{a.eye}, which is not there",
+                                    hint=f"hs masks --project {pj.root}")
+        pj.metric(STAGE, "mask_region", region_kind)
+
+    def region_for(image_name, shape):
+        if not region_kind:
+            return None
+        mp = os.path.join(mdir, os.path.splitext(image_name)[0] + ".png")
+        m = cv2.imread(mp, cv2.IMREAD_GRAYSCALE) if os.path.exists(mp) else None
+        if m is None:
+            return False                                  # a named region with no mask: skip the view
+        if m.shape != shape:
+            m = cv2.resize(m, (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
+        return (m >= 128) if region_kind == "inside" else (m < 128)
+
     events.start(STAGE, "compare")
     report, worst = [], None
     for i, v in enumerate(views):
@@ -448,9 +493,13 @@ def run(a, pj):
             continue
         src_bgr, ren_bgr = cv2.imread(img), cv2.imread(frame)
         half = int(0.5 * fx * subj_mm / v["depth_mm"])
+        reg = region_for(v["image"], src_bgr.shape[:2])
+        if reg is False:
+            events.log(STAGE, f"[hs] no mask for {v['image']}; skipped (scoring --{region_kind}-masks)")
+            continue
         res = compare(cv2.cvtColor(src_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32),
                       cv2.cvtColor(ren_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32),
-                      v["subject_px"], half, a.displaced_px, a.patch_step)
+                      v["subject_px"], half, a.displaced_px, a.patch_step, region=reg)
         if res is None:
             continue
         c = by_cap.get(v["capture"], {})
