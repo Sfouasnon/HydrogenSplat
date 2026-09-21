@@ -2,8 +2,8 @@ import Foundation
 
 /// `hs masks` — a per-view silhouette of the subject, projected into every view from geometry
 /// the solve already has. No segmentation model: the splats (or the sparse SfM points) within
-/// `radius` of the subject centre are drawn as discs the size of their own projected footprint,
-/// closed, filled, and dilated outward by `marginMM`.
+/// the fitted radius of the subject centre are drawn as discs the size of their own projected
+/// footprint, closed, filled, and dilated outward by a share of that radius.
 ///
 /// One set of files serves both layers. `hs train --layer subject` reads them as written;
 /// `hs train --layer background` reads the same files inverted, through Brush's `--invert-masks`.
@@ -21,13 +21,15 @@ public struct MaskSettings: Equatable, Sendable {
     }
 
     public var source: Source = .model
-    /// Metres about the subject centre — the same centre `hs prune` and `hs views` use.
-    public var radiusM = 0.12
+    /// Multiplies the radius the engine fits to the camera orbit. 1 = as fitted. There is no
+    /// absolute radius here on purpose: a metric radius means nothing on an unscaled solve, and
+    /// the fitted one works on every project (hs masks --radius still takes metres).
+    public var radiusScale = 1.0
     public var minOpacity = 0.1
-    /// Dilate the silhouette outward by this much world space. Deliberately one-sided: a mask
-    /// that is a little too generous costs some background supervision, a mask that clips the
-    /// subject removes real observations.
-    public var marginMM = 5.0
+    /// Outward dilation as a share of the radius. Deliberately one-sided: a mask that is a little
+    /// too generous costs some background supervision, one that clips the subject removes real
+    /// observations.
+    public var marginFrac = 0.05
     /// Morphological close, to bridge the gaps between projected splats.
     public var closePx = 25
     /// Keep only the largest silhouette — the subject is one object; detached blobs are haze
@@ -39,9 +41,9 @@ public struct MaskSettings: Equatable, Sendable {
 
     public func arguments(project: String) -> [String] {
         var a = ["masks", "-p", project,
-                 "--radius", MaskSettings.num(radiusM),
+                 "--radius-scale", MaskSettings.num(radiusScale),
+                 "--margin-frac", MaskSettings.num(marginFrac),
                  "--min-opacity", MaskSettings.num(minOpacity),
-                 "--margin-mm", MaskSettings.num(marginMM),
                  "--close-px", String(closePx),
                  "--preview", String(previewViews)]
         if source == .points { a.append("--from-points") }

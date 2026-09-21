@@ -34,9 +34,20 @@ struct MasksView: View {
     private var queue: RunQueue? { model.maskQueues[project.path] }
     private var running: Bool { queue?.isRunning ?? false }
     private var solveReady: Bool { manifest.stage("solve")?.status == .done }
-    private var trainDone: Bool { manifest.stage("train")?.status == .done }
+    /// A model exists to project. Stale counts: building masks marks train stale, and the model is
+    /// still on disk — reading "not done" as "no model" flipped the source to SfM points after the
+    /// first build, so a second press would have rebuilt from the worse source.
+    private var trainDone: Bool {
+        let s = manifest.stage("train")?.status
+        return s == .done || s == .stale
+    }
     private var lockAlive: Bool { project.lock?.alive == true }
     private var blocked: Bool { running || lockAlive || !model.config.problems.isEmpty }
+    /// The solve ran without a metric reference: the engine's _m/_mm figures are in its own units.
+    private var unscaled: Bool {
+        manifest.stage("solve")?.checks.contains { $0.name == "scene_scaled" && !$0.ok } ?? false
+    }
+
     private var reloadKey: String {
         "\(project.path)|\(stage?.finished?.timeIntervalSince1970 ?? 0)|\(stage?.status.rawValue ?? "")"
     }
@@ -106,16 +117,16 @@ struct MasksView: View {
                 .labelsHidden().pickerStyle(.segmented).frame(width: 260)
                 .disabled(!trainDone)
             }
-            Handle(title: "Radius", help: "Only geometry within this far of the subject centre becomes silhouette. Too small clips the subject; too large pulls in the table and the haze around it.") {
-                Slider(value: settings.radiusM, in: 0.04...0.4, step: 0.01) { EmptyView() }
+            Handle(title: "Size", help: "The radius is fitted to your camera orbit — the subject fills about 70% of the frame at the median camera distance — so it works whether or not the scene has metric scale. Below 1 tightens it; above 1 takes in more around the subject.") {
+                Slider(value: settings.radiusScale, in: 0.5...2.0, step: 0.05) { EmptyView() }
                     .frame(width: 220)
-                Text(String(format: "%.2f m", settings.wrappedValue.radiusM))
+                Text(String(format: "×%.2f", settings.wrappedValue.radiusScale))
                     .monospacedDigit().frame(width: 60, alignment: .leading)
             }
-            Handle(title: "Margin", help: "The silhouette is dilated outward by this much world space. One-sided on purpose: a generous mask costs a little background supervision, a tight one deletes real observations of the subject.") {
-                Slider(value: settings.marginMM, in: 0...25, step: 1) { EmptyView() }
+            Handle(title: "Margin", help: "The silhouette is dilated outward by this share of the radius. One-sided on purpose: a generous mask costs a little background supervision, a tight one deletes real observations of the subject.") {
+                Slider(value: settings.marginFrac, in: 0...0.2, step: 0.01) { EmptyView() }
                     .frame(width: 220)
-                Text(String(format: "%.0f mm", settings.wrappedValue.marginMM))
+                Text(String(format: "%.0f%%", settings.wrappedValue.marginFrac * 100))
                     .monospacedDigit().frame(width: 60, alignment: .leading)
             }
             DisclosureGroup("Detail", isExpanded: $showAdvanced) {
@@ -217,8 +228,16 @@ struct MasksView: View {
                     Text("Yellow is the silhouette edge; everything outside it is dimmed.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                MetricGrid(rows: rows(s.metrics, keys: ["source", "views", "points_used", "radius_m",
+                MetricGrid(rows: rows(s.metrics, keys: ["source", "views", "points_available", "points_used",
+                                                        "radius_source", "radius_scale",
                                                         "coverage_median", "coverage_min", "coverage_max"]))
+                if let r = s.metrics["radius_m"]?.double {
+                    Text(unscaled
+                         ? String(format: "Radius %.4g scene-metres — this solve has no metric scale, so that is its own unit, not a real metre. The masks don't depend on it.", r)
+                         : String(format: "Radius %.0f mm.", r * 1000))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 ForEach(s.checks) { c in
                     CheckRow(name: c.name, ok: c.ok, value: c.value?.display, needsHuman: c.needsHuman)
                 }

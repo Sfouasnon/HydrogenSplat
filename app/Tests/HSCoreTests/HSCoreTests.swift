@@ -270,18 +270,15 @@ final class TrainingTests: XCTestCase {
     func testMaskArgumentsMatchTheStage() {
         var m = MaskSettings()
         XCTAssertEqual(m.arguments(project: "/p"),
-                       ["masks", "-p", "/p", "--radius", "0.12", "--min-opacity", "0.1",
-                        "--margin-mm", "5", "--close-px", "25", "--preview", "6"])
+                       ["masks", "-p", "/p", "--radius-scale", "1", "--margin-frac", "0.05",
+                        "--min-opacity", "0.1", "--close-px", "25", "--preview", "6"])
+        XCTAssertFalse(m.arguments(project: "/p").contains("--radius"))      // never an absolute radius
         m.source = .points
-        m.radiusM = 0.1
-        m.minOpacity = 0.2
-        m.marginMM = 6
+        m.radiusScale = 0.8
         m.keepLargest = false
         let a = m.arguments(project: "/p")
         XCTAssertEqual(a.suffix(2), ["--from-points", "--no-keep-largest"])
-        XCTAssertTrue(a.contains("0.1"))
-        XCTAssertTrue(a.contains("0.2"))
-        XCTAssertTrue(a.contains("6"))
+        XCTAssertTrue(a.contains("0.8"))
     }
 
     func testLogFollowsTheLastRun() {
