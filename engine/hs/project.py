@@ -62,6 +62,7 @@ REQUIRES = {
     "move": ["solve"], "prune": ["train"], "render": ["train", "move"], "views": ["solve", "train"],
     # not in STAGES: operations on the solve output that do not join the state machine
     "masks": ["solve"], "exposure": ["solve"], "archive": ["solve"], "grade": ["render"],
+    "merge": ["train"],
 }
 
 
