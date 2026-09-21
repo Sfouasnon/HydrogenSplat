@@ -187,6 +187,7 @@ final class TrainingTests: XCTestCase {
         var s = TrainSettings()
         s.archiveName = "holdout-base"
         s.subjectMM = 350
+        s.layer = .full        // the 09-16 head baseline had no masks; TrainView forces .full then
         let steps = s.steps(project: "/p", captures: 160)
         XCTAssertEqual(steps.map(\.title), ["Train", "Archive holdout-base", "Score views (L)"])
         let t = steps[0].arguments
@@ -198,6 +199,8 @@ final class TrainingTests: XCTestCase {
         XCTAssertEqual(views.first, "L/cap005")
         XCTAssertTrue(views.contains("R/cap155"))
         XCTAssertFalse(t.contains { $0.hasPrefix("--brush-args") })
+        XCTAssertTrue(t.contains("--layer=full"))
+        XCTAssertFalse(t.contains { $0.hasPrefix("--alpha-mode") })   // no masks, no alpha mode
         XCTAssertEqual(steps[2].arguments, ["views", "-p", "/p", "--captures",
                                             "5,15,25,35,45,55,65,75,85,95,105,115,125,135,145,155",
                                             "--subject-mm", "350", "--name", "views_holdout-base"])
@@ -231,12 +234,13 @@ final class TrainingTests: XCTestCase {
     func testLayerAndAlphaModeReachTheEngine() {
         var s = TrainSettings()
         s.holdoutEvery = 0
-        // the default: masks as they are, Brush's own alpha mode, so no --alpha-mode is passed
+        // the default subject layer is pushed empty, and says so explicitly
         XCTAssertTrue(s.trainArguments(project: "/p", captures: 70).contains("--layer=subject"))
-        XCTAssertFalse(s.trainArguments(project: "/p", captures: 70).contains { $0.hasPrefix("--alpha-mode") })
-
-        s.alphaMode = .transparent
         XCTAssertTrue(s.trainArguments(project: "/p", captures: 70).contains("--alpha-mode=transparent"))
+
+        s.alphaMode = .masked
+        XCTAssertTrue(s.trainArguments(project: "/p", captures: 70).contains("--alpha-mode=masked"))
+        s.alphaMode = .transparent
 
         // the alpha mode describes the subject layer only; it must not follow the others out
         s.layer = .background
@@ -248,6 +252,19 @@ final class TrainingTests: XCTestCase {
         let full = s.trainArguments(project: "/p", captures: 70)
         XCTAssertTrue(full.contains("--layer=full"))
         XCTAssertFalse(full.contains { $0.hasPrefix("--alpha-mode") })
+    }
+
+    func testALayerIsScoredOnlyWhereItExists() {
+        var s = TrainSettings()
+        s.scoreViews = true
+        func views(_ l: Layer) -> [String] {
+            s.layer = l
+            return s.steps(project: "/p", captures: 70).first { $0.title.hasPrefix("Score views") }!.arguments
+        }
+        XCTAssertTrue(views(.subject).contains("--inside-masks"))
+        XCTAssertTrue(views(.background).contains("--outside-masks"))
+        let full = views(.full)
+        XCTAssertFalse(full.contains("--inside-masks") || full.contains("--outside-masks"))
     }
 
     func testMaskArgumentsMatchTheStage() {

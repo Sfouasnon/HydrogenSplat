@@ -97,8 +97,10 @@ public struct TrainSettings: Equatable, Sendable {
     public var holdoutStart = 5
     /// Which part of the scene this model explains. The masks are how Brush is told; see `hs masks`.
     public var layer: Layer = .subject
-    /// What a mask means to the loss. Only reaches Brush for the subject layer.
-    public var alphaMode: AlphaMode = .masked
+    /// What a mask means to the loss. Only reaches Brush for the subject layer. Defaults to
+    /// pushed-empty: on the 2026-09-20 coins A/B a masked subject model kept 78.5% of its
+    /// opacity mass outside the mask — a room nobody supervised, not a subject layer.
+    public var alphaMode: AlphaMode = .transparent
     /// extra views to leave out, e.g. "L/cap064,R/cap069"
     public var excludeExtra = ""
     public var extraBrushArgs = ""
@@ -150,7 +152,7 @@ public struct TrainSettings: Equatable, Sendable {
         let ex = excludedViews(in: set)
         if !ex.isEmpty { a.append("--exclude=\(ex.joined(separator: ","))") }
         a.append("--layer=\(layer.rawValue)")
-        if layer == .subject && alphaMode == .transparent { a.append("--alpha-mode=transparent") }
+        if layer == .subject { a.append("--alpha-mode=\(alphaMode.rawValue)") }   // explicit, so the manifest says which
         let b = brushArgs
         if !b.isEmpty { a.append("--brush-args=\(b)") }
         return a
@@ -179,6 +181,13 @@ public struct TrainSettings: Equatable, Sendable {
             var base = ["views", "-p", project]
             if !held.isEmpty { base += ["--captures", held.map(String.init).joined(separator: ",")] }
             if let mm = subjectMM { base += ["--subject-mm", TrainSettings.num(mm)] }
+            // a layer is scored only where it is meant to exist; whole-crop scoring charges a
+            // subject layer for the room it was trained to leave empty
+            switch layer {
+            case .subject: base.append("--inside-masks")
+            case .background: base.append("--outside-masks")
+            case .full: break
+            }
             s.append(.init(title: "Score views (L)", arguments: base + ["--name", label]))
             if scoreBothEyes && set.stereo {       // an array has no second eye to subtract
                 s.append(.init(title: "Score views (R)", arguments: base + ["--eye", "R", "--name", label + "_R"]))

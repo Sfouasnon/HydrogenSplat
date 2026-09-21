@@ -192,7 +192,7 @@ struct TrainView: View {
                     .font(.caption).foregroundStyle(.secondary).padding(.leading, 140)
             }
             if settings.wrappedValue.layer == .subject {
-                Handle(title: "Outside the mask", help: "Brush's default leaves the masked-out pixels out of the loss, so the room is unsupervised rather than empty — that is what produced the coins run's clean subject and shredded room. Pushed empty premultiplies the ground truth and turns on the L1 on rendered alpha, so the model is pushed to hold nothing out there. Untested on this rig; one mechanism per run.") {
+                Handle(title: "Outside the mask", help: "Brush's default leaves the masked-out pixels out of the loss, so the room is unsupervised rather than empty — that is what produced the coins run's clean subject and shredded room. Pushed empty premultiplies the ground truth and turns on the L1 on rendered alpha, so the model holds nothing out there. Measured on coins: left unsupervised kept 78.5% of the model's opacity outside the mask, pushed empty 16.2% and nothing beyond half a metre. Only a pushed-empty subject can be merged with a background.") {
                     Picker("", selection: settings.alphaMode) {
                         ForEach(AlphaMode.allCases) { Text($0.title).tag($0) }
                     }
