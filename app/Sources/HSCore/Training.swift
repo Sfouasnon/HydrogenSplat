@@ -420,3 +420,45 @@ public final class ConsoleSession: ObservableObject, Identifiable {
 
     public func interrupt() { runner?.interrupt() }
 }
+
+// MARK: - Growth curve from disk
+
+/// One point of a train's splat-count-over-iterations curve.
+public struct GrowthPoint: Hashable, Sendable {
+    public let done: Double
+    public let value: Double
+    public init(done: Double, value: Double) { self.done = done; self.value = value }
+}
+
+/// The growth curve of a train that is not (or no longer) an in-app session: a Terminal run's
+/// `logs/train.events.jsonl` while it runs, the manifest's `growth_curve` metric once it is done.
+/// Both are written by the engine regardless of who started the run, so the chart the Train page
+/// draws for a queue run is available for every run.
+public enum GrowthCurve {
+    /// `stages.train.metrics.growth_curve` — [[iter, splats], …] as `hs train` records it at the end.
+    public static func fromManifest(_ m: Manifest) -> [GrowthPoint] {
+        guard let rows = m.stage("train")?.metrics["growth_curve"]?.array else { return [] }
+        return rows.compactMap { r in
+            guard let pair = r.array, pair.count >= 2, let i = pair[0].double, let n = pair[1].double else { return nil }
+            return GrowthPoint(done: i, value: n)
+        }
+    }
+
+    /// The progress events of the LAST run in `logs/<stage>.events.jsonl` (the file accumulates
+    /// every run; a `{"ev":"run"}` marker starts each). Reads the whole file: a 40k-iteration
+    /// train is ~2,000 lines.
+    public static func fromEventsLog(project: String, stage: String = "train") -> [GrowthPoint] {
+        let p = ((project as NSString).appendingPathComponent("logs") as NSString).appendingPathComponent("\(stage).events.jsonl")
+        guard let d = FileManager.default.contents(atPath: p), let text = String(data: d, encoding: .utf8) else { return [] }
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        if let start = lines.lastIndex(where: { $0.contains("\"ev\":\"run\"") }) { lines = Array(lines[start...]) }
+        var out: [GrowthPoint] = []
+        for (i, l) in lines.enumerated() {
+            guard l.contains("\"progress\""), let e = HSEvent(line: String(l), id: i), e.kind == "progress",
+                  let done = e.done, let n = RunSession.leadingNumber(e.detail) else { continue }
+            out.append(GrowthPoint(done: done, value: n))
+        }
+        if out.count > 4000 { out = out.enumerated().filter { $0.offset % 2 == 0 }.map(\.element) }
+        return out
+    }
+}

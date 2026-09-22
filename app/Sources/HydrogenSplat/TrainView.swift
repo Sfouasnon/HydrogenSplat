@@ -152,6 +152,15 @@ struct TrainView: View {
                 }
             }
             .font(.callout)
+            // the finished run's growth curve (manifest metric), for Terminal runs and relaunches alike;
+            // hidden while a queue is drawing the live one
+            if !(queue?.isRunning ?? false) {
+                let pts = GrowthCurve.fromManifest(manifest)
+                if !pts.isEmpty {
+                    let total = pts.last.map { Int($0.done) } ?? 0
+                    GrowthCurveChart(points: pts, totalIters: max(total, settings.wrappedValue.totalIters), height: 100)
+                }
+            }
         }
     }
 
@@ -432,30 +441,43 @@ struct StepChip: View {
 }
 
 /// Splats against iterations, live from the train step's progress events.
+/// The live chart of an in-app run: the session's progress samples.
 struct GrowthChart: View {
     @ObservedObject var session: RunSession
     let totalIters: Int
 
     var body: some View {
-        let pts = session.samples.filter { $0.value != nil }
+        GrowthCurveChart(points: session.samples.compactMap { s in s.value.map { GrowthPoint(done: s.done, value: $0) } },
+                         totalIters: totalIters)
+    }
+}
+
+/// Splats over iterations from any source — a live session, a Terminal run's events log
+/// (`GrowthCurve.fromEventsLog`), or a finished run's manifest (`GrowthCurve.fromManifest`).
+struct GrowthCurveChart: View {
+    let points: [GrowthPoint]
+    let totalIters: Int
+    var height: CGFloat = 140
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("Splats").font(.caption.weight(.semibold))
                 Spacer()
-                if let last = pts.last {
-                    Text("\(JSONValue.number(last.value ?? 0).display) at \(JSONValue.number(last.done).display)")
+                if let last = points.last {
+                    Text("\(JSONValue.number(last.value).display) at \(JSONValue.number(last.done).display)")
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
-            Chart(pts, id: \.self) { p in
-                AreaMark(x: .value("Iteration", p.done), y: .value("Splats", p.value ?? 0))
+            Chart(points, id: \.self) { p in
+                AreaMark(x: .value("Iteration", p.done), y: .value("Splats", p.value))
                     .foregroundStyle(Brand.tally.opacity(0.12))
-                LineMark(x: .value("Iteration", p.done), y: .value("Splats", p.value ?? 0))
+                LineMark(x: .value("Iteration", p.done), y: .value("Splats", p.value))
                     .foregroundStyle(Brand.tally)
             }
             .chartXScale(domain: 0...Double(max(totalIters, 1)))
             .chartYAxis { AxisMarks(format: FloatingPointFormatStyle<Double>.number.notation(.compactName)) }
-            .frame(height: 140)
+            .frame(height: height)
         }
     }
 }
@@ -467,6 +489,7 @@ struct ExternalTrainView: View {
     let manifest: Manifest
     let lock: ProjectSummary.LockInfo
     @State private var status: TrainLogStatus?
+    @State private var curve: [GrowthPoint] = []
     @State private var showLog = false
     private let tick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
@@ -504,6 +527,10 @@ struct ExternalTrainView: View {
                     if let st = s.runStarted { Text("started \(st)").foregroundStyle(.secondary) }
                 }
                 .font(.callout)
+                if !curve.isEmpty {
+                    // the same chart a queue run gets, fed from logs/train.events.jsonl
+                    GrowthCurveChart(points: curve, totalIters: total)
+                }
                 DisclosureGroup("Log", isExpanded: $showLog) {
                     ScrollView {
                         Text(s.tail.joined(separator: "\n"))
@@ -523,9 +550,11 @@ struct ExternalTrainView: View {
 
     private func read() {
         let p = (project.path as NSString).appendingPathComponent("logs/train.log")
+        let proj = project.path
         DispatchQueue.global(qos: .utility).async {
             let s = TrainLogStatus.read(path: p)
-            DispatchQueue.main.async { status = s }
+            let c = GrowthCurve.fromEventsLog(project: proj)
+            DispatchQueue.main.async { status = s; curve = c }
         }
     }
 }

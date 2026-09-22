@@ -617,3 +617,34 @@ final class ProvenanceTests: XCTestCase {
         XCTAssertFalse(a2.contains("--inside-masks"))
     }
 }
+
+final class GrowthCurveTests: XCTestCase {
+    func testEventsLogYieldsTheLastRunsCurve() throws {
+        let p = NSTemporaryDirectory() + "hsgrowth-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: p + "/logs", withIntermediateDirectories: true)
+        let log = """
+        {"ev":"run","stage":"hs","run":1,"at":"2026-09-20T19:14:24-0700","argv":["hs","train"],"t":0.0}
+        {"ev":"progress","stage":"train","done":131,"step":"train","total":40000,"detail":"23905 splats","t":3.7}
+        {"ev":"progress","stage":"train","done":261,"step":"train","total":40000,"detail":"27539 splats","t":6.8}
+        {"ev":"run","stage":"hs","run":2,"at":"2026-09-21T19:34:42-0700","argv":["hs","train"],"t":0.0}
+        {"ev":"progress","stage":"train","done":0,"step":"train","total":40000,"t":3.1}
+        {"ev":"progress","stage":"train","done":131,"step":"train","total":40000,"detail":"23789 splats","t":3.7}
+        {"ev":"progress","stage":"train","done":261,"step":"train","total":40000,"rate":38.7,"detail":"27050 splats","t":6.9}
+        {"ev":"metric","stage":"train","name":"growth_curve","value":[[131,23789],[261,27050]]}
+        """
+        try log.write(toFile: p + "/logs/train.events.jsonl", atomically: true, encoding: .utf8)
+        let pts = GrowthCurve.fromEventsLog(project: p)
+        XCTAssertEqual(pts.map(\.done), [131, 261], "only the last run, only progress lines with a splat count")
+        XCTAssertEqual(pts.map(\.value), [23789, 27050])
+    }
+
+    func testManifestGrowthCurveMetric() throws {
+        let m = try XCTUnwrap(Manifest(data: Data("""
+        {"name": "x", "stages": {"train": {"status": "done", "metrics": {"growth_curve": [[131, 23789], [2731, 106058]]}}}}
+        """.utf8)))
+        let pts = GrowthCurve.fromManifest(m)
+        XCTAssertEqual(pts.count, 2)
+        XCTAssertEqual(pts.last?.done, 2731)
+        XCTAssertEqual(pts.last?.value, 106058)
+    }
+}
