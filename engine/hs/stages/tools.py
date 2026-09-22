@@ -108,7 +108,9 @@ def splat_transform(a, info):
         info["splat-transform"] = None
         return
     v = _ver([npx, "--no", "--", NPX_PACKAGE, "--version"])
-    v = v if v and "splat-transform" in v else None
+    # an uncached package makes npx --no print "npm error npx canceled ... [\"@playcanvas/splat-transform@x\"]",
+    # which also contains the name: only a real version line (no "npm" prefix) counts
+    v = v if v and "splat-transform" in v and not v.lower().startswith("npm") else None
     events.check(STAGE, "splat-transform", True,
                  value=f"{v} via npx" if v else f"via npx; {NPX_PACKAGE} is fetched on the first hs export")
     info["splat-transform"] = {"argv": [npx, "-y", "--", NPX_PACKAGE], "version": v}
