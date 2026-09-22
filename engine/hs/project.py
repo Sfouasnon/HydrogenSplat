@@ -7,6 +7,7 @@ One folder per capture; everything the run touches lives inside it::
       source/              clip + .md5 + probe.json
       select/frames/       VID_NNN_FFFF_2x1.jpg, selection.json, contact.jpg
       solve/               images/{L,R}, sparse/rig, sfm_report.json, per_image.json, coverage.json
+      scale/               scale_report.json (hs scale: the board's corners, factor and plane)
       train/dataset/       undistorted PINHOLE COLMAP set + rig.npz;  train/exports/export_NNNNN.ply
       move/                <name>.json, <name>_aim_check.jpg
       render/<name>/       frame_%04d.png (deleted after encode unless kept), <name>_1920.mp4, <name>_1080x1350.mp4
@@ -34,18 +35,24 @@ from . import events
 MANIFEST_VERSION = 1
 
 # Stage order for stale propagation. "prune" hangs off train and is optional; "render"
-# depends on train (the ply) and move (the path).
-STAGES = ["ingest", "select", "solve", "train", "move", "prune", "render", "views"]
+# depends on train (the ply) and move (the path). "scale" (hs scale: a ChArUco board's metric
+# scale applied to the solve) sits between solve and train but is optional: train REQUIRES
+# solve only, a stereo solve is metric already, and a project that never runs scale keeps it
+# pending. A manifest written before scale existed gains a pending entry on load (__init__).
+STAGES = ["ingest", "select", "solve", "scale", "train", "move", "prune", "render", "views"]
 # "exposure" and "masks" are not in STAGES — they are operations on the solve output rather
 # than steps in the chain — but they write into train/dataset, which `solve` deletes and
 # rewrites. Without them here a re-solve leaves both claiming `done` while their outputs are
 # gone, and the next train runs on unnormalised, unmasked images with a manifest that says
 # otherwise. Being outside STAGES means they never block a stage; it must not mean they can
 # lie about being current.
+# scale rewrites rig.npz and the sparse model in new units — a similarity, so no pixel and no
+# projection changes: exposure and masks stay current, and everything measured in mm goes stale.
 DOWNSTREAM = {
-    "ingest": ["select", "solve", "exposure", "masks", "train", "move", "prune", "render", "views"],
-    "select": ["solve", "exposure", "masks", "train", "move", "prune", "render", "views"],
-    "solve": ["exposure", "masks", "train", "move", "prune", "render", "views"],
+    "ingest": ["select", "solve", "scale", "exposure", "masks", "train", "move", "prune", "render", "views"],
+    "select": ["solve", "scale", "exposure", "masks", "train", "move", "prune", "render", "views"],
+    "solve": ["scale", "exposure", "masks", "train", "move", "prune", "render", "views"],
+    "scale": ["train", "move", "prune", "render", "views"],
     "train": ["prune", "render", "views"],
     "move": ["render"],
     "prune": ["render"],
@@ -53,12 +60,12 @@ DOWNSTREAM = {
     "views": [],
 }
 STAGE_DIR = {
-    "ingest": "source", "select": "select", "solve": "solve", "train": "train",
+    "ingest": "source", "select": "select", "solve": "solve", "scale": "scale", "train": "train",
     "move": "move", "prune": "prune", "render": "render", "views": "views",
 }
 # hard prerequisites checked before a stage starts
 REQUIRES = {
-    "ingest": [], "select": ["ingest"], "solve": ["select"], "train": ["solve"],
+    "ingest": [], "select": ["ingest"], "solve": ["select"], "scale": ["solve"], "train": ["solve"],
     "move": ["solve"], "prune": ["train"], "render": ["train", "move"], "views": ["solve", "train"],
     # not in STAGES: operations on the solve output that do not join the state machine
     "masks": ["solve"], "exposure": ["solve"], "archive": ["solve"], "grade": ["render"],
@@ -109,6 +116,8 @@ def parse_iso(s):
 
 
 LOCK_FILE = ".hs.lock"
+# source.kind values that go through the frames (monocolmap) route
+FRAME_KINDS = ("array", "mono")
 
 
 def _pid_alive(pid):
@@ -184,6 +193,19 @@ class Project:
     def clip(self):
         c = self.m.get("source", {}).get("clip")
         return self.path(c) if c else None
+
+    @property
+    def source_kind(self):
+        """"stereo" (a Hydrogen 2x1 clip — manifests from before arrays have no kind at all),
+        "array" (one frame from each of several cameras) or "mono" (frames from one camera)."""
+        return self.m.get("source", {}).get("kind") or "stereo"
+
+    @property
+    def frames_route(self):
+        """True for a source ingested as frames (array or mono): no clip, select already done,
+        solve through monocolmap.py. What differs between the two is only where the number of
+        cameras matters — e.g. hs exposure's median refusal, which is about an array."""
+        return self.source_kind in FRAME_KINDS
 
     @property
     def frames_dir(self):

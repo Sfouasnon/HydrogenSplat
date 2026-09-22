@@ -195,13 +195,23 @@ def cmd_export(a):
     pycolmap.undistort_images(a.out, a.recon, a.images,
                               output_type="COLMAP", undistort_options=opts,
                               jpeg_quality=a.jpeg_quality)
-    sp = os.path.join(a.out, "sparse")
-    r2 = pycolmap.Reconstruction(sp)
-    r2.export_PLY(os.path.join(sp, "points3D.ply"))
-    r2.write_text(sp)
-    print(f"{r2.num_reg_images()} images, {r2.num_points3D()} points; "
+    r2 = pycolmap.Reconstruction(os.path.join(a.out, "sparse"))
+    finish_dataset(r2, a.out)
+
+
+def finish_dataset(rec, out, write_binary=False):
+    """The training set's sparse model as text + points3D.ply, and its rig.npz. Export calls
+    this on the undistorted model; ``hs scale`` calls it again after applying the board's
+    Sim3d to that same model (``write_binary=True``: the undistorter's .bin files must follow),
+    so a board-scaled dataset is written by exactly the code that writes a --scale one."""
+    sp = os.path.join(out, "sparse")
+    if write_binary:
+        rec.write(sp)
+    rec.export_PLY(os.path.join(sp, "points3D.ply"))
+    rec.write_text(sp)
+    print(f"{rec.num_reg_images()} images, {rec.num_points3D()} points; "
           f"points3D.ply written for the path builder")
-    write_rig_npz(r2, os.path.join(a.out, "rig.npz"))
+    write_rig_npz(rec, os.path.join(out, "rig.npz"))
 
 
 def write_rig_npz(rec, path):
