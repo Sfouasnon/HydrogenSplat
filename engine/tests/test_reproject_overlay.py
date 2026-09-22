@@ -45,6 +45,14 @@ class Shift(unittest.TestCase):
             self.assertLess(abs(dy - d[1]), 0.3, (d, dx, dy))
             self.assertGreater(resp, 0.5)
 
+    def test_fractional_shift_recovered(self):
+        # the integer back-shift makes whole-pixel shifts exact; the fine pass must carry the rest
+        gt = texture()
+        for d in ((5.4, -2.6), (0.3, 0.7), (-12.25, 6.5)):
+            dx, dy, _ = overlay.phase_shift(gt, shifted(gt, *d))
+            self.assertLess(abs(dx - d[0]), 0.1, (d, dx, dy))
+            self.assertLess(abs(dy - d[1]), 0.1, (d, dx, dy))
+
     def test_quadrants_agree_on_a_uniform_shift(self):
         gt = texture()
         q = overlay.quadrant_shifts(gt, shifted(gt, 5, 0))
