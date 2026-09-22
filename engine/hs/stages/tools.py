@@ -39,6 +39,20 @@ def run(a, pj=None):
         events.check(STAGE, mod, ok, value=info.get(mod) or f"pip install {'opencv-python-headless' if mod == 'cv2' else mod}")
     if info.get("pycolmap") and not str(info["pycolmap"]).startswith("4.2"):
         events.check(STAGE, "pycolmap_version", False, value=f"{info['pycolmap']} (rig6 used 4.2.0; the rig API changed across versions)")
+    if info.get("cv2"):
+        import cv2
+        # hs scale / exposure --reference board need the ChArUco detector (main OpenCV >= 4.7);
+        # --reference checker needs cv2.mcc, which not every build carries (optional)
+        aruco = hasattr(getattr(cv2, "aruco", None), "CharucoDetector")
+        events.check(STAGE, "cv2_aruco_charuco", aruco,
+                     value="cv2.aruco.CharucoDetector (hs scale, exposure --reference board)" if aruco
+                     else "needs opencv-python-headless >= 4.7 for hs scale")
+        from .exposure import checker_available
+        mcc = checker_available()
+        events.check(STAGE, "cv2_mcc", True, value="cv2.mcc (exposure --reference checker)" if mcc
+                     else "optional: no cv2.mcc — exposure --reference checker unavailable "
+                          "(opencv-contrib-python-headless has it)")
+        info["cv2_mcc"] = mcc
     for name, path, hint in (("brush", a.brush, "cargo build --release -p brush-app in the Brush fork"),
                              ("brush-path-render", a.render_bin, "cargo build --release -p brush-path-render")):
         p = os.path.expanduser(path)
