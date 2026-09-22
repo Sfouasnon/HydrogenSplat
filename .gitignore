@@ -31,3 +31,5 @@ app/.swiftpm/
 !app/Branding/*.png
 !app/Sources/HydrogenSplat/Resources/*.png
 capture/take*.jsonl
+# cloud <-> Mac sync bundles
+.hs-sync/
