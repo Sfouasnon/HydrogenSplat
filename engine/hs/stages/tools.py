@@ -51,6 +51,11 @@ def run(a, pj=None):
         v = _ver(argv) if exe else None
         events.check(STAGE, name, bool(exe), value=v if exe else hint)
         info[name] = v
+    # hs stability's optical flow: dis is always there with cv2, raft is the optional hs[metrics]
+    from .stability import available_backends
+    for name, (ok, detail) in available_backends().items():
+        events.check(STAGE, f"flow_{name}", ok, value=detail)
+        info[f"flow_{name}"] = detail if ok else None
     events.metric(STAGE, "python_exe", sys.executable)
     if pj is not None:
         for k, v in info.items():
