@@ -185,7 +185,7 @@ struct ProjectDetailView: View {
                     row("from", m.originalPath ?? "—")
                     row("md5", m.clipMD5 ?? "—")
                     if let w = m.probe["width"]?.int, let h = m.probe["height"]?.int {
-                        row("frames", "\(w)×\(h) · one per camera")
+                        row("frames", "\(w)×\(h) · " + (m.sourceKind == "mono" ? "\(m.cameras.count) from one camera" : "one per camera"))
                     }
                 } else {
                     row("clip", m.clipName ?? "—")

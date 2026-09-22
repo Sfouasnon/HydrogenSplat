@@ -399,7 +399,7 @@ def resolve_exclude(pj, ply, text, names):
     if not text:
         ex, src = model_exclude(pj, ply)
         return (ex or set()), (src or "none (no record of the model's hold-outs)")
-    if text.startswith("@"):
+    if text.startswith("@") and "," not in text and text != "@holdout":
         ref = text[1:]
         path = pj.path("solve", "holdout.json") if ref == "holdout" else (ref if os.path.isabs(ref) else pj.path(ref))
         if not os.path.exists(path):
@@ -414,7 +414,8 @@ def resolve_exclude(pj, ply, text, names):
             else:
                 out |= {f"L/{nm}", f"R/{nm}"}
         return out, pj.rel(path) if path.startswith(pj.root) else path
-    return parse_exclude(text), "--exclude"
+    # @holdout, and mixes like @holdout,L/cap099, follow hs train's own parser (both eyes per capture)
+    return parse_exclude(text, pj.root), ("solve/holdout.json + --exclude" if "@holdout" in text else "--exclude")
 
 
 def training_views(names, exclude):

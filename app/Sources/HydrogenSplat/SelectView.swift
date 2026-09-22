@@ -40,7 +40,9 @@ struct SelectView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
                 if manifest.isArray {
-                    Text("An array project has one frame per camera — ingest already did the selecting.")
+                    Text(manifest.sourceKind == "mono"
+                         ? "A mono project was ingested as frames already picked — nothing to select here."
+                         : "An array project has one frame per camera — ingest already did the selecting.")
                         .foregroundStyle(.secondary)
                 } else {
                     handles

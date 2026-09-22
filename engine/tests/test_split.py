@@ -123,7 +123,8 @@ class HoldOuts(SplitBase):
         self.assertEqual(sorted(rep["excluded_views"]), ["L/cap000", "L/cap001"])
         self.assertEqual(len(rep["views_used"]), 10)
         os.makedirs(self.pj.path("solve"), exist_ok=True)
-        json.dump({"method": "fps", "n": 2, "names": ["cap004", "cap009"]},
+        json.dump({"method": "fps", "n": 2, "names": ["cap004", "cap009"], "captures": [4, 9],
+                   "exclude": ["L/cap004", "R/cap004", "L/cap009", "R/cap009"], "stereo": True},
                   open(self.pj.path("solve", "holdout.json"), "w"))
         split.run(args(exclude="@holdout", name="b"), self.pj)
         rep = json.load(open(self.pj.path("split", "b", "report.json")))
