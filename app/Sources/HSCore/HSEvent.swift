@@ -95,12 +95,17 @@ public enum Format {
     /// reads like a clock time the way "21:05" does.
     public static func eta(_ seconds: Double?, now: Date = Date()) -> String {
         guard let s = seconds, s.isFinite, s >= 0 else { return "—" }
-        let span: String
-        if s < 60 { span = "under a minute" }
-        else if s < 3600 { span = "\(Int((s / 60).rounded())) min" }
-        else { span = String(format: "%d h %02d min", Int(s) / 3600, (Int(s) % 3600) / 60) }
         let f = DateFormatter(); f.timeStyle = .short; f.dateStyle = .none
-        return "\(span) · ~\(f.string(from: now.addingTimeInterval(s)))"
+        return "\(span(s)) · ~\(f.string(from: now.addingTimeInterval(s)))"
+    }
+
+    /// Time left without the clock: "under a minute", "18 min", "4 h 05 min" — for places too
+    /// narrow for the finish time (the sidebar, the window title).
+    public static func span(_ seconds: Double?) -> String {
+        guard let s = seconds, s.isFinite, s >= 0 else { return "—" }
+        if s < 60 { return "under a minute" }
+        if s < 3600 { return "\(Int((s / 60).rounded())) min" }
+        return String(format: "%d h %02d min", Int(s) / 3600, (Int(s) % 3600) / 60)
     }
 
     public static func bytes(_ n: Double?) -> String {
