@@ -63,6 +63,8 @@ REQUIRES = {
     # not in STAGES: operations on the solve output that do not join the state machine
     "masks": ["solve"], "exposure": ["solve"], "archive": ["solve"], "grade": ["render"],
     "merge": ["train"],
+    # post-hoc operations on a trained model; --ply stands in for train (the stage passes satisfied)
+    "split": ["train"],
 }
 
 
