@@ -65,6 +65,15 @@ def main(argv=None):
     ev_stage = getattr(mod, "STAGE", stage_name)
     pj = None
     awake = None
+    if stage_name == "solve" and getattr(a, "estimate", False):
+        # no lock, no keep-awake, no events file, no manifest: one `estimate` event (timing.py)
+        try:
+            mod.estimate(a)
+            return 0
+        except events.StageError as e:
+            events.error(ev_stage, str(e), hint=e.hint)
+            events.done(ev_stage, 1)
+            return 1
     try:
         if stage_name in PROJECT_STAGES or stage_name == "selftest":
             # hold the Mac awake for the whole stage, not just the child (keepawake.py)

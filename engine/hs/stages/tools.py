@@ -1,9 +1,22 @@
-"""hs tools — find the tools and report versions (the Setup page's back end, strategy §4.0)."""
+"""hs tools — find the tools and report versions (the Setup page's back end, strategy §4.0).
+
+``hs tools --fetch-vocab-tree`` also downloads COLMAP's vocabulary tree for ``hs solve
+--matcher sequential --loop vocab`` (optional: the default stride loop pass needs nothing).
+The file is the FAISS tree COLMAP ≥ 3.12 / pycolmap ≥ 3.12 fetch as their own default
+(``VOCAB_TREE_URL``, checked against ``VOCAB_TREE_SHA256``; source: colmap/colmap issue
+#3464 and PR #3036). It goes to ``vocab_tree_path()``: ``$HS_VOCAB_TREE`` if set, else
+``~/Library/Caches/HydrogenSplat/`` on macOS (``~/.cache/hydrogensplat/`` elsewhere). Not
+downloaded or run in the Linux container this was written in (GitHub is not reachable from
+it), so the ``--loop vocab`` path is wired and unexercised.
+"""
+import argparse
+import hashlib
 import os
 import platform
 import shutil
 import subprocess
 import sys
+import time
 
 from .. import events, runner
 from ..project import tool_versions
@@ -12,13 +25,95 @@ from .train import DEFAULT_BRUSH
 
 STAGE = "tools"
 
+VOCAB_TREE_FILE = "vocab_tree_faiss_flickr100K_words256K.bin"
+VOCAB_TREE_URL = "https://github.com/colmap/colmap/releases/download/3.11.1/" + VOCAB_TREE_FILE
+VOCAB_TREE_SHA256 = "96ca8ec8ea60b1f73465aaf2c401fd3b3ca75cdba2d3c50d6a2f6f760f275ddc"
+
+
+def cache_dir():
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Caches/HydrogenSplat")
+    return os.path.expanduser("~/.cache/hydrogensplat")
+
+
+def vocab_tree_path():
+    """Where the vocabulary tree is (or would be): $HS_VOCAB_TREE, else the cache."""
+    env = os.environ.get("HS_VOCAB_TREE")
+    return os.path.expanduser(env) if env else os.path.join(cache_dir(), VOCAB_TREE_FILE)
+
+
+def sha256_file(path, chunk=1 << 22):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(chunk), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def fetch_vocab_tree(url=VOCAB_TREE_URL, dest=None, sha256=VOCAB_TREE_SHA256):
+    """Download the tree to ``dest`` (default vocab_tree_path()) through a .part file, check its
+    sha256 (skipped when sha256 is empty) and move it into place. Progress events on the way.
+    Returns the path. An existing file with the right checksum is kept, not re-downloaded."""
+    import urllib.request
+    dest = dest or vocab_tree_path()
+    if os.path.isfile(dest) and (not sha256 or sha256_file(dest) == sha256):
+        events.check(STAGE, "vocab_tree_fetched", True, value=f"already at {dest}")
+        return dest
+    os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
+    part = dest + ".part"
+    events.start(STAGE, "fetch_vocab_tree")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r, open(part, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0) or None
+            got, t0 = 0, time.monotonic()
+            while True:
+                b = r.read(1 << 20)
+                if not b:
+                    break
+                f.write(b)
+                got += len(b)
+                el = time.monotonic() - t0
+                events.progress(STAGE, got, total, rate=got / el if el > 0.5 else None,
+                                detail=f"{got / 1e6:.0f} MB", step="fetch_vocab_tree")
+    except Exception as e:  # noqa: BLE001 — urllib raises several unrelated types
+        if os.path.exists(part):
+            os.remove(part)
+        raise events.StageError(f"could not download the vocabulary tree: {e}",
+                                hint=f"{url} — or download it by hand and set HS_VOCAB_TREE")
+    if sha256:
+        got_sha = sha256_file(part)
+        if got_sha != sha256:
+            os.remove(part)
+            raise events.StageError(f"vocabulary tree checksum mismatch: {got_sha}",
+                                    hint=f"expected {sha256} from {url}")
+    os.replace(part, dest)
+    events.check(STAGE, "vocab_tree_fetched", True, value=dest)
+    return dest
+
+
+def vocab_tree_status(info):
+    """The `vocab_tree` line: optional, so its check is always ok and the value says why."""
+    path = vocab_tree_path()
+    ok = os.path.isfile(path)
+    events.check(STAGE, "vocab_tree", True,
+                 value=(f"{path} ({os.path.getsize(path) / 1e6:.0f} MB; hs solve --loop vocab)" if ok else
+                        "optional, not fetched: hs tools --fetch-vocab-tree (only for hs solve --loop vocab; "
+                        "the default stride loop pass needs nothing)"))
+    info["vocab_tree"] = path if ok else None
+
 
 def add_parser(sub):
     p = sub.add_parser("tools", help="check python packages, brush, brush-path-render, ffmpeg, adb, node/splat-transform")
     p.add_argument("--brush", default=os.environ.get("HS_BRUSH", DEFAULT_BRUSH))
     p.add_argument("--render-bin", default=os.environ.get("HS_PATH_RENDER", DEFAULT_RENDER))
     p.add_argument("--splat-transform", default=os.environ.get("HS_SPLAT_TRANSFORM"))
+    p.add_argument("--fetch-vocab-tree", action="store_true",
+                   help=f"download COLMAP's vocabulary tree (~{VOCAB_TREE_FILE}) for hs solve --loop vocab")
+    p.add_argument("--vocab-tree-url", default=os.environ.get("HS_VOCAB_TREE_URL", VOCAB_TREE_URL),
+                   help=argparse.SUPPRESS)
+    p.add_argument("--vocab-tree-sha256", default=VOCAB_TREE_SHA256, help=argparse.SUPPRESS)
     return p
+
 
 
 def _ver(argv):
@@ -31,6 +126,8 @@ def _ver(argv):
 
 def run(a, pj=None):
     events.start(STAGE)
+    if getattr(a, "fetch_vocab_tree", False):
+        fetch_vocab_tree(a.vocab_tree_url, sha256=a.vocab_tree_sha256)
     info = tool_versions()
     info["platform"] = f"{platform.system()} {platform.machine()}"
     ok_all = True
@@ -72,6 +169,7 @@ def run(a, pj=None):
         events.check(STAGE, f"flow_{name}", ok, value=detail)
         info[f"flow_{name}"] = detail if ok else None
     splat_transform(a, info)
+    vocab_tree_status(info)
     events.metric(STAGE, "python_exe", sys.executable)
     if pj is not None:
         for k, v in info.items():

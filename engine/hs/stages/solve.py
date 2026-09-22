@@ -7,16 +7,27 @@ Checks: registered frames == selected frames; mean reprojection ≤ 1.8 px; no i
 L–R separation equals the profile baseline. A partial registration fails the stage with the
 remedies in order (re-select with --max-gap 45; trim the tail with --end) — never silently
 proceed to train on a partial solve.
+
+Matching (hs/pairs.py): ``--matcher auto`` (the default here; the scripts' own default stays
+``exhaustive``) runs sequential above 60 captures — a window of ``--overlap`` captures, every
+rig mate and a ``--loop-stride`` loop pass — and exhaustive below. The one that ran is the
+``matcher`` metric, with ``num_pairs`` and the phase times ``features_s``, ``matching_s``,
+``mapping_s``, ``export_s``; a completed solve appends them to the timing store (timing.py),
+which is what ``hs solve --estimate`` and the mapping ETA are fitted from.
+
+``hs solve --estimate [-p P] [--captures N] [--eyes 1|2]`` takes no lock and writes nothing:
+one ``estimate`` event on stdout (shape in timing.py) with both matchers' pairs and seconds.
 """
 import json
 import os
 import re
 import shutil
 import sys
+import time
 
 import numpy as np
 
-from .. import calib, coverage, events, runner
+from .. import calib, coverage, events, pairs, runner, timing
 
 STAGE = "solve"
 
@@ -32,6 +43,12 @@ RE_BA = re.compile(r"BA-refined sensor_from_rig before rescale: \|t\| ([\d.]+), 
 RE_STEP = re.compile(r"step between consecutive captures: (\d+)-(\d+) mm \(median (\d+)\), path length (\d+) mm")
 RE_DEPTH = re.compile(r"scene depth from path centre: p5 (\d+) mm, median (\d+) mm, p95 (\d+) mm")
 RE_UNDIST = re.compile(r"Undistorting image \[(\d+)/(\d+)\]")
+RE_IMPORT = re.compile(r"Processing block \[(\d+)/(\d+)\]")          # match_image_pairs (sequential)
+RE_MATCHING = re.compile(r"(exhaustive|sequential) matching (\d+) images \((\d+) pairs")
+RE_TIMING = re.compile(r"^timing: (features|matching|mapping) ([\d.]+) s")
+RE_MAPSTART = re.compile(r"^mapping \(")
+FRAME_EXTS_STEREO = (".jpg", ".jpeg", ".png")                         # rigcolmap.py prep
+FRAME_EXTS_MONO = (".png", ".jpg", ".jpeg", ".tif", ".tiff")           # monocolmap.py IMAGE_EXTS
 
 
 def add_parser(sub):
@@ -46,6 +63,28 @@ def add_parser(sub):
     p.add_argument("--no-float-rig", action="store_true", help="NOT recommended: keep sensor_from_rig fixed")
     p.add_argument("--reuse-matches", action="store_true", help="keep an existing database.db (skip features/matching)")
     p.add_argument("--max-reproj", type=float, default=1.8, help="check threshold, px")
+    m = p.add_argument_group("matching (hs/pairs.py)")
+    m.add_argument("--matcher", choices=pairs.MATCHER_CHOICES, default="auto",
+                   help=f"auto (default): sequential above {pairs.AUTO_SEQUENTIAL_ABOVE} captures, else exhaustive. "
+                        "sequential suits orbits and walk-arounds; exhaustive is for captures that revisit a "
+                        "view from far apart in time where no loop pass would pair the visits")
+    m.add_argument("--overlap", type=int, default=pairs.DEFAULT_OVERLAP,
+                   help="sequential: captures matched on each side (both eyes)")
+    m.add_argument("--loop-stride", type=int, default=pairs.DEFAULT_LOOP_STRIDE,
+                   help="sequential: every Nth capture matched against every other Nth (0 = no loop pass)")
+    m.add_argument("--loop", choices=("stride", "vocab"), default="stride",
+                   help="sequential loop pass: stride (needs nothing) or vocab (a vocabulary tree: "
+                        "hs tools --fetch-vocab-tree)")
+    m.add_argument("--vocab-tree", default=None, help="vocabulary tree file (default HS_VOCAB_TREE, else the cache)")
+    m.add_argument("--vocab-neighbors", type=int, default=20, help="--loop vocab: images retrieved per image")
+    e = p.add_argument_group("estimate (no lock, no writes)")
+    e.add_argument("--estimate", action="store_true",
+                   help="print one `estimate` event: images, pairs and seconds per phase for both matchers")
+    e.add_argument("--captures", type=int, default=None,
+                   help="--estimate for this many captures instead of the project's frames (no project needed)")
+    e.add_argument("--eyes", type=int, choices=(1, 2), default=None,
+                   help="--estimate: images per capture (default: 2 on a Hydrogen project or without one, "
+                        "1 on an array/mono project)")
     g = p.add_argument_group("array source (monocolmap.py; ignored on a Hydrogen clip)")
     g.add_argument("--scale-pair", default=None, metavar="CAM1,CAM2,MM",
                    help="metric scale from the measured distance between two camera centres, e.g. GA,GB,700")
@@ -58,6 +97,183 @@ def add_parser(sub):
                         "clip: `hs scale --dry-run`, which measures the baseline instead)")
     g.add_argument("--legacy-board", action="store_true", help="with --board: pre-4.6 OpenCV board layout")
     return p
+
+
+def count_captures(root):
+    """(captures, images per capture) for a project, read-only: select/frames as prep will see
+    it. Reads manifest.json directly (Project() would reconcile and could write)."""
+    root = os.path.abspath(os.path.expanduser(root))
+    try:
+        m = json.load(open(os.path.join(root, "manifest.json")))
+    except (OSError, ValueError):
+        raise events.StageError(f"no readable manifest.json in {root}", hint="--captures N estimates without a project")
+    kind = (m.get("source") or {}).get("kind") or "stereo"
+    mono = kind in ("array", "mono")
+    frames = os.path.join(root, "select", "frames")
+    exts = FRAME_EXTS_MONO if mono else FRAME_EXTS_STEREO
+    n = len([f for f in os.listdir(frames) if f.lower().endswith(exts)]) if os.path.isdir(frames) else 0
+    if n == 0:
+        raise events.StageError(f"no frames in {frames}",
+                                hint="run hs select first, or pass --captures N (e.g. the frame count the Frames page plans)")
+    return n, 1 if mono else 2
+
+
+def estimate(a):
+    """hs solve --estimate: one `estimate` event on stdout (timing.py). No lock, no writes, no
+    events file — cli.py calls this before it opens the project."""
+    eyes = a.eyes
+    if a.captures is not None:
+        n = int(a.captures)
+        if n < 1:
+            raise events.StageError("--captures must be at least 1")
+        if eyes is None and a.project:
+            try:
+                eyes = count_captures(a.project)[1]
+            except events.StageError:
+                eyes = None
+    else:
+        if not a.project:
+            raise events.StageError("hs solve --estimate needs --project DIR or --captures N")
+        n, eyes_p = count_captures(a.project)
+        eyes = eyes or eyes_p
+    est = timing.estimate(n, eyes or 2, timing.model(), overlap=a.overlap, loop_stride=a.loop_stride)
+    events._emit({"ev": "estimate", "stage": STAGE, **est})
+    return est
+
+
+def _matcher_argv(a, n_caps, pj):
+    """--matcher etc. for the script, resolved here so the metric says what actually ran."""
+    matcher = pairs.resolve_matcher(a.matcher, n_caps)
+    argv = ["--matcher", matcher]
+    if matcher == "sequential":
+        argv += ["--overlap", a.overlap, "--loop-stride", a.loop_stride, "--loop", a.loop]
+        if a.loop == "vocab":
+            from .tools import vocab_tree_path
+            tree = a.vocab_tree or vocab_tree_path()
+            if not os.path.isfile(tree):
+                raise events.StageError(f"--loop vocab: no vocabulary tree at {tree}",
+                                        hint="hs tools --fetch-vocab-tree, or --loop stride (the default)")
+            argv += ["--vocab-tree", tree, "--vocab-neighbors", a.vocab_neighbors]
+    return matcher, argv
+
+
+class SfmParser:
+    """on_line for rigcolmap.py / monocolmap.py sfm: progress for features, matching (both
+    matchers' block lines) and mapping (ETA from the cost model — incremental mapping is
+    superlinear, so a linear ETA would promise too early), the phase times, and the report
+    lines (``metrics``, keyed as before)."""
+
+    def __init__(self, n_img, stereo, model=None):
+        self.n_img, self.stereo = n_img, stereo
+        self.model = model or timing.fit([])
+        self.step = "features"
+        self.reg = 0
+        self.metrics = {}
+        self.timings = {}
+        self.matcher = None
+        self.num_pairs = None
+        self.t_map0 = None
+
+    def mapping_eta(self, now=None):
+        if self.t_map0 is None:
+            return None
+        el = (time.monotonic() if now is None else now) - self.t_map0
+        m = self.model
+        predicted = m["mapping_c"] * self.n_img ** m["mapping_p"]
+        return timing.mapping_eta(el, self.reg, self.n_img, predicted, m["mapping_p"])
+
+    def __call__(self, line):
+        m = RE_FEAT.search(line)
+        if m:
+            self.step = "features"
+            events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="features")
+            return
+        m = RE_MATCH.search(line)
+        if m:
+            self.step = "matching"
+            i, ni, j, nj = (int(x) for x in m.groups())
+            done, total = pairs.exhaustive_block_progress(i, ni, j, nj)
+            events.progress(STAGE, done, total, step="matching", detail=f"block {i}/{ni},{j}/{nj}")
+            return
+        m = RE_IMPORT.search(line)
+        if m:
+            self.step = "matching"
+            k, nk = int(m.group(1)), int(m.group(2))
+            events.progress(STAGE, k - 1, nk, step="matching",
+                            detail=f"block {k}/{nk}" + (f" of {self.num_pairs} pairs" if self.num_pairs else ""))
+            return
+        m = RE_MATCHING.search(line)
+        if m:
+            self.matcher, self.num_pairs = m.group(1), int(m.group(3))
+            return
+        m = RE_TIMING.search(line)
+        if m:
+            self.timings[m.group(1)] = float(m.group(2))
+            return
+        if RE_MAPSTART.search(line):
+            self.step = "mapping"
+            self.t_map0 = time.monotonic()
+            events.progress(STAGE, 0, self.n_img, step="mapping", eta_s=self.mapping_eta(),
+                            detail="images registered", force=True)
+            return
+        m = RE_REG.search(line)
+        if m:
+            self.step = "mapping"
+            if self.t_map0 is None:
+                self.t_map0 = time.monotonic()
+            self.reg = int(m.group(2))
+            events.progress(STAGE, self.reg, self.n_img, step="mapping", eta_s=self.mapping_eta(),
+                            detail="images registered")
+            return
+        keys = (("featstat", RE_FEATSTAT), ("recon", RE_RECON), ("reproj", RE_REPROJ),
+                ("rig", RE_RIG), ("ba", RE_BA), ("step", RE_STEP), ("depth", RE_DEPTH))
+        for key, rx in keys:
+            if not self.stereo and key in ("rig", "ba", "step"):
+                continue
+            m = rx.search(line)
+            if m:
+                self.metrics[key] = m.groups()
+                return
+        if self.stereo:
+            m = RE_EYE.search(line)
+            if m:
+                self.metrics["eye_" + m.group(1)] = m.groups()[1:]
+
+
+def _record_matching(pj, parser, matcher, reused):
+    pj.metric(STAGE, "matcher", "reused" if reused else (parser.matcher or matcher))
+    if parser.num_pairs is not None:
+        pj.metric(STAGE, "num_pairs", parser.num_pairs)
+    for ph in ("features", "matching", "mapping"):
+        if ph in parser.timings:
+            pj.metric(STAGE, f"{ph}_s", round(parser.timings[ph], 1))
+
+
+def _append_timing(pj, parser, n_caps, n_img, export_s, reused):
+    """A completed solve's phase times -> the timing store. Never fatal."""
+    run = {"project": os.path.basename(pj.root), "route": pj.source_kind, "captures": n_caps,
+           "images": n_img, "matcher": "reused" if reused else parser.matcher}
+    if parser.num_pairs is not None and not reused:
+        run["pairs"] = parser.num_pairs
+    for ph in ("features", "matching", "mapping"):
+        if ph in parser.timings and not (reused and ph != "mapping"):
+            run[f"{ph}_s"] = round(parser.timings[ph], 1)
+    if export_s is not None:
+        run["export_s"] = round(export_s, 1)
+    try:
+        path = timing.append_solve_run(run)
+    except Exception as e:  # noqa: BLE001 — the store is a convenience, never a failure
+        events.log(STAGE, f"[hs] timing store not written: {e!r}")
+        return
+    if path:
+        events.log(STAGE, f"[hs] timing appended to {path}")
+
+
+def _load_model():
+    try:
+        return timing.model()
+    except Exception:  # noqa: BLE001
+        return timing.fit([])
 
 
 def run(a, pj):
@@ -101,6 +317,7 @@ def _run_stereo(a, pj):
         keep_db = os.path.join(pj.root, "database.db.keep")
         shutil.move(os.path.join(work, "database.db"), keep_db)
     pj.begin(STAGE, argv=sys.argv)
+    reused = bool(keep_db)
     if keep_db:
         shutil.move(keep_db, os.path.join(work, "database.db"))
     # the train dataset is written by export; it belongs to train/ but is produced here
@@ -125,52 +342,25 @@ def _run_stereo(a, pj):
     caps = json.load(open(os.path.join(work, "captures.json")))["captures"]
     pj.metric(STAGE, "captures", len(caps))
     n_img = 2 * len(caps)
+    matcher, m_argv = _matcher_argv(a, len(caps), pj)
 
     # ---- sfm
     events.start(STAGE, "sfm")
     argv = runner.python_argv("rigcolmap.py", "sfm", work, "--calib", calib_npz,
-                              "--peak-threshold", a.peak_threshold, "--features", a.features)
+                              "--peak-threshold", a.peak_threshold, "--features", a.features, *m_argv)
     if not a.no_float_rig:
         argv.append("--float-rig")
     if a.masks:
         argv += ["--masks", a.masks]
-    state = {"step": "features", "reg": 0, "metrics": {}}
+    parser = SfmParser(n_img, stereo=True, model=_load_model())
 
-    def on_line(line):
-        m = RE_FEAT.search(line)
-        if m:
-            state["step"] = "features"
-            events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="features")
-            return
-        m = RE_MATCH.search(line)
-        if m:
-            state["step"] = "matching"
-            i, ni, j, nj = (int(x) for x in m.groups())
-            events.progress(STAGE, (i - 1) * nj + j - 1, ni * nj, step="matching",
-                            detail=f"block {i}/{ni},{j}/{nj}")
-            return
-        m = RE_REG.search(line)
-        if m:
-            state["step"] = "mapping"
-            state["reg"] = int(m.group(2))
-            events.progress(STAGE, state["reg"], n_img, step="mapping", detail="images registered")
-            return
-        for key, rx in (("featstat", RE_FEATSTAT), ("recon", RE_RECON), ("reproj", RE_REPROJ),
-                        ("rig", RE_RIG), ("ba", RE_BA), ("step", RE_STEP), ("depth", RE_DEPTH)):
-            m = rx.search(line)
-            if m:
-                state["metrics"][key] = m.groups()
-                return
-        m = RE_EYE.search(line)
-        if m:
-            state["metrics"]["eye_" + m.group(1)] = m.groups()[1:]
-
-    runner.run(argv, STAGE, log_path=log, on_line=on_line)
+    runner.run(argv, STAGE, log_path=log, on_line=parser)
+    _record_matching(pj, parser, matcher, reused)
     rep_path = os.path.join(work, "sfm_report.json")
     if not os.path.exists(rep_path):
         raise events.StageError("sfm wrote no sfm_report.json", hint="see logs/solve.log")
     rep = json.load(open(rep_path))
-    mm = state["metrics"]
+    mm = parser.metrics
     if "featstat" in mm:
         pj.metric(STAGE, "features_per_image_median", int(mm["featstat"][1]))
     pj.metric(STAGE, "num_images", rep["num_images"])
@@ -223,10 +413,11 @@ def _run_stereo(a, pj):
 
     # ---- export
     events.start(STAGE, "export")
-    runner.run(runner.python_argv("rigcolmap.py", "export", os.path.join(work, "sparse", "rig"),
-                                  "--images", os.path.join(work, "images"), "-o", pj.dataset_dir),
-               STAGE, log_path=log,
-               on_line=lambda l: (lambda m: m and events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="export"))(RE_UNDIST.search(l)))
+    ex = runner.run(runner.python_argv("rigcolmap.py", "export", os.path.join(work, "sparse", "rig"),
+                                       "--images", os.path.join(work, "images"), "-o", pj.dataset_dir),
+                    STAGE, log_path=log,
+                    on_line=lambda l: (lambda m: m and events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="export"))(RE_UNDIST.search(l)))
+    pj.metric(STAGE, "export_s", round(ex.elapsed, 1))
     if not os.path.exists(pj.rig_npz):
         raise events.StageError("export wrote no rig.npz")
     # rig.npz's w/h drive the aim check's in-frame bounds and every path's output canvas, and
@@ -265,6 +456,7 @@ def _run_stereo(a, pj):
     # the stage completed; a failed quality check stays visible in the manifest and the
     # event stream rather than blocking (partial registration raised above — that one blocks)
     pj.finish(STAGE, ok=True)
+    _append_timing(pj, parser, len(caps), n_img, ex.elapsed, reused)
 
 
 def run_array(a, pj):
@@ -280,6 +472,7 @@ def run_array(a, pj):
         keep_db = os.path.join(pj.root, "database.db.keep")
         shutil.move(os.path.join(work, "database.db"), keep_db)
     pj.begin(STAGE, argv=sys.argv)
+    reused = bool(keep_db)
     if keep_db:
         shutil.move(keep_db, os.path.join(work, "database.db"))
     if os.path.isdir(pj.dataset_dir):
@@ -293,10 +486,11 @@ def run_array(a, pj):
     caps = json.load(open(os.path.join(work, "captures.json")))["captures"]
     pj.metric(STAGE, "captures", len(caps))
     n_img = len(caps)
+    matcher, m_argv = _matcher_argv(a, len(caps), pj)
 
     events.start(STAGE, "sfm")
     argv = runner.python_argv("monocolmap.py", "sfm", work,
-                              "--peak-threshold", a.peak_threshold, "--features", a.features)
+                              "--peak-threshold", a.peak_threshold, "--features", a.features, *m_argv)
     if a.masks:
         argv += ["--masks", a.masks]
     if a.focal_px:
@@ -307,34 +501,15 @@ def run_array(a, pj):
         argv += ["--scale-pair", a.scale_pair]
     elif a.scale:
         argv += ["--scale", a.scale]
-    state = {"metrics": {}}
+    parser = SfmParser(n_img, stereo=False, model=_load_model())
 
-    def on_line(line):
-        m = RE_FEAT.search(line)
-        if m:
-            events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="features")
-            return
-        m = RE_MATCH.search(line)
-        if m:
-            i, ni, j, nj = (int(x) for x in m.groups())
-            events.progress(STAGE, (i - 1) * nj + j - 1, ni * nj, step="matching", detail=f"block {i}/{ni},{j}/{nj}")
-            return
-        m = RE_REG.search(line)
-        if m:
-            events.progress(STAGE, int(m.group(2)), n_img, step="mapping", detail="images registered")
-            return
-        for key, rx in (("featstat", RE_FEATSTAT), ("recon", RE_RECON), ("reproj", RE_REPROJ), ("depth", RE_DEPTH)):
-            m = rx.search(line)
-            if m:
-                state["metrics"][key] = m.groups()
-                return
-
-    runner.run(argv, STAGE, log_path=log, on_line=on_line)
+    runner.run(argv, STAGE, log_path=log, on_line=parser)
+    _record_matching(pj, parser, matcher, reused)
     rep_path = os.path.join(work, "sfm_report.json")
     if not os.path.exists(rep_path):
         raise events.StageError("sfm wrote no sfm_report.json", hint="see logs/solve.log")
     rep = json.load(open(rep_path))
-    mm = state["metrics"]
+    mm = parser.metrics
     if "featstat" in mm:
         pj.metric(STAGE, "features_per_image_median", int(mm["featstat"][1]))
     pj.metric(STAGE, "num_images", rep["num_images"])
@@ -386,10 +561,11 @@ def run_array(a, pj):
                                      "others see cannot be placed. Do not train on a partial solve.")
 
     events.start(STAGE, "export")
-    runner.run(runner.python_argv("monocolmap.py", "export", os.path.join(work, "sparse", "rig"),
-                                  "--images", os.path.join(work, "images"), "-o", pj.dataset_dir),
-               STAGE, log_path=log,
-               on_line=lambda l: (lambda m: m and events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="export"))(RE_UNDIST.search(l)))
+    ex = runner.run(runner.python_argv("monocolmap.py", "export", os.path.join(work, "sparse", "rig"),
+                                       "--images", os.path.join(work, "images"), "-o", pj.dataset_dir),
+                    STAGE, log_path=log,
+                    on_line=lambda l: (lambda m: m and events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="export"))(RE_UNDIST.search(l)))
+    pj.metric(STAGE, "export_s", round(ex.elapsed, 1))
     if not os.path.exists(pj.rig_npz):
         raise events.StageError("export wrote no rig.npz")
     import cv2
@@ -415,6 +591,7 @@ def run_array(a, pj):
     pj.metric(STAGE, "elevation_range_deg", cov["elevation_range_deg"])
     pj.metric(STAGE, "distance_range_mm", cov["distance_range_mm"])
     pj.finish(STAGE, ok=True)
+    _append_timing(pj, parser, len(caps), n_img, ex.elapsed, reused)
 
 
 def per_image_table(recon_dir):
