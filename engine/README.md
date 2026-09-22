@@ -10,7 +10,9 @@ first entry: undistortion crops each eye to its own valid region (rig6: L 1913×
 R 1909×1071), so the path builders were handed the right eye's canvas for left-eye views —
 the aim check's in-frame bounds and every path's output size were off by (4, 2) px. It now
 takes them from the reference (left) view and also stores a per-view `wh`. No computed value
-changed; `hs solve` checks the two agree (`rig_size_matches_L_views`).
+changed; `hs solve` checks the two agree (`rig_size_matches_L_views`). On 2026-09-22
+`rigcolmap.py` and `monocolmap.py` gained `--matcher` (default `exhaustive`, whose branch is
+unchanged) and print `timing: <phase> N s` lines; see "Matching, estimates and ETAs" below.
 
 | script | stage | needs |
 |---|---|---|
@@ -36,6 +38,8 @@ python3 -m venv .venv && .venv/bin/pip install -e engine
 ```
 hs/
   cli.py        hs <stage> --project DIR [...]  — exit 0 ok, 1 stage error, 2 crash, 130 ^C
+  pairs.py      which image pairs the solve matches: exhaustive, or the rig-aware sequential list (pure)
+  timing.py     the solve timing store, cost model and `estimate` event (pure)
   events.py     the one JSON-lines emitter (start/progress/metric/artifact/check/done/error)
   runner.py     subprocess runner: streams lines split on \r and \n, tees to logs/<stage>.log
   project.py    project folder + manifest.json (status per stage, argv, metrics, checks; stale propagation)
@@ -57,7 +61,8 @@ hs ingest  -p P --clip VID_..._2x1.h4v [--link]                       copy, MD5,
 hs ingest  -p P --frames DIR | --r3d RDM_DIR --take 067 [--res 1]     frames source, select is marked done: array (one frame per camera; REDline renders the R3Ds)
            [--kind auto|mono|array]                                   or mono (one camera's frames, e.g. select_frames.py --mono picks) — see below
 hs select  -p P [--residual 1.5 --max-gap 90 --end N --dry-run]      frames + selection.json + quality.json + thumbs/ + contact.jpg
-hs solve   -p P                                                       prep → sfm --float-rig → export; per_image.json, coverage.json
+hs solve   -p P [--matcher auto|sequential|exhaustive] [--overlap 15 --loop-stride 8]   prep → sfm --float-rig → export; per_image.json, coverage.json
+hs solve   -p P --estimate | --estimate --captures N [--eyes 1|2]     one `estimate` event: pairs and seconds per phase for both matchers (no lock, no writes)
 hs solve   -p P --scale-pair GA,GB,700 [--focal-px F] [--board B]     array/mono project: monocolmap.py, one shared camera, metric scale from a measured spacing (or --board: hs scale after)
 hs scale   -p P --board SX,SY,SQ_MM,MK_MM[,DICT] [--min-views 3] [--eye L] [--dry-run]   metric scale from a ChArUco board in the views, applied to the solve; board plane vs up
 hs exposure -p P [--reference median|auto|capNNN|board|checker] [--reference-view V] [--mode rgb|luma] [--restore] [--dry-run]   match every view to one reference (board/checker: a shared target, fine on an array)
@@ -75,7 +80,7 @@ hs views   -p P [--captures 5,15,55|holdout] [--ply PATH]                     gr
 hs cameras -p P --holdout N [--method fps|interval|azimuth] [--write]  choose hold-out captures by camera position -> solve/holdout.json
 hs stability --frames DIR | --video MP4 [--k 1,7] [--backend dis|raft]  flow-warped temporal stability of a rendered move (no project needed)
 hs export -p P [--ply PLY|--archive NAME] [--formats ply,spz,sog,html] [--min-opacity X] [--subject PLY] [--shot-sheet]   deliver/NAME/: PLY + web formats + shot sheet
-hs tools                                                              versions of python packages, brush, brush-path-render, ffmpeg, adb, node, splat-transform
+hs tools   [--fetch-vocab-tree]                                       versions of python packages, brush, brush-path-render, ffmpeg, adb, node, splat-transform, vocab tree
 hs calib   --photos 'board/*.jpg' | --video board.h4v -o cal.npz      stereocal.py + a profile JSON
 hs selftest [--clip CLIP] [--project DIR] [--resume|--fresh]          golden test (below)
 ```
@@ -89,6 +94,92 @@ metrics, checks and artifacts in `manifest.json`. `-v` also streams the child's 
 `{"ev":"log"}` events. Opening a project reconciles it first: a stage the manifest still calls
 `running` whose recorded pid is gone becomes `failed — interrupted`, so a ^C'd or crashed run
 reports that instead of blocking the next stage with "solve is running".
+
+## Matching, estimates and ETAs (2026-09-22)
+
+CirclesSculpture (422 stereo captures, 844 images) went into an exhaustive match of 355,746
+pairs with no ETA on screen. Three changes.
+
+**`--matcher exhaustive|sequential|auto`** on `hs solve` (default `auto`) and on both scripts
+(default `exhaustive`, so a standalone run is what it always was). `auto` is sequential above
+60 captures, exhaustive at or below. Sequential is built explicitly by `hs/pairs.py` from
+`captures.json`'s order and fed to `pycolmap.match_image_pairs` (the list is written to
+`solve/match_pairs.txt`):
+
+- a window: capture i against i+1 … i+`--overlap` (15), every eye against every eye;
+- every rig mate L_i–R_i;
+- a loop pass: every `--loop-stride`-th capture (8) against every other one, all eyes, so the
+  two ends of an orbit and a walk-around that comes back meet without a vocabulary tree.
+
+COLMAP's own `SequentialPairingOptions` is not used: it orders images by name, so over `L/` and
+`R/` it pairs `L/cap421` with `R/cap000` and never pairs a capture's two eyes (checked on pycolmap
+4.2.0: 7 captures, overlap 2, 25 pairs, no L_i–R_i). On the synthetic 7-capture set COLMAP matched
+exactly the 63 pairs of the list. `--loop vocab` replaces the stride pass with
+`pycolmap.match_vocabtree` over a vocabulary tree (`--vocab-tree`, `HS_VOCAB_TREE`, or the file
+`hs tools --fetch-vocab-tree` downloads: COLMAP's FAISS tree `vocab_tree_faiss_flickr100K_words256K.bin`
+from its 3.11.1 release, sha256-checked, into `~/Library/Caches/HydrogenSplat/`). That path is
+wired and **not exercised**: GitHub is unreachable from the container, so neither the download nor
+a vocab-tree match has run. The stride pass needs nothing and is the default.
+
+| captures (stereo) | images | exhaustive pairs | sequential pairs |
+|---:|---:|---:|---:|
+| 60 | 120 | 7,140 | (auto: exhaustive) |
+| 150 | 300 | 44,850 | 9,282 |
+| 422 | 844 | 355,746 | 30,566 |
+
+Sequential is right for orbits and walk-arounds. Use exhaustive when the capture revisits a view
+from far apart in time and neither the window nor a stride capture would pair the two visits.
+
+**The exhaustive block count.** pycolmap 4.2.0 logs `Processing block [i/ni, j/nj]` for **every**
+one of the ni×nj blocks, not only i ≤ j: each block holds about half its 50×50 pairs and together
+they are each pair once (reproduced on synthetic images, and replayed in `tests/test_pairs.py`).
+So solve's matching progress total of ni·nj was right and stays, and CirclesSculpture's 88–159 s
+per block is 1,231 pairs per block: 0.07–0.13 s per pair, 289 blocks, 7–13 hours (about 10), not
+the 4–5 hours that 153 blocks would take. Counting the block lines in that run's `logs/solve.log`
+(a `[2/17, 1/17]` line settles it) confirms this on the Mac.
+
+**`hs solve --estimate`** takes no lock, constructs no Project (which would reconcile the
+manifest), opens no events log and prints one line:
+
+```
+hs solve -p P --estimate                   # captures from select/frames (1 image each on array/mono)
+hs solve --estimate --captures 150         # no project needed: what the Frames page plans
+{"ev":"estimate","stage":"solve","captures":150,"images_per_capture":2,"auto":"sequential",
+ "calibration":"defaults","runs":0,"matchers":{
+   "exhaustive":{"images":300,"pairs":44850,"seconds":{"features":180,"matching":4485,"mapping":2598,"export":90,"total":7353}},
+   "sequential":{"images":300,"pairs":9282,"seconds":{"features":180,"matching":928,"mapping":2598,"export":90,"total":3796},"overlap":15,"loop_stride":8}}}
+```
+
+The cost model (`hs/timing.py`): features = a·images, matching = b·pairs, mapping = c·images^p,
+export = d·images, each fitted by least squares through the origin from the runs that measured
+that phase, p fitted in log–log from ≥ 3 runs spanning ≥ 1.5× in images (clamped 1.0–2.5), else
+1.5. The scripts print `timing: features|matching|mapping N s`; `hs solve` records `matcher`,
+`num_pairs`, `features_s`, `matching_s`, `mapping_s`, `export_s` and appends a completed run to
+`~/Library/Application Support/HydrogenSplat/timing.json` (`HS_TIMING_FILE` overrides;
+`~/.hydrogensplat/timing.json` off macOS). A `--reuse-matches` run records mapping and export only.
+Until the store has a run, `calibration` is `"defaults"`: matching 0.10 s/pair (the measured block
+times above), and **guesses** for the rest — features 0.6 s/image, mapping 0.5·images^1.5 s,
+export 0.3 s/image. The mapping guess dominates the sequential estimate (3.4 h of its 4.5 h at 422
+captures) and is the number most likely to be wrong; one real run replaces it.
+
+**ETA on every progress event.** `events.progress` fills `eta_s` whenever a stage gives a `total`
+and no ETA: the mean rate since the step's first sample (every call is sampled, even ones the
+0.25 s rate limit drops), reset by each `start` of the stage. The first step after a `start` is
+anchored at the start time with done 0, because most loops report `i + 1` after item i; later
+steps under the same `start` measure from their own first sample. A `done` that goes backwards
+restarts the measurement. Audit of the stages that report done/total:
+
+| stage · step | ETA from |
+|---|---|
+| train · train | its own iteration rate (unchanged); auto until the first rate exists |
+| render · render | its own frame rate (unchanged); render · encode, auto |
+| ingest · pull | its own byte rate (unchanged); ingest · transcode (R3D), auto |
+| solve · mapping | the cost model, then the run's registration curve elapsed·((n/k)^p − 1) once a quarter of the images are in (`timing.mapping_eta`): incremental mapping slows as it grows, so a linear rate would promise too early |
+| solve · features, matching, export; select; masks · project/segment; views · render; split / prune --score · weights; stability; export · convert; exposure · measure/apply; scale · detect; merge · write; grade · encode | auto |
+| select without `nb_frames` in the probe | none: there is no total |
+
+`hs train|views|render --estimate` (iterations, captures or frames × a measured rate) are not
+built: they need those stages to record their rates in the store first.
 
 ## Scale from a board, exposure on a target, mono as its own source (2026-09-21)
 
