@@ -47,6 +47,7 @@ hs/
   coverage.py   azimuth / elevation / distance per capture from rig.npz; sweep-window and boom-key presets
   movescript.py the .hsmove cue language: boom / arc / dolly / hold in capture coordinates, clamped to the hull
   board.py      ChArUco detection, DLT triangulation from rig.npz, pair-median scale, board plane, white-paper samples
+  lidar.py      phone LiDAR scans: PLY/OBJ/XYZ loading + units, subsample, Umeyama, trimmed ICP, global registration, up, ground, coverage
   splatweights.py the renderer's forward weights w = alpha*T per (splat, view, cell), in numpy — under split and prune --score
   overlay.py    sparse points on photograph + render; global / per-quadrant phase-correlation shift
   shotsheet.py  the delivery shot sheet: manifest dicts -> Markdown + HTML (pure; hs export writes it)
@@ -65,6 +66,8 @@ hs solve   -p P [--matcher auto|sequential|exhaustive] [--overlap 15 --loop-stri
 hs solve   -p P --estimate | --estimate --captures N [--eyes 1|2]     one `estimate` event: pairs and seconds per phase for both matchers (no lock, no writes)
 hs solve   -p P --scale-pair GA,GB,700 [--focal-px F] [--board B]     array/mono project: monocolmap.py, one shared camera, metric scale from a measured spacing (or --board: hs scale after)
 hs scale   -p P --board SX,SY,SQ_MM,MK_MM[,DICT] [--min-views 3] [--eye L] [--dry-run]   metric scale from a ChArUco board in the views, applied to the solve; board plane vs up
+hs scale   -p P --lidar SCAN.ply [--units m|mm|cm] [--scan-up y|z] [--pairs 'sx,sy,sz=px,py,pz;…'] [--init auto|pairs] [--apply|--dry-run]
+                                                                      a phone LiDAR scan aligned to the solve: mono/array scale applied, stereo scale checked; up, ground
 hs exposure -p P [--reference median|auto|capNNN|board|checker] [--reference-view V] [--mode rgb|luma] [--restore] [--dry-run]   match every view to one reference (board/checker: a shared target, fine on an array)
 hs masks   -p P [--radius 0.10] [--margin-mm 5] [--min-opacity 0.2]   per-view subject silhouettes for Brush's mask channel
 hs train   -p P [--brush PATH]                                        brush → train/exports/export_NNNNN.ply   (Mac only)
@@ -210,6 +213,122 @@ views go stale. A second run measures ≈ 1.0. A stereo rig.npz is refused (the 
 baseline is its scale); `--dry-run` on one reports `implied_baseline_mm`. Synthetic test: 5 views
 of a generated 7×5 board warped in by homography with 2 DN noise: scale within 0.03 %, normal
 within 0.1°, corner reprojection RMS ≈ 0.4 px.
+
+### `hs scale --lidar`: a phone LiDAR scan as the metric reference (2026-09-22)
+
+```
+hs scale -p P --lidar room.ply                        # mono/array: align, apply the scan's scale (as a board would)
+hs scale -p P --lidar room.ply --dry-run              # measure only; scale/lidar_report.json + scale/lidar_aligned.ply
+hs scale -p P --lidar room.ply                        # stereo: never applied — reports scale_ratio, implied_baseline_mm
+hs scale -p P --lidar room.obj --units cm --scan-up z # a Z-up export in centimetres
+hs scale -p P --lidar room.ply --pairs '2.61,0.50,1.79=812.4,-310.2,955.0;1.30,0.60,2.80=...;0.02,2.31,0.41=...'
+```
+
+Exactly one of `--board` / `--lidar`. The scan (Polycam / Scaniverse from an iPhone Pro, scanned
+before the shoot) is registered to rig.npz's sparse points **solve → scan**: the solve's points
+are a subset of what the scan saw, so every one has a surface under it and the scan's extra
+rooms need no explaining, and the fitted scale is then exactly the factor that turns the solve's
+units into mm. It feeds the board's apply path unchanged (`_apply_and_mark`: Sim3d on the model,
+`finish_dataset`, coverage.json, `scene_scaled` ok with `source: lidar`).
+
+1. **Load** (`lidar.load_scan`): PLY ascii / binary little- or big-endian with any vertex property
+   order and type (x/y/z found by name, float or double; colour from red/green/blue, r/g/b,
+   diffuse_* — uchar, ushort or float 0..1 — or a splat PLY's f_dc_*; normals nx/ny/nz; other
+   elements before or after the vertices skipped, faces counted), OBJ `v` lines (with
+   `v x y z r g b` colour), XYZ/CSV/TXT/PTS (delimiter and header guessed; a CloudCompare `//X,Y,Z`
+   header or a PTS count line understood). Non-finite rows dropped. **Units**: `--units`, else a
+   header comment naming one (`units: meters`), else the extent: a largest robust side ≤ 150 is
+   metres, above is mm (a room is 2–20 m: 2–20 or 2,000–20,000); cm is never guessed. An inferred
+   unit outside the confident bands (0.3–60 m, 1.5–60 m in mm) fails `lidar_units_known`
+   (needs_human).
+2. **Subsample** (voxel, seeded): the solve is first cleaned of strays (`lidar.denoise`: mean
+   distance to 8 neighbours > 3× the median) — a voxel subsample keeps every isolated stray and
+   thins the surfaces, so 20 % strays became 43 % of the registration's points before this. 5,000
+   points a side for the global search; ICP runs the solve's 20,000 against the scan's 400,000.
+3. **Initial alignment**. `--init auto` (default): `lidar.global_register`, a RANSAC over
+   congruent triples. A well-separated solve triple on locally planar surface is sampled (rare
+   normal directions preferred — a room is mostly floor and walls, three planes that fit a corner
+   turned 120° as well as the right one; the furniture decides); its first edge is looked up in
+   a hash of 1,200 scan points' pairs keyed by three scale-invariant angles (each PCA normal to
+   the edge, normal to normal), which with the first normal gives a pose per candidate and sign
+   (the edge's length ratio is the scale; with the scale known the lengths must agree within
+   6 %); the third point must land on the scan with the triple's distance ratios and normal;
+   Umeyama on the triple; a voxel distance grid prefilters thousands of poses per sample, the
+   best 12 get a short trimmed ICP ranked by truncated-quadratic cost; it stops once the best
+   pose has been found from two different triples (at least 15 samples), and the best four are
+   refined against the dense scan. `--pairs` (≥ 3, scan units = solve mm) is Umeyama instead.
+4. **ICP**: trimmed point-to-point (the best 70 % of correspondences, plus every one within
+   `--inlier-mm`), Sim(3) on mono/array, SE(3) on stereo, scale bounded about its start. The
+   "plus" matters: scaling about the corner where floor and walls meet moves no wall point off its
+   plane, so a few percent off it is the furniture that is the worst 30 % — a pure trim throws
+   away exactly the correspondences that pull the scale back. Progress events carry a total.
+5. **Stereo**: SE(3) is the alignment (and the transform stored); a Sim(3) refinement from it
+   gives `scale_ratio` (the factor the solve is off by — 1.0 = the baseline is right; the same
+   sense as the board's factor) and `implied_baseline_mm = profile_baseline × ratio`. Nothing is
+   applied and the stage's status is left alone; `--apply` is refused as for a board.
+
+**Honest failure.** A scan that does not align, or aligns ambiguously, exits 1 with an error and
+a hint (`--units`, `--pairs`, coverage) and still writes the report; the project is untouched
+(`stages.scale.lidar_check` records the attempt). Not aligned means any of: the global search's
+best pose has < `--min-inlier` of the solve on the scan; another *different* pose (> 3° / 3 % away)
+fits within 1.5× its cost (**ambiguous** — a bare corner is symmetric under 120° turns); or the
+final ICP has < `--min-inlier` (0.5) within `--inlier-mm` (50) or a trimmed RMS > `--max-rms-mm`
+(30). Separately, `lidar_geometry_constrains` measures what the overlap can observe
+(`lidar.constraints`: the 7×7 point-to-plane information matrix at the solution — the Schur
+complement of the scale, and the smallest eigenvalue of the pose block). Floor and two walls fit
+at any scale about their corner: sensitivity 0 for that shape, 0.02–0.06 for the synthetic room
+seen only near its corner, 0.23 for the room with its furniture. Below `--min-scale-sensitivity`
+(0.1) a mono scale is not applied (exit 1); on stereo it is a needs_human check.
+
+**Checks**: `lidar_aligned`, `lidar_geometry_constrains`, `lidar_scale_agrees` (stereo: ratio
+within 2 %, needs_human otherwise), `lidar_covers_captures` (every camera centre within 3 m of
+the scan and the median distance to the scan of the sparse points in its frustum ≤ 50 mm; names
+the captures that fail), `lidar_up_agrees` (the scan's +Y — or `--scan-up z` — in the solve frame
+within 10° of coverage's mean-camera up, needs_human otherwise), `lidar_units_known`.
+
+**Written**: `scale/lidar_report.json` — scan metadata (format, vertex/face counts, properties,
+comments, units and their source, extent), subsample sizes and strays removed, the init (global:
+samples, hypotheses, confirmations, alternatives, seconds; pairs: residuals), ICP per-iteration
+trimmed RMS, final RMS and inlier fraction, solve → scan (s, R, t), the scale factor or ratio and
+implied baseline, the constraints, up vector and angle, the ground plane (RANSAC on the lowest
+150 mm band of the scan, with camera heights above it), the per-capture coverage rows, and
+`transform`: 4×4 `scan_mm_to_solve` and `scan_file_to_solve` (the file's own units) into the solve
+frame — after scaling when applied, the current units on a dry run. `scale/lidar_aligned.ply`: a
+100,000-point subsample of the scan in that frame, coloured when the scan was, for the viewer.
+Applied runs also put `up_world`, `ground_normal_world` and the transform in `manifest.scale`
+(source `lidar`); nothing is rotated yet — coverage's up is still the mean camera up (which is
+wrong on the portrait array; the scan's is not).
+
+**Synthetic results** (`tests/lidar_synth.py`: a 5 × 4 m room, 2.6 m walls, a box turned 30°, a
+ball, a column, ~280k scan points in metres; the "solve" 12,000 of them from the 60 % the cameras
+covered, 3 mm noise, a random Sim(3) with scale 0.7–1.4, stereo 1.0; 2-core container):
+
+| | result |
+|---|---|
+| global registration alone, 24 random scenes | 24/24 within 0.3 % / 0.3°; worst 0.18 % scale, 0.02° |
+| global registration time, 5,000 × 5,000 points | median 3.1 s, 1.9–6.8 s (to failure on no overlap: 5–9 s) |
+| ICP after it (12,000 vs 280,000) | trimmed RMS 3.6 mm, scale 0.001–0.005 %, rotation < 0.01° |
+| three hand-picked `--pairs` with 10 mm error | start 0–1.2 % / 0.4–1.6° off; ICP converges to the same pose (< 0.05 %) |
+| 10 mm noise; 20 % strays; 3,000 points | 6/6, 12/12, 6/6 within 0.3 % / 0.3° |
+| solve sees only the corner (30 % coverage) | 6/6 refused (ambiguous, or scale not fixed) — never a silent 120° / 25 % answer |
+| stereo, the profile baseline 3 % long | scale_ratio 0.9709 (true 1/1.03 = 0.9709), implied baseline 10.600 mm (true 10.600), needs_human |
+| mono stage end to end (`hs scale --lidar`, 4 s) | scale 0.826438 against 0.826446 (0.001 %); every camera spacing in mm within 0.001 % |
+
+**What the parser assumes about the real exports** (not yet checked against one — the first
+sample scan arrives later): Polycam and Scaniverse write ARKit's world frame, **+Y up, metres**,
+as binary little-endian PLY with float `x y z` and uchar `red green blue` (maybe `alpha`,
+`nx ny nz`, a confidence, a face list on a mesh). If an export is Z-up (some "for Blender"
+options), pass `--scan-up z`; the up check will say so otherwise (an angle near 90°). A Scaniverse
+splat PLY reads as its centres with DC colour — usable, floaters and all. LAS/LAZ/E57/USDZ/GLB
+are refused with a hint to export PLY, OBJ or XYZ. A header comment is the only declared unit
+understood; PLY has no standard one. Things to look at on the first real scan: `scan.units` and
+`extent_mm`, `vertex_properties`, whether `has_colour` is true, and `lidar_up_to_current_up_deg`.
+
+**Limits.** ICP is point-to-point: it converges slowly along a room's weak scale direction (60
+iterations from 1 % off; `--icp-iters` 100). The scale's accuracy on a real capture will be
+bounded by the solve (SfM noise, a mono solve's own drift) and the scan (ARKit's few-mm to cm
+LiDAR noise, drift over a large room), not by the registration. A scene that is only planes —
+an empty room, a wall — cannot give a scale, and says so.
 
 **`hs exposure --reference board|checker`**. The array refusal was right for a median and wrong
 for a shared target: the same physical white is in every view. `board` samples the white paper of
