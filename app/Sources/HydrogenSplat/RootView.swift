@@ -42,7 +42,11 @@ struct RootView: View {
                 }
             }
             .navigationSplitViewColumnWidth(min: 230, ideal: 270)
-            .onReceive(poll) { _ in store.refreshIfChanged() }
+            .onReceive(poll) { _ in
+                store.refreshIfChanged()
+                // also when nothing changed on disk: a Terminal run an app-started one displaced
+                model.attachExternalRuns()
+            }
         } detail: {
             Group {
                 switch model.selection {

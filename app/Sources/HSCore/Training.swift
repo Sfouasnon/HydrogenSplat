@@ -445,17 +445,13 @@ public enum GrowthCurve {
     }
 
     /// The progress events of the LAST run in `logs/<stage>.events.jsonl` (the file accumulates
-    /// every run; a `{"ev":"run"}` marker starts each). Reads the whole file: a 40k-iteration
-    /// train is ~2,000 lines.
+    /// every run; a `{"ev":"run"}` marker starts each — `EventsLogTail`, which an attached
+    /// `RunSession` follows too). Reads the whole file: a 40k-iteration train is ~2,000 lines.
     public static func fromEventsLog(project: String, stage: String = "train") -> [GrowthPoint] {
-        let p = ((project as NSString).appendingPathComponent("logs") as NSString).appendingPathComponent("\(stage).events.jsonl")
-        guard let d = FileManager.default.contents(atPath: p), let text = String(data: d, encoding: .utf8) else { return [] }
-        var lines = text.split(separator: "\n", omittingEmptySubsequences: true)
-        if let start = lines.lastIndex(where: { $0.contains("\"ev\":\"run\"") }) { lines = Array(lines[start...]) }
+        var tail = EventsLogTail(project: project, stage: stage)
         var out: [GrowthPoint] = []
-        for (i, l) in lines.enumerated() {
-            guard l.contains("\"progress\""), let e = HSEvent(line: String(l), id: i), e.kind == "progress",
-                  let done = e.done, let n = RunSession.leadingNumber(e.detail) else { continue }
+        for e in tail.read() where e.kind == "progress" {
+            guard let done = e.done, let n = RunSession.leadingNumber(e.detail) else { continue }
             out.append(GrowthPoint(done: done, value: n))
         }
         if out.count > 4000 { out = out.enumerated().filter { $0.offset % 2 == 0 }.map(\.element) }

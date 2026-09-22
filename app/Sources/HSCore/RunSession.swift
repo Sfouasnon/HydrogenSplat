@@ -27,7 +27,11 @@ public final class RunSession: ObservableObject, Identifiable {
 
     public nonisolated let id = UUID()
     public let title: String
-    public let command: [String]
+    public private(set) var command: [String]
+    /// Set for a run this session follows rather than started — an `hs` from Terminal holding the
+    /// project lock as this pid (`init(attachingTo:)`). It reads the stage's events file instead of
+    /// a child's stdout, and `cancel()` sends this pid the SIGINT a ^C would.
+    public let attachedPID: Int32?
     @Published public private(set) var state: State = .idle
     @Published public private(set) var events: [HSEvent] = []
     @Published public private(set) var progress: [ProgressKey: HSEvent] = [:]
@@ -56,13 +60,31 @@ public final class RunSession: ObservableObject, Identifiable {
     private var runner: ToolRunner?
     private let config: EngineConfig
     private let arguments: [String]
+    private var tail: EventsLogTail?
+    private var attachedRunID: Int?
+    private var tick: AnyCancellable?
 
     public init(title: String, config: EngineConfig, arguments: [String]) {
         self.title = title
         self.config = config
         self.arguments = arguments
         self.command = [config.hsPath] + arguments
+        self.attachedPID = nil
     }
+
+    /// A session for a run started elsewhere: `stage` holds `project`'s lock as `pid` and writes
+    /// `logs/<stage>.events.jsonl`. Nothing happens until `attach()`.
+    public init(attachingTo project: String, stage: String, pid: Int32, config: EngineConfig) {
+        self.title = String(stage.prefix(1)).uppercased() + String(stage.dropFirst()) + " (pid \(pid))"
+        let args = [stage, "-p", project]
+        self.config = config
+        self.arguments = args
+        self.command = [config.hsPath] + args
+        self.attachedPID = pid
+        self.tail = EventsLogTail(project: project, stage: stage)
+    }
+
+    public var isAttached: Bool { attachedPID != nil }
 
     public var isRunning: Bool { state == .running }
 
@@ -77,7 +99,7 @@ public final class RunSession: ObservableObject, Identifiable {
     public var failedChecks: [HSEvent] { checks.filter { $0.ok == false } }
 
     public func start() {
-        guard state == .idle else { return }
+        guard state == .idle, attachedPID == nil else { return }
         let r = ToolRunner(executable: config.hsPath, arguments: arguments,
                            environment: config.environment(), workingDirectory: config.repoRoot)
         runner = r
@@ -97,7 +119,77 @@ public final class RunSession: ObservableObject, Identifiable {
     }
 
     public func cancel() {
+        if let pid = attachedPID {
+            // what ^C does in the Terminal: hs marks the stage failed, releases the lock, emits done
+            if state == .running { _ = kill(pid, SIGINT) }
+            return
+        }
         runner?.interrupt()
+    }
+
+    // MARK: attached runs
+
+    /// Start following an attached run: read what its events file already holds for the last run,
+    /// then re-read it every `interval` seconds. Ends at once (no `onFinish` yet to call) when that
+    /// run is already done or the pid is gone — callers keep the session only if `isRunning`.
+    public func attach(interval: TimeInterval = 2) {
+        guard state == .idle, attachedPID != nil else { return }
+        startedAt = Date()
+        state = .running
+        poll()
+        guard state == .running else { return }
+        tick = Timer.publish(every: interval, on: .main, in: .common).autoconnect()
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.poll() }
+            }
+    }
+
+    /// One read of an attached run's events file. The run ends on its `done`, when a newer run
+    /// starts in the same file, or when the pid is gone (read once more first: the last lines can
+    /// land between the read and the exit).
+    public func poll() {
+        guard state == .running, let pid = attachedPID, var t = tail else { return }
+        var evs = t.read()
+        let gone = !RunSession.pidAlive(pid)
+        if gone { evs += t.read() }
+        tail = t
+        if let rid = t.runID {
+            if let mine = attachedRunID, mine != rid {
+                endAttached(exit: -1, note: "a newer \(stageName) run started in the same events file")
+                return
+            }
+            if attachedRunID == nil {
+                attachedRunID = rid
+                if let s = t.runStart { startedAt = s }
+                if let argv = t.runArgv, !argv.isEmpty { command = argv }
+            }
+        }
+        if !evs.isEmpty { ingest(evs) }
+        if let d = evs.last(where: { $0.kind == "done" }) {
+            endAttached(exit: Int32(d.exitCode ?? 0))
+        } else if gone {
+            endAttached(exit: -1, note: "process \(pid) ended without a done event")
+        }
+    }
+
+    /// Stop following without touching the process (an app-started run replaced this one).
+    public func detach() {
+        tick = nil
+    }
+
+    private func endAttached(exit code: Int32, note: String = "") {
+        tick = nil
+        stderrTail = note
+        state = .finished(exit: code)
+        finishedAt = Date()
+        currentStep = nil
+        lastProgressKey = nil
+        onFinish?(self)
+    }
+
+    /// Alive, or alive under another user (EPERM) — the same test as the project lock's.
+    nonisolated public static func pidAlive(_ pid: Int32) -> Bool {
+        kill(pid, 0) == 0 || errno == EPERM
     }
 
     /// Feed events directly (tests, previews).
