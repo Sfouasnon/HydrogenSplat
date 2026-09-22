@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import Combine
 import HSCore
 
 enum ProjectPage: String, CaseIterable, Identifiable {
@@ -24,9 +26,20 @@ final class AppModel: ObservableObject {
             if store.root != config.projectsRoot { store.root = config.projectsRoot }
         }
     }
-    @Published var selection: SidebarItem? = .setup
+    @Published var selection: SidebarItem? = .setup {
+        didSet { updateLiveStatus() }
+    }
     /// The latest run per project path (ingest today; every stage from M2).
-    @Published var projectRuns: [String: RunSession] = [:]
+    @Published var projectRuns: [String: RunSession] = [:] {
+        didSet { watchRuns() }
+    }
+    /// "solve · matching 42% · 18 min" for the window title while a run is live, nil otherwise.
+    /// Published only when the text changes (every percent, every minute of ETA), not on every
+    /// progress event: every view holding the model re-renders when it does.
+    @Published private(set) var liveTitle: String?
+    private var runWatch: AnyCancellable?
+    /// The Solve matcher per project path (Auto unless changed), kept for the session.
+    @Published var solveMatcher: [String: SolveMatcher] = [:]
     /// The train → archive → views queue per project path; survives leaving the page.
     @Published var trainQueues: [String: RunQueue] = [:]
     /// Train panel settings per project path, kept for the session.
@@ -95,4 +108,41 @@ final class AppModel: ObservableObject {
     }
 
     var anyProjectRunRunning: Bool { projectRuns.values.contains { $0.isRunning } }
+
+    // MARK: live status — window title and Dock badge
+
+    /// Follows every project's run: any change to any of them (throttled to one a second)
+    /// re-reads which runs are live. Re-subscribed whenever a run is added or replaced.
+    private func watchRuns() {
+        let changes = projectRuns.values.map { $0.objectWillChange }
+        runWatch = Publishers.MergeMany(changes)
+            .throttle(for: .seconds(1), scheduler: RunLoop.main, latest: true)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateLiveStatus() }
+            }
+        updateLiveStatus()
+    }
+
+    /// The live run the title and the Dock follow: the selected project's, else the first by path.
+    private var followedRun: (run: RunSession, others: Int)? {
+        let live = projectRuns.filter { $0.value.isRunning }
+        guard !live.isEmpty else { return nil }
+        if case .project(let p)? = selection, let r = live[p] { return (r, live.count - 1) }
+        guard let first = live.keys.sorted().first, let r = live[first] else { return nil }
+        return (r, live.count - 1)
+    }
+
+    private func updateLiveStatus() {
+        let f = followedRun
+        let title = f.map { $0.run.liveProgress.short + ($0.others > 0 ? " (+\($0.others) more)" : "") }
+        if title != liveTitle { liveTitle = title }
+        // cleared the moment nothing is live; a run without a fraction gets no badge
+        let badge = f?.run.liveProgress.badge
+        if let app = NSApp, app.dockTile.badgeLabel != badge { app.dockTile.badgeLabel = badge }
+    }
+
+    /// The main window's title: "HydrogenSplat — solve · matching 42% · 18 min" while a run is live.
+    var windowTitle: String {
+        liveTitle.map { "HydrogenSplat — \($0)" } ?? "HydrogenSplat"
+    }
 }
