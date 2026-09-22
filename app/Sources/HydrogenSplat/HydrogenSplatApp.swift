@@ -28,7 +28,8 @@ struct HydrogenSplatApp: App {
         }
         .commands {
             CommandGroup(replacing: .appInfo) { AboutCommand() }
-            CommandGroup(after: .newItem) {
+            // replacing, not after: the WindowGroup's default "New Window" also claims ⌘N
+            CommandGroup(replacing: .newItem) {
                 Button("New Project from Clip…") { model.selection = .ingest }
                     .keyboardShortcut("n")
                 Button("Reload Projects") { model.store.reload() }

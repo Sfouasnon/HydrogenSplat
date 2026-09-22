@@ -37,6 +37,26 @@ public struct GradeSettings: Codable, Equatable, Sendable {
         headroomMM = try c.decodeIfPresent(Double.self, forKey: .headroomMM) ?? d.headroomMM
     }
 
+    /// The one crop list both grade UIs offer (the Move panel's Look and the Grade page). 0 = full frame.
+    /// 16:9 is 1920×1076 (mod-4 height) — the value hs grade has always used for that choice.
+    public static let aspectOptions: [(label: String, value: Double)] = [
+        ("Full frame", 0.0), ("16:9", 1920.0 / 1076.0), ("1.85", 1.85), ("2.00", 2.0), ("2.35", 2.35), ("2.39", 2.39),
+    ]
+
+    /// `aspectOptions` plus the current value when a saved file holds one the list does not (an
+    /// older build, or a hand-edited json) — a Picker whose selection matches no tag shows blank.
+    public static func aspectOptions(including current: Double) -> [(label: String, value: Double)] {
+        if aspectOptions.contains(where: { abs($0.value - current) < 1e-6 }) { return aspectOptions }
+        return aspectOptions + [(String(format: "%.3f (saved)", current), current)]
+    }
+
+    /// grade/<render name>.json — the file `hs grade --move <render name>` reads and writes. The render
+    /// name is the move name for the current model and <move>_<model> for an archive (Moves.renderName),
+    /// so a look belongs to a render, not to a move.
+    public static func lookPath(project: String, renderName: String) -> String {
+        ((project as NSString).appendingPathComponent("grade") as NSString).appendingPathComponent("\(renderName).json")
+    }
+
     public static func load(_ path: String) -> GradeSettings? {
         guard let data = FileManager.default.contents(atPath: path) else { return nil }
         return try? JSONDecoder().decode(GradeSettings.self, from: data)

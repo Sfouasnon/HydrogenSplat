@@ -73,9 +73,15 @@ struct TrainView: View {
     private var activeLock: ProjectSummary.LockInfo? {
         [lock, project.lock].compactMap { $0 }.first { $0.alive } ?? lock ?? project.lock
     }
+    /// A Terminal `hs train` on this project: follow its log. Any other live lock (hs masks, hs solve,
+    /// a Score from the Models box) only disables Start and says which stage holds it.
     private var externalTrain: Bool {
-        guard let l = activeLock, l.alive else { return false }
+        guard let l = activeLock, l.alive, l.stage == "train" else { return false }
         return !(queue?.isRunning ?? false)
+    }
+    private var otherStageRunning: String? {
+        guard let l = activeLock, l.alive, l.stage != "train", !(queue?.isRunning ?? false) else { return nil }
+        return l.stage ?? "another stage"
     }
 
     var body: some View {
@@ -303,7 +309,10 @@ struct TrainView: View {
             .keyboardShortcut(.defaultAction)
             .disabled(running || nameBlocked || captures == 0 || !model.config.problems.isEmpty
                       || activeLock?.alive == true)
-            if onBattery {
+            if let st = otherStageRunning {
+                Label("\(st) is running on this project — Start is available when it finishes", systemImage: "lock")
+                    .foregroundStyle(.secondary)
+            } else if onBattery {
                 Label("On battery — macOS will sleep and stall training. Plug in.", systemImage: "battery.25")
                     .foregroundStyle(.orange)
             } else {

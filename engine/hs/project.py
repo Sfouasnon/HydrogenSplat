@@ -215,10 +215,15 @@ class Project:
     def status(self, name):
         return self.stage(name).get("status", "pending")
 
-    def require(self, stage):
+    def require(self, stage, satisfied=()):
         """Raise unless every prerequisite stage is done (stale counts as done, with a
-        warning — the user may knowingly re-render on an old solve)."""
+        warning — the user may knowingly re-render on an old solve). A prerequisite named in
+        ``satisfied`` is taken as met by other evidence — hs render passes "move" when the
+        move json already exists, since the app's keyframe editor writes move/<name>.json
+        itself and never runs `hs move`, so stages.move stays pending on those projects."""
         for pre in REQUIRES[stage]:
+            if pre in satisfied:
+                continue
             st = self.status(pre)
             if st == "done":
                 continue

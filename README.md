@@ -4,11 +4,16 @@ Stereo Gaussian splats from a RED Hydrogen One. A macOS app that takes a Holocam
 clip off the phone, selects frames by parallax, solves the two eyes as one rigid COLMAP rig,
 trains a splat in Brush, builds a camera move inside the captured hull, and renders it.
 
-Status: **M0 complete — engine CLI.** No app yet. `engine/` has the `hs` CLI: every pipeline
-stage as a subcommand speaking JSON-lines events, wrapping the six scripts unchanged.
-`hs selftest` reproduces the rig6 numbers from the terminal (12/12: 65 frames, 65/65
-registered, 1.346 px) and `hs train` / `hs render` have driven Brush end to end — 157,252
-splats in 48.5 min, 360 frames rendered and encoded. Numbers and caveats in `engine/README.md`.
+Status (2026-09-21): **engine + app, in daily use on one Mac.** `engine/` has the `hs` CLI — 20
+stages speaking JSON-lines events (ingest, select, solve, exposure, masks, train, archive, merge,
+move, prune, render, grade, views, plus cameras / movepreview / tools / calib / selftest / phone /
+replay) — and `app/` is the SwiftUI macOS app: a pipeline rail (Source → Frames → Exposure →
+Masks → Train → Move → Grade → Render), a train queue (train → archive → hold-out score), a
+MetalSplatter viewer with a keyframe move editor, and a Models box with provenance and scores.
+Sources: RED Hydrogen One stereo clips, iPhone/mono clips (`hs ingest --frames`), and RED R3D
+camera arrays through REDline (`hs ingest --r3d`). Not yet: packaging/notarisation (strategy M5)
+— the engine venv and the Brush fork are built by hand (below). Project state and decisions live
+in the HydrogenSplat Claude project (`claude/*.md`).
 The pipeline is specified, with the numbers from the first successful capture, in
 `docs/capture-to-splat-spec-v1.md`. The build plan is `docs/hydrogensplat-strategy-v1.md`.
 Read those two first; then `docs/HANDOFF-2026-09-13-colmap-rig.md` §4 for the mistakes

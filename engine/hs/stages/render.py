@@ -52,11 +52,17 @@ def add_parser(sub):
 
 
 def run(a, pj):
-    pj.require(STAGE)
     move = a.move if a.move.endswith(".json") else pj.path("move", f"{a.move}.json")
     move = os.path.abspath(move)
+    # The move file is the prerequisite, not the `move` stage: the app's keyframe editor bakes
+    # move/<name>.json itself and never runs `hs move`, so on those projects stages.move is
+    # pending forever. An existing file stands in for the stage; a missing one still gets the
+    # stage's own hint.
+    move_from_stage = pj.status("move") in ("done", "stale")
+    pj.require(STAGE, satisfied=("move",) if os.path.exists(move) else ())
     if not os.path.exists(move):
-        raise events.StageError(f"move not found: {move}", hint="hs move --project ... --preset boom")
+        raise events.StageError(f"move not found: {move}",
+                                hint="hs move --project ... --preset boom, or bake one in the app's Move editor")
     move_name = os.path.splitext(os.path.basename(move))[0]
     ply = os.path.abspath(a.ply) if a.ply else final_export(pj)
     if not ply or not os.path.exists(ply):
@@ -81,6 +87,9 @@ def run(a, pj):
 
     # ---- guards
     events.start(STAGE, "guards")
+    pj.check(STAGE, "move_source", True,
+             value=("hs move stage" if move_from_stage else
+                    "move json authored outside `hs move` (keyframe editor or hand-written); stages.move is pending"))
     mt_move = guards(a, pj, ply, move)
 
     # ---- render

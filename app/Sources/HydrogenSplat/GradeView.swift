@@ -124,13 +124,12 @@ struct GradeView: View {
             HStack {
                 Text("Crop").frame(width: 70, alignment: .leading)
                 Picker("", selection: $settings.aspect) {
-                    Text("2.35:1").tag(2.35)
-                    Text("1.85:1").tag(1.85)
-                    Text("16:9").tag(1920.0 / 1076.0)
-                    Text("none").tag(0.0)
+                    ForEach(GradeSettings.aspectOptions(including: settings.aspect), id: \.value) { o in
+                        Text(o.label).tag(o.value)
+                    }
                 }
                 .labelsHidden()
-                .frame(width: 110)
+                .frame(width: 130)
                 .onChange(of: settings.aspect) { _, _ in loadStill(Int(frame)) }
                 Text("Headroom").padding(.leading, 12)
                 TextField("", value: $settings.headroomMM, format: .number.precision(.fractionLength(1)))
@@ -171,7 +170,7 @@ struct GradeView: View {
 
     private func selectMove() {
         guard let m = move else { return }
-        let saved = (project.path as NSString).appendingPathComponent("grade/\(m.name).json")
+        let saved = GradeSettings.lookPath(project: project.path, renderName: m.name)
         settings = GradeSettings.load(saved) ?? GradeSettings()
         frame = Double(m.frames / 2)
         still = nil

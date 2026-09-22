@@ -2,18 +2,40 @@ import SwiftUI
 import AppKit
 import HSCore
 
-/// Project page: every model that can be looked at. View opens it in the project's Viewer page;
-/// right-click → Open in New Window for two side by side (the A/B).
+/// Project page: every model that can be looked at, with where it came from and how it scored.
+/// View opens it in the project's Viewer page; right-click → Open in New Window for two side by
+/// side (the A/B). Archive keeps the live export under a name; Score runs `hs views --ply` on any
+/// model after the fact, with the Train page's hold-out and crop, so a model can be scored at a
+/// different crop or against a new mask set without retraining.
 struct ModelsBox: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var scene: SplatScene
     @Environment(\.openWindow) private var openWindow
     let project: ProjectSummary
+    @State private var revision = 0
+    @State private var askArchive = false
+    @State private var archiveName = ""
+
+    private var queue: RunQueue? { model.trainQueues[project.path] }
+    private var busy: Bool { (queue?.isRunning ?? false) || project.lock?.alive == true }
+    private var hasMasks: Bool {
+        FileManager.default.fileExists(atPath: (project.path as NSString).appendingPathComponent("train/dataset/masks"))
+    }
+    private var archiveNameProblem: String? {
+        let n = archiveName.trimmingCharacters(in: .whitespaces)
+        if n.isEmpty { return "a name is needed" }
+        if n.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) == nil { return "letters, digits, . _ - only" }
+        if FileManager.default.fileExists(atPath: (project.path as NSString).appendingPathComponent("archive/\(n)")) { return "an archive named \(n) exists" }
+        return nil
+    }
 
     var body: some View {
+        let _ = revision
         let files = ViewerModelFile.list(project: project.path)
+        let scores = ViewsScore.list(project: project.path)
+        let rigNow = ModelProvenance.currentRigMD5(project: project.path)
         GroupBox("Models") {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 if let why = SplatViewerSupport.problem {
                     Label(why, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -22,39 +44,130 @@ struct ModelsBox: View {
                     Text("No trained model yet — train, or archive one.").foregroundStyle(.secondary)
                 }
                 ForEach(files) { f in
-                    HStack(spacing: 10) {
-                        Image(systemName: f.archive == nil ? "cube.transparent" : "archivebox")
-                            .foregroundStyle(.secondary).frame(width: 18)
-                        Text(f.name).font(.system(.body, design: .monospaced))
-                        Text(f.sizeLabel).foregroundStyle(.secondary).monospacedDigit()
-                        if scene.loaded == f {
-                            Text("loaded").font(.caption).foregroundStyle(.green)
-                        }
-                        Spacer()
-                        Button("Reveal") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: f.ply)]) }
-                            .buttonStyle(.borderless)
-                        Button("View") { view(f) }
-                            .disabled(SplatViewerSupport.problem != nil)
-                            .help("Open in this project's Viewer page (right-click for a separate window)")
-                    }
-                    .contextMenu {
-                        Button("View") { view(f) }
-                        Button("Open in New Window") { openWindow(id: "viewer", value: f) }
-                    }
+                    row(f, prov: ModelProvenance.load(for: f), scores: scores.filter { $0.scores(f) }, rigNow: rigNow)
+                    if f != files.last { Divider() }
                 }
                 if !files.isEmpty {
-                    Text("A preview for looking at geometry and floaters from real camera positions. It is not brush-path-render: sorting and anti-aliasing differ, so judge final frames — and anything `hs views` scores — from a render.")
+                    Text("A preview for looking at geometry and floaters from real camera positions. It is not brush-path-render: sorting and anti-aliasing differ, so judge final frames — and anything `hs views` scores — from a render. Scores are medians over the report's views; a report is only comparable with another at the same crop and mask set.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(4)
         }
+        .alert("Archive the current model", isPresented: $askArchive) {
+            TextField("name", text: $archiveName)
+            Button("Archive") { archive() }.disabled(archiveNameProblem != nil)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Copies train/exports into archive/<name> with its rig.npz and manifest. "
+                 + (archiveNameProblem.map { "(\($0))" } ?? ""))
+        }
+    }
+
+    @ViewBuilder private func row(_ f: ViewerModelFile, prov: ModelProvenance?, scores: [ViewsScore], rigNow: String?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 10) {
+                Image(systemName: f.archive == nil ? "cube.transparent" : "archivebox")
+                    .foregroundStyle(.secondary).frame(width: 18)
+                Text(f.name).font(.system(.body, design: .monospaced))
+                if let l = prov?.layer { chip(l, tint: l == "full" ? .secondary : .blue) }
+                if let n = prov?.splats { Text("\(n.formatted()) splats").foregroundStyle(.secondary).monospacedDigit() }
+                else { Text(f.sizeLabel).foregroundStyle(.secondary).monospacedDigit() }
+                if let s = prov?.trainSeconds { Text(Format.duration(s)).foregroundStyle(.secondary).monospacedDigit() }
+                if let a = prov?.archivedLabel { Text(a).foregroundStyle(.secondary).monospacedDigit() }
+                if let want = prov?.rigNpzMD5, let now = rigNow {
+                    if want == now {
+                        Label("this solve", systemImage: "checkmark.circle").foregroundStyle(.green).font(.caption)
+                            .help("Trained against the current train/dataset/rig.npz — renders and scores line up with the moves")
+                    } else {
+                        Label("other solve", systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.caption)
+                            .help("Trained against a different rig.npz (\(want.prefix(8))… vs \(now.prefix(8))…); hs render's model_matches_solve guard will refuse it")
+                    }
+                }
+                if scene.loaded == f {
+                    Text("loaded").font(.caption).foregroundStyle(.green)
+                }
+                Spacer()
+                if f.name == "current" {
+                    Button("Archive…") { archiveName = ""; askArchive = true }
+                        .buttonStyle(.borderless).disabled(busy)
+                        .help("Keep this export under a name before the next train replaces it")
+                }
+                Menu("Score") {
+                    ForEach(ScoreRegion.allCases, id: \.self) { r in
+                        Button(r.title) { score(f, r) }
+                            .disabled(r != .whole && !hasMasks)
+                    }
+                }
+                .menuStyle(.button).buttonStyle(.borderless).fixedSize().disabled(busy)
+                .help(busy ? "wait for the running stage" : "hs views --ply on this model with the Train page's hold-out and crop; the report appears below")
+                Button("Reveal") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: f.ply)]) }
+                    .buttonStyle(.borderless)
+                Button("View") { view(f) }
+                    .disabled(SplatViewerSupport.problem != nil)
+                    .help("Open in this project's Viewer page (right-click for a separate window)")
+            }
+            if !scores.isEmpty {
+                HStack(spacing: 6) {
+                    Spacer().frame(width: 28)
+                    ForEach(scores.prefix(4)) { s in
+                        HStack(spacing: 4) {
+                            Text(s.name).font(.caption.monospaced())
+                            Text(s.label).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        }
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                        .help("views/\(s.name)_report.json")
+                    }
+                    if scores.count > 4 { Text("+\(scores.count - 4) more").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+        }
+        .contextMenu {
+            Button("View") { view(f) }
+            Button("Open in New Window") { openWindow(id: "viewer", value: f) }
+            if !scores.isEmpty {
+                Button("Reveal reports") {
+                    NSWorkspace.shared.activateFileViewerSelecting(scores.map {
+                        URL(fileURLWithPath: ((project.path as NSString).appendingPathComponent("views") as NSString).appendingPathComponent("\($0.name)_report.json"))
+                    })
+                }
+            }
+        }
+    }
+
+    private func chip(_ text: String, tint: Color) -> some View {
+        Text(text).font(.caption.weight(.medium)).foregroundStyle(tint)
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(tint.opacity(0.12), in: Capsule())
     }
 
     private func view(_ f: ViewerModelFile) {
         model.viewerFile[project.path] = f
         model.projectPage[project.path] = .viewer
+    }
+
+    private func start(_ steps: [RunQueue.Step]) {
+        let q = RunQueue(config: model.config, steps: steps)
+        let path = project.path
+        q.onStep = { s in model.projectRuns[path] = s }
+        q.onFinish = { _ in revision += 1 }
+        model.trainQueues[path] = q
+        q.start()
+    }
+
+    private func archive() {
+        let n = archiveName.trimmingCharacters(in: .whitespaces)
+        guard archiveNameProblem == nil else { return }
+        start([.init(title: "Archive \(n)", arguments: ["archive", "-p", project.path, "--name", n])])
+    }
+
+    private func score(_ f: ViewerModelFile, _ region: ScoreRegion) {
+        let settings = model.trainSettings[project.path] ?? TrainSettings()
+        let set = CaptureSet.read(project: project.path)
+        let (name, argv) = region.arguments(project: project.path, model: f, settings: settings, set: set)
+        start([.init(title: "Score \(f.name) (\(name))", arguments: argv)])
     }
 }
 

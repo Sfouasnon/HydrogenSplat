@@ -147,7 +147,14 @@ class Vision(unittest.TestCase):
         self.t = tempfile.TemporaryDirectory()
         self.addCleanup(self.t.cleanup)
         self.env = {k: os.environ.get(k) for k in ("HS_SEGMENT_BIN", "HS_FAKE_SEGMENT")}
-        os.environ["HS_SEGMENT_BIN"] = FAKE_SEGMENT
+        # The fake is a Python script that imports cv2. Run directly, its `#!/usr/bin/env python3`
+        # picks whatever python3 is first on PATH — on the Mac the system one, which has no cv2 —
+        # so wrap it in a shell stub that runs it with the interpreter running these tests.
+        stub = os.path.join(self.t.name, "hs-segment-fake")
+        with open(stub, "w") as f:
+            f.write(f'#!/bin/sh\nexec "{sys.executable}" "{FAKE_SEGMENT}" "$@"\n')
+        os.chmod(stub, 0o755)
+        os.environ["HS_SEGMENT_BIN"] = stub
         self.addCleanup(self.restore)
         self.pj, self.ply = build(self.t.name, 1)
 

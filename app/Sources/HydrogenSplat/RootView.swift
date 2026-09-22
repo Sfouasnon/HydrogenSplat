@@ -26,6 +26,11 @@ struct RootView: View {
                         ProjectRow(project: p, run: model.projectRuns[p.path])
                             .tag(SidebarItem.project(p.path))
                     }
+                    if let e = store.lastError {
+                        // an unreadable Projects folder used to look like "no projects"
+                        Label(e, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                            .font(.caption).fixedSize(horizontal: false, vertical: true)
+                    }
                 } header: {
                     HStack {
                         Text("Projects")

@@ -409,6 +409,41 @@ class RenderLineage(Base):
         checks = {c["name"]: c for c in pj.stage("render")["checks"]}
         self.assertTrue(all(c["ok"] for c in checks.values()), checks)
 
+    # The app's keyframe editor writes move/<name>.json itself and never runs `hs move`, so
+    # stages.move stays pending on those projects (GreetingCard, array067 on 2026-09-21: four
+    # moves, zero renders, "stage 'move' is pending" from every Render click). The file is the
+    # prerequisite; the stage is only one way of producing it.
+    def run_args(self, pj, move, render_bin="/nonexistent/brush-path-render"):
+        return Namespace(move=move, ply=None, name=None, width=2400, keep_frames=False, no_crop=False,
+                         crf=17, render_bin=render_bin, ffmpeg="ffmpeg", allow_mismatch=False)
+
+    def test_an_existing_move_json_satisfies_the_move_prerequisite(self):
+        pj, final = self.trained_project()
+        self.assertEqual(pj.status("move"), "pending")
+        mv = self.move_file(pj)                      # baked by the editor, not by hs move
+        with self.assertRaises(events.StageError) as cm:
+            render.run(self.run_args(pj, mv), pj)    # gets past the prerequisite, dies on the missing binary
+        self.assertIn("brush-path-render not found", str(cm.exception))
+        self.assertNotIn("stage 'move'", str(cm.exception))
+        # the same by name, the way the app passes it
+        with self.assertRaises(events.StageError) as cm:
+            render.run(self.run_args(pj, "boom"), pj)
+        self.assertIn("brush-path-render not found", str(cm.exception))
+
+    def test_a_missing_move_still_points_at_the_move_stage(self):
+        pj, final = self.trained_project()
+        with self.assertRaises(events.StageError) as cm:
+            render.run(self.run_args(pj, "nothing"), pj)
+        self.assertIn("stage 'move' is pending", str(cm.exception))
+
+    def test_require_satisfied_skips_only_the_named_prerequisite(self):
+        pj = self.solved_project()                   # train pending
+        with self.assertRaises(events.StageError) as cm:
+            pj.require("render", satisfied=("move",))
+        self.assertIn("stage 'train' is pending", str(cm.exception))
+        pj.m["stages"]["train"] = {"status": "done"}
+        pj.require("render", satisfied=("move",))    # move pending, but satisfied by other evidence
+
     def test_pruned_ply_must_descend_from_trains_export(self):
         pj, final = self.trained_project()
         mv = self.move_file(pj)

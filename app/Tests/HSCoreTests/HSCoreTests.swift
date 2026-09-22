@@ -527,3 +527,93 @@ final class ViewerTests: XCTestCase {
         XCTAssertTrue(Acknowledgements.bundled[1].licenseText.contains("Copyright (c) 2024 Niantic Labs"))
     }
 }
+
+final class GradeLookTests: XCTestCase {
+    /// The Move panel used to save grade/<move>.json while hs grade and the Grade page read
+    /// grade/<move>_<model>.json for an archive render; both now go through lookPath(renderName:).
+    func testLookIsKeyedByTheRenderName() {
+        let p = "/tmp/proj"
+        let current = ViewerModelFile(project: p, name: "current", ply: "/tmp/proj/train/exports/export_40000.ply", archive: nil, bytes: 1)
+        let arch = ViewerModelFile(project: p, name: "subject-vision", ply: "/tmp/proj/archive/subject-vision/export_40000.ply", archive: "subject-vision", bytes: 1)
+        let s = MoveScript(project: p, name: "orbit180")
+        XCTAssertEqual(GradeSettings.lookPath(project: p, renderName: s.renderName(model: current)), "/tmp/proj/grade/orbit180.json")
+        XCTAssertEqual(GradeSettings.lookPath(project: p, renderName: s.renderName(model: arch)), "/tmp/proj/grade/orbit180_subject-vision.json")
+    }
+
+    func testAspectListIsSharedAndKeepsAnUnlistedSavedValue() {
+        let values = GradeSettings.aspectOptions.map(\.value)
+        XCTAssertEqual(values, [0.0, 1920.0 / 1076.0, 1.85, 2.0, 2.35, 2.39])
+        XCTAssertEqual(GradeSettings.aspectOptions(including: 2.35).count, GradeSettings.aspectOptions.count)
+        let extra = GradeSettings.aspectOptions(including: 1.5)
+        XCTAssertEqual(extra.count, GradeSettings.aspectOptions.count + 1)
+        XCTAssertEqual(extra.last?.value, 1.5)
+    }
+}
+
+final class ProvenanceTests: XCTestCase {
+    func tempProject() throws -> String {
+        let p = NSTemporaryDirectory() + "hsprov-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: p + "/views", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: p + "/archive/holdout-base", withIntermediateDirectories: true)
+        return p
+    }
+
+    func testViewsReportReducesToMediansAndMatchesItsModel() throws {
+        let p = try tempProject()
+        let report = """
+        {"ply": "archive/holdout-base/export_40000.ply", "subject_extent_mm": 1796.5, "displaced_px": 4.0,
+         "views": [{"view": "a", "psnr_db": 29.0, "psnr_interior_db": 30.0, "psnr_edge_db": 20.0, "displaced_fraction": 0.0},
+                   {"view": "b", "psnr_db": 27.0, "psnr_interior_db": 28.0, "psnr_edge_db": null, "displaced_fraction": 0.1},
+                   {"view": "c", "psnr_db": 25.0, "psnr_interior_db": 26.0, "psnr_edge_db": 22.0, "displaced_fraction": 0.2}]}
+        """
+        try report.write(toFile: p + "/views/vmask_base_report.json", atomically: true, encoding: .utf8)
+        let scores = ViewsScore.list(project: p)
+        XCTAssertEqual(scores.count, 1)
+        let s = try XCTUnwrap(scores.first)
+        XCTAssertEqual(s.name, "vmask_base")
+        XCTAssertEqual(s.views, 3)
+        XCTAssertEqual(s.psnr, 27.0)
+        XCTAssertEqual(s.psnrInterior, 28.0)
+        XCTAssertEqual(s.psnrEdge, 21.0, "null edge values are skipped, median of the two that exist")
+        XCTAssertEqual(s.displaced!, 0.1, accuracy: 1e-12)
+        let mine = ViewerModelFile(project: p, name: "holdout-base", ply: p + "/archive/holdout-base/export_40000.ply", archive: "holdout-base", bytes: 1)
+        let other = ViewerModelFile(project: p, name: "current", ply: p + "/train/exports/export_40000.ply", archive: nil, bytes: 1)
+        XCTAssertTrue(s.scores(mine))
+        XCTAssertFalse(s.scores(other))
+        XCTAssertEqual(ViewsScore.list(project: p, for: mine).count, 1)
+    }
+
+    func testArchiveManifestGivesLayerSplatsAndSolve() throws {
+        let p = try tempProject()
+        let manifest = """
+        {"archived": "2026-09-21T15:19:09-0700", "rig_npz_md5": "9c9c4aa3f2f258912cf0218f123d069d",
+         "stages": {"train": {"status": "done", "metrics": {"layer": "subject", "final_splats": 536711, "elapsed_s": 3097.7,
+                                                            "brush_config": {"commit": "fbdebfb3"}}}}}
+        """
+        try manifest.write(toFile: p + "/archive/holdout-base/manifest.json", atomically: true, encoding: .utf8)
+        let f = ViewerModelFile(project: p, name: "holdout-base", ply: p + "/archive/holdout-base/export_40000.ply", archive: "holdout-base", bytes: 1)
+        let prov = try XCTUnwrap(ModelProvenance.load(for: f))
+        XCTAssertEqual(prov.layer, "subject")
+        XCTAssertEqual(prov.splats, 536711)
+        XCTAssertEqual(prov.trainSeconds!, 3097.7, accuracy: 1e-9)
+        XCTAssertEqual(prov.rigNpzMD5, "9c9c4aa3f2f258912cf0218f123d069d")
+        XCTAssertEqual(prov.brushCommit, "fbdebfb3")
+        XCTAssertEqual(prov.archivedLabel, "2026-09-21 15:19")
+    }
+
+    func testScoreArgumentsUseTheTrainPagesHoldoutAndCrop() {
+        var s = TrainSettings()
+        s.holdoutEvery = 10; s.holdoutStart = 5; s.subjectMM = 350
+        let set = CaptureSet(count: 30)
+        let f = ViewerModelFile(project: "/p", name: "subject-vision", ply: "/p/archive/subject-vision/export_40000.ply", archive: "subject-vision", bytes: 1)
+        let (name, argv) = ScoreRegion.inside.arguments(project: "/p", model: f, settings: s, set: set)
+        XCTAssertEqual(name, "score_subject-vision_inside")
+        XCTAssertEqual(argv, ["views", "-p", "/p", "--ply", f.ply, "--captures", "5,15,25", "--subject-mm", "350",
+                              "--inside-masks", "--name", "score_subject-vision_inside"])
+        s.holdoutEvery = 0
+        let (n2, a2) = ScoreRegion.whole.arguments(project: "/p", model: f, settings: s, set: set)
+        XCTAssertEqual(n2, "score_subject-vision_whole_insample")
+        XCTAssertFalse(a2.contains("--captures"))
+        XCTAssertFalse(a2.contains("--inside-masks"))
+    }
+}

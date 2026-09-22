@@ -332,9 +332,13 @@ struct MoveInspector: View {
 
     // MARK: look
 
+    /// The look belongs to the render, so it is keyed the way hs grade and the Grade page key it:
+    /// grade/<renderName>.json — <move>.json for the current model, <move>_<model>.json for an archive.
     private var lookPath: String? {
-        editor.name.map { (project.path as NSString).appendingPathComponent("grade/\($0).json") }
+        guard let s = editor.script, let mf = scene.loaded else { return nil }
+        return GradeSettings.lookPath(project: project.path, renderName: s.renderName(model: mf))
     }
+    private var lookKey: String { "\(editor.name ?? "")|\(scene.loaded?.ply ?? "")" }
 
     private func applyLook() { scene.look = showLook ? look : nil }
 
@@ -378,11 +382,9 @@ struct MoveInspector: View {
             lookSlider("Gain", $look.gain, 0.5...1.5, "%.2f")
             HStack {
                 Picker("Crop", selection: $look.aspect) {
-                    Text("Full frame").tag(0.0)
-                    Text("1.85").tag(1.85)
-                    Text("2.00").tag(2.0)
-                    Text("2.35").tag(2.35)
-                    Text("2.39").tag(2.39)
+                    ForEach(GradeSettings.aspectOptions(including: look.aspect), id: \.value) { o in
+                        Text(o.label).tag(o.value)
+                    }
                 }
                 .frame(width: 170)
                 Spacer()
@@ -393,7 +395,7 @@ struct MoveInspector: View {
                 Text(p).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .task(id: editor.name) { loadLook() }
+        .task(id: lookKey) { loadLook() }
         .onChange(of: look) { _, _ in applyLook(); saveLook() }
         .onChange(of: showLook) { _, _ in applyLook() }
         .onDisappear { scene.look = nil }
