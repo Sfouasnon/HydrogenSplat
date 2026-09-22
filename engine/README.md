@@ -42,7 +42,8 @@ hs/
   calib.py      profile JSON <-> the stereocal npz rigcolmap.py reads; match keys
   coverage.py   azimuth / elevation / distance per capture from rig.npz; sweep-window and boom-key presets
   movescript.py the .hsmove cue language: boom / arc / dolly / hold in capture coordinates, clamped to the hull
-  stages/       ingest select solve exposure masks train move prune render tools calibrate selftest
+  board.py      ChArUco detection, DLT triangulation from rig.npz, pair-median scale, board plane, white-paper samples
+  stages/       ingest select solve scale exposure masks train move prune render tools calibrate selftest
   <six vendored scripts>
 ```
 
@@ -50,11 +51,13 @@ hs/
 
 ```
 hs ingest  -p P --clip VID_..._2x1.h4v [--link]                       copy, MD5, ffprobe, validate 2x1 video, match the calibration profile
-hs ingest  -p P --frames DIR | --r3d RDM_DIR --take 067 [--res 1]     array source: one frame per camera (REDline renders the R3Ds); select is marked done
+hs ingest  -p P --frames DIR | --r3d RDM_DIR --take 067 [--res 1]     frames source, select is marked done: array (one frame per camera; REDline renders the R3Ds)
+           [--kind auto|mono|array]                                   or mono (one camera's frames, e.g. select_frames.py --mono picks) — see below
 hs select  -p P [--residual 1.5 --max-gap 90 --end N --dry-run]      frames + selection.json + quality.json + thumbs/ + contact.jpg
 hs solve   -p P                                                       prep → sfm --float-rig → export; per_image.json, coverage.json
-hs solve   -p P --scale-pair GA,GB,700 [--focal-px F]                 array project: monocolmap.py, one shared camera, metric scale from a measured spacing
-hs exposure -p P [--reference median|auto|capNNN] [--mode rgb|luma] [--restore] [--dry-run]   match every view to one reference (auto = select's best-exposed clean pick)
+hs solve   -p P --scale-pair GA,GB,700 [--focal-px F] [--board B]     array/mono project: monocolmap.py, one shared camera, metric scale from a measured spacing (or --board: hs scale after)
+hs scale   -p P --board SX,SY,SQ_MM,MK_MM[,DICT] [--min-views 3] [--eye L] [--dry-run]   metric scale from a ChArUco board in the views, applied to the solve; board plane vs up
+hs exposure -p P [--reference median|auto|capNNN|board|checker] [--reference-view V] [--mode rgb|luma] [--restore] [--dry-run]   match every view to one reference (board/checker: a shared target, fine on an array)
 hs masks   -p P [--radius 0.10] [--margin-mm 5] [--min-opacity 0.2]   per-view subject silhouettes for Brush's mask channel
 hs train   -p P [--brush PATH]                                        brush → train/exports/export_NNNNN.ply   (Mac only)
 hs move    -p P --preset sweep|boom|custom [--keys ...] [--name N]    move/N.json + move/N_aim_check.jpg
@@ -76,6 +79,57 @@ metrics, checks and artifacts in `manifest.json`. `-v` also streams the child's 
 `{"ev":"log"}` events. Opening a project reconciles it first: a stage the manifest still calls
 `running` whose recorded pid is gone becomes `failed — interrupted`, so a ^C'd or crashed run
 reports that instead of blocking the next stage with "solve is running".
+
+## Scale from a board, exposure on a target, mono as its own source (2026-09-21)
+
+```
+hs scale    -p P --board 7,5,40,30                  # squares across, down, square mm, marker mm [,DICT_5X5_100]
+hs scale    -p P --board 7,5,40,30 --dry-run        # measure only; on a Hydrogen project: the baseline's error
+hs solve    -p P --board 7,5,40,30                  # the same, straight after an array/mono solve
+hs exposure -p P --reference board                  # the board hs scale used; --reference-view GA to pick the view
+hs exposure -p P --reference checker                # a ColorChecker Classic's white patch (cv2.mcc)
+hs ingest   -p P --frames picks/                    # selNNN-FFFFF.jpg → source.kind "mono"; GA.png … → "array"
+```
+
+**`hs scale`** (stage between solve and train, optional — train requires solve only). Detects
+the ChArUco board (`cv2.aruco.CharucoDetector`) in the undistorted training images, triangulates
+every corner id seen in ≥ `--min-views` views by linear DLT from rig.npz's own K, R, t, and takes
+the scale as the **median over every corner pair** of printed mm / reconstructed distance
+(`hs/board.py`). Checks: the pairs' MAD ≤ 0.5 % of the scale (`board_pair_ratios_agree`) and each
+view's reprojection RMS of the triangulated corners ≤ 2 px (`board_corners_reproject`); a Umeyama
+fit of the board is reported beside it as a cross-check. The board's plane normal, oriented
+towards the cameras, is reported with its angle to coverage's up (`board_normal_to_up_deg`) — the
+up a board lying on the table implies; nothing is rotated yet. Applying the factor is the
+`monocolmap.py --scale` path after the fact: one `pycolmap.Sim3d(s)` on `train/dataset/sparse`
+(and `solve/sparse/rig`), then `monocolmap.finish_dataset` — the export's own writer — rewrites the
+text model, points3D.ply and rig.npz, `coverage.write` rewrites `solve/coverage.json`, and solve's
+`scene_scaled` check becomes ok with `source: board` (`hs masks` and the app read it). A
+similarity moves no pixel, so exposure and masks stay current; train, move, prune, render and
+views go stale. A second run measures ≈ 1.0. A stereo rig.npz is refused (the calibrated
+baseline is its scale); `--dry-run` on one reports `implied_baseline_mm`. Synthetic test: 5 views
+of a generated 7×5 board warped in by homography with 2 DN noise: scale within 0.03 %, normal
+within 0.1°, corner reprojection RMS ≈ 0.4 px.
+
+**`hs exposure --reference board|checker`**. The array refusal was right for a median and wrong
+for a shared target: the same physical white is in every view. `board` samples the white paper of
+the board — in a ChArUco board the white squares carry the markers, so the sample is the margin
+between marker and square edge, inset 20 % from both — `checker` the interior of a ColorChecker's
+white patch (mcc's own false positives on plain texture are rejected: the neutral row must fall
+white to black). Per-channel gains bring each view's white onto the reference view's (default the
+median one), through the same LUT, backup and `--restore`. A view without the target keeps gain
+1.0 and is named in a failing `<target>_seen_in_every_view` check. `exposure_target` holds the
+per-view gains and `white_rms_before/after` (relative RMS of the white's luma across views).
+Synthetic test: five views with per-channel gains 0.80–1.20, JPEG q95: worst recovered gain 0.4 % off (bound 1 %), white spread 7.8 % → 0.13 % RMS.
+
+**`source.kind = "mono"`**. `hs ingest --frames DIR` now says which of two things the frames are:
+`array` (per-camera subfolders with one frame each, an R3D take, or a flat folder of camera-named
+frames as before) or `mono` (one camera: `select_frames.py --mono` picks, a selection.json that
+says mono, or any one numbered sequence ≥ 3 digits); `--kind` overrides the guess for a flat
+folder, and `source.kind_why` records why. Both take the frames route (`Project.frames_route`:
+select refused, solve through monocolmap.py, `source_kind` metric on solve). They differ where the
+camera count matters: the median refusal in `hs exposure` is an array's only — a mono orbit is the
+case the median was built for. A manifest without `kind` is a Hydrogen clip, and mono data
+ingested earlier as `array` keeps working as an array.
 
 ## Where the failure sits, not just how much (2026-09-17)
 
@@ -335,8 +389,8 @@ median-matching is a correction only when every view frames the same thing. On t
 take 067 the A-column cameras fill the frame with the lit cyc (median linear luma 0.08–0.15) and
 the D column with black drape (0.008) — a 19× spread that is framing, not exposure, and matching
 it would darken the A column ~7× and brighten the D column ~2×. `--dry-run` always measures.
-Matching an array's exposure properly means using a shared neutral target (the gray sphere, gray
-card or Macbeth in the frame); that is not built.
+Matching an array's exposure properly means using a shared neutral target: `--reference board`
+or `checker` (2026-09-21, above) do that and are not refused.
 
 ### `hs masks`
 

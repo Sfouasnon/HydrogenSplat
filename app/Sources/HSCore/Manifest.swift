@@ -88,14 +88,14 @@ public struct StageState: Hashable, Sendable, Identifiable {
 
 public struct Manifest: Sendable {
     /// The engine's chain (project.STAGES) with the two dataset operations placed where they run.
-    public static let stageOrder = ["ingest", "select", "solve", "exposure", "masks", "train",
+    public static let stageOrder = ["ingest", "select", "solve", "scale", "exposure", "masks", "train",
                                     "archive", "move", "prune", "render", "views"]
 
     public let raw: JSONValue
     public let name: String
     public let created: Date?
     public let profileID: String?
-    /// "array" for a camera array (one frame per camera); nil/"clip" for a Hydrogen clip
+    /// "array" for a camera array (one frame per camera), "mono" for one camera's frames; nil/"clip" for a Hydrogen clip
     public let sourceKind: String?
     public let cameras: [String]
     public let clipPath: String?
@@ -125,7 +125,9 @@ public struct Manifest: Sendable {
     public func stage(_ name: String) -> StageState? { stages.first { $0.name == name } }
 
     public var clipName: String? { clipPath.map { ($0 as NSString).lastPathComponent } }
-    public var isArray: Bool { sourceKind == "array" }
+    /// A frames source (engine `Project.frames_route`): an array, or one camera's frames ("mono",
+    /// 2026-09-21). Both have select done at ingest and solve through monocolmap.py.
+    public var isArray: Bool { sourceKind == "array" || sourceKind == "mono" }
 
     /// The furthest stage that is done, for the project list.
     public var lastDone: String? {

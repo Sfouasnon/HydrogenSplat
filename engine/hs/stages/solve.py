@@ -53,13 +53,40 @@ def add_parser(sub):
     g.add_argument("--focal-px", type=float, default=None,
                    help="focal length prior in pixels = lens mm / sensor width mm x image width")
     g.add_argument("--fix-intrinsics", action="store_true", help="keep --focal-px; do not refine focal/distortion")
+    g.add_argument("--board", default=None, metavar="SX,SY,SQUARE_MM,MARKER_MM[,DICT]",
+                   help="after the solve, run `hs scale --board` with this ChArUco board (on a Hydrogen "
+                        "clip: `hs scale --dry-run`, which measures the baseline instead)")
+    g.add_argument("--legacy-board", action="store_true", help="with --board: pre-4.6 OpenCV board layout")
     return p
 
 
 def run(a, pj):
     pj.require(STAGE)
-    if pj.m.get("source", {}).get("kind") == "array":
-        return run_array(a, pj)
+    if pj.frames_route:                 # array or mono: one shared camera through monocolmap.py
+        run_array(a, pj)
+        if getattr(a, "board", None):
+            _scale_after(a, pj, dry_run=False)
+        return
+    _run_stereo(a, pj)
+    if getattr(a, "board", None):
+        # a stereo solve is metric already; the board measures how right the baseline is
+        _scale_after(a, pj, dry_run=True)
+
+
+def _scale_after(a, pj, dry_run):
+    """`hs solve --board ...` = hs solve, then hs scale with the same board."""
+    from argparse import Namespace
+    from . import scale
+    try:
+        scale.run(Namespace(board=a.board, legacy_board=getattr(a, "legacy_board", False), eye="L",
+                            min_views=3, dry_run=dry_run), pj)
+    except events.StageError:
+        if pj.status(scale.STAGE) == "running":
+            pj.finish(scale.STAGE, ok=False, error="failed after hs solve --board")
+        raise
+
+
+def _run_stereo(a, pj):
     frames = pj.frames_dir
     n_sel = len([f for f in os.listdir(frames) if f.lower().endswith(".jpg")]) if os.path.isdir(frames) else 0
     if n_sel == 0:
@@ -89,6 +116,7 @@ def run(a, pj):
     if a.baseline_mm:
         pj.metric(STAGE, "baseline_override_mm", a.baseline_mm)
     pj.metric(STAGE, "profile_baseline_mm", round(baseline, 4))
+    pj.metric(STAGE, "source_kind", pj.source_kind)
     log = pj.log_path(STAGE)
 
     # ---- prep
@@ -257,7 +285,7 @@ def run_array(a, pj):
     if os.path.isdir(pj.dataset_dir):
         shutil.rmtree(pj.dataset_dir)
     os.makedirs(pj.path("train"), exist_ok=True)
-    pj.metric(STAGE, "source_kind", "array")
+    pj.metric(STAGE, "source_kind", pj.source_kind)
     log = pj.log_path(STAGE)
 
     events.start(STAGE, "prep")
@@ -330,7 +358,8 @@ def run_array(a, pj):
     pj.metric(STAGE, "scale_to_m", scale)
     pj.check(STAGE, "scene_scaled", scale is not None, needs_human=scale is None,
              value=(f"x{scale:.6f} from {a.scale_pair or a.scale}" if scale is not None
-                    else "units are arbitrary: re-solve with --scale-pair CAM1,CAM2,MM (a measured camera spacing)"))
+                    else "units are arbitrary: `hs scale --board SX,SY,SQ,MK` if a ChArUco board is in view, "
+                         "else re-solve with --scale-pair CAM1,CAM2,MM (a measured camera spacing) or --scale S"))
 
     all_reg = rep["num_frames"] == len(caps)
     pj.check(STAGE, "all_frames_registered", all_reg, value=f"{rep['num_frames']}/{len(caps)}")
