@@ -1,0 +1,4 @@
+#!/bin/sh
+# stand-in for PlayCanvas splat-transform (see ../fake_splat_transform.py)
+HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$HERE/../../.."
+exec "${HS_PYTHON:-$ROOT/.venv/bin/python}" "$HERE/../fake_splat_transform.py" "$@"

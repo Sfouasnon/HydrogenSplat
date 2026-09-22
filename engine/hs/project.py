@@ -63,6 +63,8 @@ REQUIRES = {
     # not in STAGES: operations on the solve output that do not join the state machine
     "masks": ["solve"], "exposure": ["solve"], "archive": ["solve"], "grade": ["render"],
     "merge": ["train"],
+    # export needs train only for its default ply; --ply / --archive skip the check
+    "export": ["train"],
 }
 
 
