@@ -208,19 +208,11 @@ def angle_deg(a, b):
 
 def umeyama(src, dst):
     """Similarity dst ~ s * R @ src + t (least squares). -> (s, R, t). Used as a cross-check
-    on the pair-median scale: the two agree when the corners are clean."""
-    src = np.asarray(src, np.float64)
-    dst = np.asarray(dst, np.float64)
-    ms, md = src.mean(0), dst.mean(0)
-    a, b = src - ms, dst - md
-    U, S, Vt = np.linalg.svd(b.T @ a / len(src))
-    D = np.eye(3)
-    if np.linalg.det(U) * np.linalg.det(Vt) < 0:
-        D[2, 2] = -1
-    R = U @ D @ Vt
-    var = (a ** 2).sum() / len(src)
-    s = float(np.trace(np.diag(S) @ D) / var)
-    return s, R, md - s * R @ ms
+    on the pair-median scale: the two agree when the corners are clean. (hs/lidar.py holds the
+    general one — weights, SE(3), residuals; this is it with the scale on.)"""
+    from .lidar import umeyama as _umeyama
+    s, R, t, _res = _umeyama(src, dst, with_scale=True)
+    return s, R, t
 
 
 # ------------------------------------------------------------------ the white squares
