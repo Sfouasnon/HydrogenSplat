@@ -27,17 +27,29 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var selection: SidebarItem? = .setup {
-        didSet { updateLiveStatus() }
+        didSet {
+            if case .project(let p)? = selection { attachExternalRun(path: p, lock: ProjectStore.readLock(p)) }
+            updateLiveStatus()
+        }
     }
-    /// The latest run per project path (ingest today; every stage from M2).
+    /// The latest run per project path: the app's own, or one attached to a run started in
+    /// Terminal (`attachExternalRuns`).
     @Published var projectRuns: [String: RunSession] = [:] {
-        didSet { watchRuns() }
+        didSet {
+            // an app-started run for the same project replaces an attached one: stop its tail
+            for (path, old) in oldValue where old.isAttached && projectRuns[path] !== old { old.detach() }
+            watchRuns()
+        }
     }
     /// "solve · matching 42% · 18 min" for the window title while a run is live, nil otherwise.
     /// Published only when the text changes (every percent, every minute of ETA), not on every
     /// progress event: every view holding the model re-renders when it does.
     @Published private(set) var liveTitle: String?
     private var runWatch: AnyCancellable?
+    private var projectsWatch: AnyCancellable?
+    /// "path|pid" of lock holders whose events file shows nothing to follow (its last run is
+    /// already done — e.g. a lock stage that logs under another name), so they are not re-read.
+    private var unfollowable: Set<String> = []
     /// The Solve matcher per project path (Auto unless changed), kept for the session.
     @Published var solveMatcher: [String: SolveMatcher] = [:]
     /// The train → archive → views queue per project path; survives leaving the page.
@@ -91,6 +103,11 @@ final class AppModel: ObservableObject {
         config = cfg
         store = ProjectStore(root: cfg.projectsRoot)
         if cfg.problems.isEmpty { selection = store.projects.first.map { .project($0.path) } ?? .ingest }
+        // every reload (the 3 s refresh sees .hs.lock appear) looks for runs started in Terminal;
+        // @Published delivers the new value before the property holds it, so use the one passed
+        projectsWatch = store.$projects.sink { [weak self] ps in
+            MainActor.assumeIsolated { self?.attachExternalRuns(ps) }
+        }
     }
 
     private func save() {
@@ -108,6 +125,44 @@ final class AppModel: ObservableObject {
     }
 
     var anyProjectRunRunning: Bool { projectRuns.values.contains { $0.isRunning } }
+
+    // MARK: runs started outside the app
+
+    /// Follow runs started in Terminal (`hs solve -p P`): a project whose lock names a stage and a
+    /// live pid, while the app has no live run of its own there, gets an attached `RunSession`
+    /// that tails `logs/<stage>.events.jsonl` every 2 s — so the page's run panel, the strip, the
+    /// sidebar row, the title and the Dock badge follow it like a run the app started, and its
+    /// Stop sends the pid the SIGINT a ^C would. It removes itself on `done` or when the pid dies.
+    /// Called on every store reload, on the store's 3 s poll, and on selecting a project.
+    func attachExternalRuns(_ projects: [ProjectSummary]? = nil) {
+        for p in projects ?? store.projects { attachExternalRun(path: p.path, lock: p.lock) }
+    }
+
+    private func attachExternalRun(path: String, lock: ProjectSummary.LockInfo?) {
+        guard let l = lock, l.alive, let pid = l.pid, let stage = l.stage else { return }
+        if projectRuns[path]?.isRunning == true || appQueueRunning(path) { return }   // ours, or already followed
+        let key = "\(path)|\(pid)"
+        if unfollowable.contains(key) { return }
+        let s = RunSession(attachingTo: path, stage: stage, pid: Int32(pid), config: config)
+        s.attach()
+        guard s.isRunning else {
+            unfollowable.insert(key)
+            return
+        }
+        s.onFinish = { [weak self] run in
+            guard let self = self, self.projectRuns[path] === run else { return }
+            self.projectRuns[path] = nil
+            // a new Terminal run may already hold the lock: its .hs.lock change was seen while this one ran
+            self.attachExternalRun(path: path, lock: ProjectStore.readLock(path))
+        }
+        projectRuns[path] = s
+    }
+
+    /// One of the app's queues is running on `path` — between its steps too, when the session in
+    /// `projectRuns` has finished and the next has not been created yet.
+    private func appQueueRunning(_ path: String) -> Bool {
+        [trainQueues, selectQueues, exposureQueues, maskQueues, moveQueues].contains { $0[path]?.isRunning == true }
+    }
 
     // MARK: live status — window title and Dock badge
 

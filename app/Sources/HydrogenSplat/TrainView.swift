@@ -515,7 +515,7 @@ struct ExternalTrainView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Training in another window (pid \(lock.pid.map(String.init) ?? "?")). Following its log; stop it from where it was started.",
+            Label("Training in another window (pid \(lock.pid.map(String.init) ?? "?")). Following its log; open the run strip above to Stop it (a ^C).",
                   systemImage: "terminal")
                 .foregroundStyle(.secondary)
             if let s = status {
