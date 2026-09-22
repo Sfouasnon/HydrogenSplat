@@ -33,6 +33,11 @@ public final class RunSession: ObservableObject, Identifiable {
     @Published public private(set) var progress: [ProgressKey: HSEvent] = [:]
     @Published public private(set) var progressOrder: [ProgressKey] = []
     @Published public private(set) var currentStep: String?
+    /// The progress bar that moved last, until a `start` begins a step that has not reported
+    /// yet — what the one-line summaries (`liveProgress`) read.
+    @Published public private(set) var lastProgressKey: ProgressKey?
+    /// The stage of the latest start or progress event ("solve"), for those summaries.
+    @Published public private(set) var activeStage: String?
     /// Progress readings of the main step (the first progress key seen), decimated past 4,000.
     @Published public private(set) var samples: [Sample] = []
     @Published public private(set) var metrics: [(key: String, event: HSEvent)] = []
@@ -60,6 +65,9 @@ public final class RunSession: ObservableObject, Identifiable {
     }
 
     public var isRunning: Bool { state == .running }
+
+    /// The hs stage this run invokes ("solve" for `hs solve -p P`), before any event says so.
+    public var stageName: String { arguments.first ?? title.lowercased() }
 
     public var succeeded: Bool {
         if case .finished(let code) = state { return code == 0 && errors.isEmpty }
@@ -108,8 +116,12 @@ public final class RunSession: ObservableObject, Identifiable {
                     }
                 }
                 currentStep = e.step ?? currentStep
+                lastProgressKey = key
+                activeStage = e.stage
             case "start":
                 currentStep = e.step ?? e.stage
+                lastProgressKey = nil
+                activeStage = e.stage
             case "metric":
                 let key = "\(e.stage).\(e.name ?? "?")"
                 if let i = metrics.firstIndex(where: { $0.key == key }) {
@@ -138,6 +150,7 @@ public final class RunSession: ObservableObject, Identifiable {
         state = .finished(exit: result.exitCode)
         finishedAt = Date()
         currentStep = nil
+        lastProgressKey = nil
         runner = nil
         onFinish?(self)
     }

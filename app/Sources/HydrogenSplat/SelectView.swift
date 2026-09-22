@@ -19,6 +19,9 @@ struct SelectView: View {
     @State private var only: String?          // a flag code, or "flagged" / "clean"
     @State private var showAdvanced = false
     @State private var confirmRedo = false
+    /// `hs solve --estimate` for the current frames; nil until it answers, or if it cannot.
+    @State private var estimate: SolveEstimate?
+    @State private var estimating = false
     /// The contact sheet can run to hundreds of stills; closed unless asked for, and remembered.
     @AppStorage("select.stillsOpen") private var stillsOpen = false
 
@@ -44,10 +47,22 @@ struct SelectView: View {
                          ? "A mono project was ingested as frames already picked — nothing to select here."
                          : "An array project has one frame per camera — ingest already did the selecting.")
                         .foregroundStyle(.secondary)
+                    if let n = frameCount {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Label("\(n) frames", systemImage: "photo.stack").font(.subheadline.weight(.semibold))
+                            estimateCaption
+                        }
+                    }
+                    Divider()
+                    solveSection
                 } else {
                     handles
                     commandPreview
                     startRow
+                    if selectDone {
+                        Divider()
+                        solveSection
+                    }
                     if let q = quality {
                         Divider()
                         summary(q)
@@ -63,11 +78,13 @@ struct SelectView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
             HStack {
-                Text("Select frames").font(.headline)
-                if let s = selectStage { StatusBadge(status: s.status) }
+                // an array has nothing to select: this box is its solve
+                Text(manifest.isArray ? "Solve" : "Select frames").font(.headline)
+                if let s = manifest.isArray ? solveStage : selectStage { StatusBadge(status: s.status) }
             }
         }
         .task(id: reloadKey) { quality = FrameQuality.load(project: project.path) }
+        .task(id: estimateKey) { await loadEstimate() }
         .confirmationDialog("Select the frames again?", isPresented: $confirmRedo) {
             Button("Select again", role: .destructive) { startSelect() }
         } message: {
@@ -144,11 +161,6 @@ struct SelectView: View {
             .keyboardShortcut("s", modifiers: [.command, .shift])
             .disabled(running || lockAlive || problem != nil || !model.config.problems.isEmpty)
 
-            if selectDone {
-                Button(running && queue?.steps.first?.title == "Solve" ? "Solving…" : solveLabel) { startSolve() }
-                    .disabled(running || lockAlive || !model.config.problems.isEmpty)
-                    .help("hs solve: COLMAP on the selected frames. Training unlocks when it is done.")
-            }
             if let p = problem {
                 Label(p, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
             } else if lockAlive, let l = project.lock {
@@ -170,7 +182,92 @@ struct SelectView: View {
     }
 
     private func startSolve() {
-        run([RunQueue.Step(title: "Solve", arguments: ["solve", "-p", project.path])])
+        run([RunQueue.Step(title: "Solve", arguments: matcher.wrappedValue.solveArguments(project: project.path))])
+    }
+
+    // MARK: solve — matcher and estimate
+
+    private var matcher: Binding<SolveMatcher> {
+        Binding(get: { model.solveMatcher[project.path] ?? .auto },
+                set: { model.solveMatcher[project.path] = $0 })
+    }
+
+    /// The frames the solve will see: what select picked from a clip, or what ingest put in for
+    /// an array or mono set.
+    private var frameCount: Int? {
+        if let n = selectStage?.metrics["frames_selected"]?.int ?? selectStage?.metrics["selected"]?.int { return n }
+        if let q = quality { return q.frames.count }
+        return manifest.isArray && !manifest.cameras.isEmpty ? manifest.cameras.count : nil
+    }
+
+    /// Re-estimate on appear, after every select run and whenever the frame count changes.
+    private var estimateKey: String {
+        "\(reloadKey)|\(frameCount ?? -1)|\(model.config.hsPath)"
+    }
+
+    /// `hs solve -p P --estimate`: no lock, no writes, one event. An engine without it, or a
+    /// project with nothing to solve yet, leaves the matcher without times — never an error.
+    private func loadEstimate() async {
+        estimate = nil
+        estimating = false
+        guard manifest.isArray || selectDone, model.config.problems.isEmpty else { return }
+        estimating = true
+        let e = await SolveEstimate.load(config: model.config, project: project.path)
+        if Task.isCancelled { return }
+        estimate = e
+        estimating = false
+    }
+
+    /// "→ 300 images, sequential ≈ 35 min" beside a frame count.
+    @ViewBuilder private var estimateCaption: some View {
+        if let c = estimate?.framesCaption {
+            Text("→ \(c)").foregroundStyle(.secondary).monospacedDigit()
+                .help("What the solve will match, and how long sequential matching should take. The Solve row below has both matchers.")
+        }
+    }
+
+    private var solveSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Handle(title: "Matching",
+                   help: "Sequential for orbits and walk-arounds; exhaustive when captures revisit the same view from far apart in time and no loop pass would catch it. Auto takes sequential above \(SolveEstimate.autoThreshold) captures.") {
+                Picker("", selection: matcher) {
+                    ForEach(SolveMatcher.allCases) { m in
+                        Text(estimate?.label(m) ?? m.title).tag(m)
+                    }
+                }
+                .labelsHidden().pickerStyle(.segmented).fixedSize()
+            }
+            if estimating && estimate == nil {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Estimating how long each matcher takes…")
+                }
+                .font(.caption).foregroundStyle(.secondary).padding(.leading, 140)
+            } else if let d = estimate?.detail {
+                Text(d).font(.caption).foregroundStyle(.secondary).padding(.leading, 140)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            solveCommandPreview
+            HStack(spacing: 12) {
+                let running = queue?.isRunning ?? false
+                Button(running && queue?.steps.first?.title == "Solve" ? "Solving…" : solveLabel) { startSolve() }
+                    .disabled(running || lockAlive || !model.config.problems.isEmpty)
+                    .help("hs solve: COLMAP on the selected frames. Training unlocks when it is done.")
+                if manifest.isArray, lockAlive, let l = project.lock {
+                    // a clip project says this beside Select Frames already
+                    Label("\(l.stage ?? "a stage") is running", systemImage: "lock.fill").foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var solveCommandPreview: some View {
+        let args = matcher.wrappedValue.solveArguments(project: project.path)
+        let line = (["hs"] + args.map { $0.hasPrefix(project.path) ? "$P" : $0 }).map(shellQuote).joined(separator: " ")
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Solve runs (P = this project):").font(.caption).foregroundStyle(.secondary)
+            CopyableCommand(text: line)
+        }
     }
 
     private func run(_ steps: [RunQueue.Step]) {
@@ -189,6 +286,7 @@ struct SelectView: View {
             HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Label("\(q.frames.count) frames", systemImage: "photo.stack").font(.subheadline.weight(.semibold))
                 if let t = q.framesTotal { Text("of \(t)").foregroundStyle(.secondary) }
+                estimateCaption
                 if let g = q.medianGap { Text("median gap \(JSONValue.number(g).display)").foregroundStyle(.secondary) }
                 if let s = q.medians.sharp { Text("median Laplacian \(Int(s.rounded()))").foregroundStyle(.secondary) }
                 Text(q.flagged == 0 ? "nothing flagged" : "\(q.flagged) flagged")

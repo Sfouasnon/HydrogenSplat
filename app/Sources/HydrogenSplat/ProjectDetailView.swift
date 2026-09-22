@@ -366,7 +366,7 @@ struct RunStrip: View {
     }
 
     private var detail: String {
-        if run.isRunning { return run.currentStep ?? "running" }
+        if run.isRunning { return run.liveProgress.short }
         if run.succeeded { return run.failedChecks.isEmpty ? "finished" : "finished · \(run.failedChecks.count) check(s) need you" }
         return run.errors.last?.message ?? "failed"
     }
