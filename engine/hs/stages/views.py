@@ -63,7 +63,8 @@ SOFT_VIEW_NORM = 0.45
 def add_parser(sub):
     p = sub.add_parser("views", help="render from real capture poses and grade the model against the photographs")
     p.add_argument("--captures", default=None,
-                   help="capture indices, e.g. 5,15,55 (default: the azimuth extremes, the centre and the highest view)")
+                   help="capture indices, e.g. 5,15,55, or 'holdout' for solve/holdout.json "
+                        "(default: the azimuth extremes, the centre and the highest view)")
     p.add_argument("--ply", default=None, help="default: the train stage's final export")
     p.add_argument("--name", default="views")
     p.add_argument("--eye", choices=("L", "R"), default="L",
@@ -104,6 +105,31 @@ def auto_captures(cov, n):
         if c not in out and 0 <= c < n:
             out.append(int(c))
     return out
+
+
+def parse_captures(text, root, cov):
+    """--captures: '5,15,55' -> [5, 15, 55]; 'holdout' -> the captures solve/holdout.json holds
+    out (`hs cameras --holdout N --write`, the same file `hs train --exclude @holdout` reads);
+    nothing -> auto_captures."""
+    if not text:
+        return auto_captures(cov, cov["n_captures"])
+    if text.strip() in ("holdout", "@holdout"):
+        from ..coverage import load_holdout
+        try:
+            h = load_holdout(root)
+        except ValueError as e:
+            raise events.StageError(str(e))
+        names = {c["capture"]: c.get("name") for c in cov["captures"]}
+        stale = [n for i, n in zip(h["captures"], h["names"]) if names.get(i) not in (None, n)]
+        if stale:
+            raise events.StageError(f"solve/holdout.json names {', '.join(stale[:3])} at indices the current "
+                                    "coverage.json gives to other captures",
+                                    hint="re-run hs cameras --holdout N --write")
+        return [int(c) for c in h["captures"]]
+    try:
+        return [int(c) for c in text.split(",") if c.strip()]
+    except ValueError:
+        raise events.StageError(f"--captures: cannot read {text!r}", hint="indices like 5,15,55, or holdout")
 
 
 def subject_extent_mm(pts, subject):
@@ -461,8 +487,7 @@ def run(a, pj):
     # A named pass (the R eye, or any --name) must not wipe the folder: both eyes are the
     # same stage, and eL - eR cannot be computed if running R deletes L's report.
     pj.begin(STAGE, argv=sys.argv, clean=(a.name == "views"))
-    captures = ([int(c) for c in a.captures.split(",")] if a.captures
-                else auto_captures(cov, cov["n_captures"]))
+    captures = parse_captures(a.captures, pj.root, cov)
     events.start(STAGE, "path")
     path_json = pj.path("views", f"{a.name}.json")
     views, subj_mm, fx = build_path(pj, captures, path_json, a.eye)

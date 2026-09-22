@@ -102,7 +102,8 @@ def add_parser(sub):
                    help="do not hold the Mac awake (also HS_NO_CAFFEINATE=1)")
     p.add_argument("--brush-args", default="", help="extra arguments passed to brush verbatim")
     p.add_argument("--exclude", default="",
-                   help="views to leave out, comma separated: L/cap064,R/cap069 (cap064_L also accepted)")
+                   help="views to leave out, comma separated: L/cap064,R/cap069 (cap064_L also accepted); "
+                        "@holdout = the captures in solve/holdout.json (hs cameras --holdout N --write)")
     p.add_argument("--no-masks", action="store_true",
                    help="train without train/dataset/masks even though it exists")
     p.add_argument("--layer", choices=("full", "subject", "background"), default=None,
@@ -184,11 +185,28 @@ def list_exports(d):
     return sorted(out)
 
 
-def parse_exclude(text):
-    """'L/cap064, cap069_R, R/cap070.jpg' -> {'L/cap064', 'R/cap069', 'R/cap070'}"""
+def parse_exclude(text, root=None):
+    """'L/cap064, cap069_R, R/cap070.jpg' -> {'L/cap064', 'R/cap069', 'R/cap070'}
+
+    ``@holdout`` expands to every view solve/holdout.json holds out (both eyes of each capture
+    on a stereo rig; `hs cameras --holdout N --write` makes it), and mixes with names:
+    ``@holdout,L/cap099``. It needs ``root``, the project folder."""
     out = set()
     for tok in (t.strip() for t in (text or "").split(",")):
         if not tok:
+            continue
+        if tok.startswith("@"):
+            if tok != "@holdout":
+                raise events.StageError(f"--exclude: unknown list '{tok}'", hint="the one list is @holdout (solve/holdout.json)")
+            if root is None:
+                raise events.StageError("--exclude @holdout needs the project folder")
+            from ..coverage import load_holdout
+            try:
+                h = load_holdout(root)
+            except ValueError as e:
+                raise events.StageError(str(e))
+            eyes = ("L", "R") if h.get("stereo", True) else ("L",)
+            out |= set(h.get("exclude") or [f"{e}/{n}" for n in h["names"] for e in eyes])
             continue
         tok = os.path.splitext(tok)[0]
         m = re.fullmatch(r"([A-Za-z0-9-]+)_([LR])", tok)
@@ -244,7 +262,7 @@ def run(a, pj):
     # exposure and masks write into train/dataset and a re-solve wipes it; they are outside
     # the STAGES chain so they cannot block, but training on a dataset whose normalisation or
     # silhouettes were deleted underneath it is a silent wrong answer, not a warning.
-    exclude = parse_exclude(getattr(a, "exclude", ""))
+    exclude = parse_exclude(getattr(a, "exclude", ""), root=pj.root)
     # One model explains one part of the scene. `--layer` names which; masks are how Brush is told.
     layer = getattr(a, "layer", None)
     alpha_mode = getattr(a, "alpha_mode", None)
