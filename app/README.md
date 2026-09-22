@@ -35,6 +35,21 @@ queue with a live splat-growth chart. If the current model isn't in any archive 
 replacing it. A train started in Terminal is detected through the project lock and followed from
 `logs/train.log` (iteration, splats, it/s, a stall warning).
 
+## Solve: matcher and estimate; progress everywhere
+
+The **Frames** page owns Solve (for an array or mono project, whose frames ingest already
+picked, the box is Solve alone). **Matching** is a segmented control — Exhaustive / Sequential /
+Auto, Auto preselected — with each option's time from `hs solve -p P --estimate` (run when the
+page appears and whenever the frame count changes; no lock, no writes), the image and pair
+counts and where the times come from under it. Start passes `--matcher`, and the command preview
+shows it. The frame count carries the same figure: "150 frames → 300 images, sequential ≈ 35 min".
+An engine without `--estimate` just leaves the times off. Parsing is `HSCore/Estimate.swift`.
+
+While any project has a live run, a strip under every page reads stage · step · done/total ·
+ETA (click it to go to the project); the sidebar row and the window title carry the short form
+("solve · matching 42% · 18 min") and the Dock icon the percentage. All from the run's own
+progress events (`HSCore/LiveProgress.swift`); a run started in Terminal is not followed there.
+
 **Console** (sidebar) runs any command in `zsh -l` from the repository folder, with live output
 and Stop (Ctrl-C to the command).
 

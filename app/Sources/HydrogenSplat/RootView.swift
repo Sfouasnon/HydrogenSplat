@@ -44,24 +44,89 @@ struct RootView: View {
             .navigationSplitViewColumnWidth(min: 230, ideal: 270)
             .onReceive(poll) { _ in store.refreshIfChanged() }
         } detail: {
-            switch model.selection {
-            case .setup, .none:
-                SetupView()
-            case .ingest:
-                IngestView()
-            case .replay:
-                ReplayView()
-            case .console:
-                ConsoleView()
-            case .project(let path):
-                if let p = store.project(at: path) {
-                    ProjectDetailView(project: p)
-                        .id(path)
-                } else {
-                    ContentUnavailableView("Project not found", systemImage: "questionmark.folder",
-                                           description: Text(path))
+            Group {
+                switch model.selection {
+                case .setup, .none:
+                    SetupView()
+                case .ingest:
+                    IngestView()
+                case .replay:
+                    ReplayView()
+                case .console:
+                    ConsoleView()
+                case .project(let path):
+                    if let p = store.project(at: path) {
+                        ProjectDetailView(project: p)
+                            .id(path)
+                    } else {
+                        ContentUnavailableView("Project not found", systemImage: "questionmark.folder",
+                                               description: Text(path))
+                    }
                 }
             }
+            // under every page, so a live run is never out of sight
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                LiveRunsBar()
+            }
+            // the window title: "HydrogenSplat — solve · matching 42% · 18 min" while a run is live
+            .navigationTitle(model.windowTitle)
+        }
+    }
+}
+
+/// The progress strip: one line per live run, pinned under every page (Setup, Console, the
+/// Viewer, every project), so a run is never out of sight — stage · step · done/total · ETA.
+/// Click a line to go to its project. Nothing at all when no run is live.
+struct LiveRunsBar: View {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var store: ProjectStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // every session is observed by its own row; a row that is not running draws nothing
+            ForEach(model.projectRuns.keys.sorted(), id: \.self) { path in
+                if let run = model.projectRuns[path] {
+                    LiveRunLine(path: path, name: store.project(at: path)?.displayName ?? (path as NSString).lastPathComponent,
+                                run: run) { model.selection = .project(path) }
+                }
+            }
+        }
+    }
+}
+
+struct LiveRunLine: View {
+    let path: String
+    let name: String
+    @ObservedObject var run: RunSession
+    let open: () -> Void
+    @State private var now = Date()
+    private let clock = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        if run.isRunning {
+            let p = run.liveProgress
+            VStack(spacing: 0) {
+                Divider()
+                Button(action: open) {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(name).fontWeight(.semibold).lineLimit(1)
+                        Text(p.line(now: now)).monospacedDigit().foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        if let f = p.fraction {
+                            ProgressView(value: f).frame(width: 120)
+                        }
+                    }
+                    .font(.callout)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("\(run.title) on \(name) — click to open the project")
+            }
+            .background(.bar)
+            .onReceive(clock) { now = $0 }
         }
     }
 }
@@ -81,7 +146,8 @@ struct ProjectRow: View {
             HStack(spacing: 4) {
                 if run.isRunning {
                     ProgressView().controlSize(.mini)
-                    Text(run.currentStep ?? "running").font(.caption).foregroundStyle(.secondary)
+                    Text(run.liveProgress.short).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        .lineLimit(1)
                 } else if let lock = project.lock, lock.alive {
                     Image(systemName: "lock.fill").font(.caption2)
                     Text("\(lock.stage ?? "?") running (pid \(lock.pid.map(String.init) ?? "?"))")
