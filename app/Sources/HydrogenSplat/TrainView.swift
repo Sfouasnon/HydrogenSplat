@@ -459,17 +459,28 @@ struct GrowthCurveChart: View {
     let totalIters: Int
     var height: CGFloat = 140
 
+    /// One point per iteration, in order. The engine can emit the same iteration twice (a forced
+    /// tick beside Brush's own line) and `id: \.self` on identical points collided — Charts then
+    /// drew the area fill between the twins as a spike to the top of the axis (the "16M spike" of
+    /// the 2026-09-17 g15 sweep; on 2026-09-21 iterations 10011, 15081 and 15211 were doubled).
+    private var series: [GrowthPoint] {
+        var byIter: [Double: Double] = [:]
+        for p in points { byIter[p.done] = p.value }
+        return byIter.keys.sorted().map { GrowthPoint(done: $0, value: byIter[$0]!) }
+    }
+
     var body: some View {
+        let pts = series
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("Splats").font(.caption.weight(.semibold))
                 Spacer()
-                if let last = points.last {
+                if let last = pts.last {
                     Text("\(JSONValue.number(last.value).display) at \(JSONValue.number(last.done).display)")
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
-            Chart(points, id: \.self) { p in
+            Chart(pts, id: \.done) { p in
                 AreaMark(x: .value("Iteration", p.done), y: .value("Splats", p.value))
                     .foregroundStyle(Brand.tally.opacity(0.12))
                 LineMark(x: .value("Iteration", p.done), y: .value("Splats", p.value))

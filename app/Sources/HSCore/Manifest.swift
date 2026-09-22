@@ -64,12 +64,25 @@ public struct StageState: Hashable, Sendable, Identifiable {
     public var failedChecks: Int { checks.filter { !$0.ok }.count }
 
     /// Metrics that are worth a table row: long lists (growth curves) are summarised.
+    /// Rows for the inspector. An object-valued metric (brush_config, dataset_fingerprint, view)
+    /// becomes one row per key, "parent.key", instead of a JSON blob crammed into one cell; a
+    /// nested object or a long array inside it is summarised the same way as at the top level.
     public var displayMetrics: [(String, String)] {
-        metrics.keys.sorted().map { k in
-            let v = metrics[k]!
-            if let a = v.array, a.count > 12 { return (k, "\(a.count) entries") }
-            return (k, v.display)
+        func summary(_ v: JSONValue) -> String {
+            if let a = v.array, a.count > 12 { return "\(a.count) entries" }
+            if let o = v.object { return "\(o.count) fields" }
+            return v.display
         }
+        var rows: [(String, String)] = []
+        for k in metrics.keys.sorted() {
+            let v = metrics[k]!
+            if let o = v.object, !o.isEmpty {
+                for sk in o.keys.sorted() { rows.append(("\(k).\(sk)", summary(o[sk]!))) }
+            } else {
+                rows.append((k, summary(v)))
+            }
+        }
+        return rows
     }
 }
 

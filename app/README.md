@@ -8,6 +8,10 @@ cd app && swift build && swift run HydrogenSplat     # or: open Package.swift (X
 cd app && swift test
 ```
 
+`swift build` / `swift test` verify the code; they do not touch the bundle you double-click.
+After a change, rebuild that with `app/scripts/make_app.sh --install` (below) — otherwise the
+app you launch is still the previous build, however green the tests are.
+
 M1 scope (strategy §7): Setup (engine paths, `hs tools`), the project list (every
 `Projects/*/manifest.json`), New Project (phone clips via `hs phone`, pull + validate via
 `hs ingest --phone`, or a dropped clip via `hs ingest --clip`), a read-only project page

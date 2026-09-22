@@ -43,9 +43,23 @@ struct ModelsBox: View {
                 if files.isEmpty {
                     Text("No trained model yet — train, or archive one.").foregroundStyle(.secondary)
                 }
-                ForEach(files) { f in
-                    row(f, prov: ModelProvenance.load(for: f), scores: scores.filter { $0.scores(f) }, rigNow: rigNow)
-                    if f != files.last { Divider() }
+                // one Grid for every model, so name / layer / splats / time / date line up across rows;
+                // a model's scores are a second row spanning the grid, as a small table of their own
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                    ForEach(files) { f in
+                        let prov = ModelProvenance.load(for: f)
+                        let mine = scores.filter { $0.scores(f) }
+                        modelRow(f, prov: prov, rigNow: rigNow, scoreCount: mine.count)
+                        if !mine.isEmpty {
+                            GridRow {
+                                scoreTable(mine)
+                                    .gridCellColumns(8)
+                            }
+                        }
+                        if f != files.last {
+                            GridRow { Divider().gridCellColumns(8) }
+                        }
+                    }
                 }
                 if !files.isEmpty {
                     Text("A preview for looking at geometry and floaters from real camera positions. It is not brush-path-render: sorting and anti-aliasing differ, so judge final frames — and anything `hs views` scores — from a render. Scores are medians over the report's views; a report is only comparable with another at the same crop and mask set.")
@@ -65,30 +79,47 @@ struct ModelsBox: View {
         }
     }
 
-    @ViewBuilder private func row(_ f: ViewerModelFile, prov: ModelProvenance?, scores: [ViewsScore], rigNow: String?) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 10) {
-                Image(systemName: f.archive == nil ? "cube.transparent" : "archivebox")
-                    .foregroundStyle(.secondary).frame(width: 18)
-                Text(f.name).font(.system(.body, design: .monospaced))
-                if let l = prov?.layer { chip(l, tint: l == "full" ? .secondary : .blue) }
-                if let n = prov?.splats { Text("\(n.formatted()) splats").foregroundStyle(.secondary).monospacedDigit() }
-                else { Text(f.sizeLabel).foregroundStyle(.secondary).monospacedDigit() }
-                if let s = prov?.trainSeconds { Text(Format.duration(s)).foregroundStyle(.secondary).monospacedDigit() }
-                if let a = prov?.archivedLabel { Text(a).foregroundStyle(.secondary).monospacedDigit() }
-                if let want = prov?.rigNpzMD5, let now = rigNow {
-                    if want == now {
-                        Label("this solve", systemImage: "checkmark.circle").foregroundStyle(.green).font(.caption)
-                            .help("Trained against the current train/dataset/rig.npz — renders and scores line up with the moves")
-                    } else {
-                        Label("other solve", systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.caption)
-                            .help("Trained against a different rig.npz (\(want.prefix(8))… vs \(now.prefix(8))…); hs render's model_matches_solve guard will refuse it")
+    @ViewBuilder private func modelRow(_ f: ViewerModelFile, prov: ModelProvenance?, rigNow: String?, scoreCount: Int) -> some View {
+        GridRow {
+            Image(systemName: f.archive == nil ? "cube.transparent" : "archivebox")
+                .foregroundStyle(.secondary).frame(width: 18)
+            Text(f.name).font(.system(.body, design: .monospaced))
+                .contextMenu {
+                    Button("View") { view(f) }
+                    Button("Open in New Window") { openWindow(id: "viewer", value: f) }
+                    if scoreCount > 0 {
+                        Button("Reveal reports") {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: (project.path as NSString).appendingPathComponent("views"))])
+                        }
                     }
                 }
-                if scene.loaded == f {
-                    Text("loaded").font(.caption).foregroundStyle(.green)
+            Group {
+                if let l = prov?.layer { chip(l, tint: l == "full" ? .secondary : .blue) } else { Text("") }
+            }
+            Group {
+                if let n = prov?.splats { Text("\(n.formatted()) splats") } else { Text(f.sizeLabel) }
+            }
+            .foregroundStyle(.secondary).monospacedDigit().gridColumnAlignment(.trailing)
+            Text(prov?.trainSeconds.map { Format.duration($0) } ?? "")
+                .foregroundStyle(.secondary).monospacedDigit().gridColumnAlignment(.trailing)
+            Text(prov?.archivedLabel ?? "").foregroundStyle(.secondary).monospacedDigit()
+            Group {
+                if let want = prov?.rigNpzMD5, let now = rigNow {
+                    if want == now {
+                        Label("this solve", systemImage: "checkmark.circle").foregroundStyle(.green)
+                            .help("Trained against the current train/dataset/rig.npz — renders and scores line up with the moves")
+                    } else {
+                        Label("other solve", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                            .help("Trained against a different rig.npz (\(want.prefix(8))… vs \(now.prefix(8))…); hs render's model_matches_solve guard will refuse it")
+                    }
+                } else {
+                    Text("")
                 }
-                Spacer()
+            }
+            .font(.caption)
+            HStack(spacing: 8) {
+                if scene.loaded == f { Text("loaded").font(.caption).foregroundStyle(.green) }
+                Spacer(minLength: 0)
                 if f.name == "current" {
                     Button("Archive…") { archiveName = ""; askArchive = true }
                         .buttonStyle(.borderless).disabled(busy)
@@ -108,33 +139,46 @@ struct ModelsBox: View {
                     .disabled(SplatViewerSupport.problem != nil)
                     .help("Open in this project's Viewer page (right-click for a separate window)")
             }
-            if !scores.isEmpty {
-                HStack(spacing: 6) {
-                    Spacer().frame(width: 28)
-                    ForEach(scores.prefix(4)) { s in
-                        HStack(spacing: 4) {
-                            Text(s.name).font(.caption.monospaced())
-                            Text(s.label).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                        }
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
-                        .help("views/\(s.name)_report.json")
-                    }
-                    if scores.count > 4 { Text("+\(scores.count - 4) more").font(.caption).foregroundStyle(.secondary) }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// The model's `hs views` reports as a table: one row per report, numbers right-aligned in
+    /// their own columns, so five reports read as a table and not as five pills of different widths.
+    private func scoreTable(_ scores: [ViewsScore]) -> some View {
+        let shown = Array(scores.prefix(6))
+        func num(_ v: Double?, _ fmt: String) -> some View {
+            Text(v.map { String(format: fmt, $0) } ?? "—").monospacedDigit().gridColumnAlignment(.trailing)
+        }
+        return Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 2) {
+            GridRow {
+                Text("report").foregroundStyle(.secondary)
+                Text("PSNR").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                Text("interior").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                Text("edge").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                Text("displaced").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                Text("views").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+            }
+            ForEach(shown) { s in
+                GridRow {
+                    Text(s.name).font(.caption.monospaced())
+                    num(s.psnr, "%.2f")
+                    num(s.psnrInterior, "%.2f")
+                    num(s.psnrEdge, "%.2f")
+                    num(s.displaced.map { $0 * 100 }, "%.1f%%")
+                    Text("\(s.views)").monospacedDigit().gridColumnAlignment(.trailing)
+                }
+                .help("views/\(s.name)_report.json")
+            }
+            if scores.count > shown.count {
+                GridRow {
+                    Text("+\(scores.count - shown.count) more in views/").foregroundStyle(.secondary).gridCellColumns(6)
                 }
             }
         }
-        .contextMenu {
-            Button("View") { view(f) }
-            Button("Open in New Window") { openWindow(id: "viewer", value: f) }
-            if !scores.isEmpty {
-                Button("Reveal reports") {
-                    NSWorkspace.shared.activateFileViewerSelecting(scores.map {
-                        URL(fileURLWithPath: ((project.path as NSString).appendingPathComponent("views") as NSString).appendingPathComponent("\($0.name)_report.json"))
-                    })
-                }
-            }
-        }
+        .font(.caption)
+        .padding(.leading, 30)
+        .padding(.bottom, 2)
     }
 
     private func chip(_ text: String, tint: Color) -> some View {

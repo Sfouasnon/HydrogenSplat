@@ -648,3 +648,25 @@ final class GrowthCurveTests: XCTestCase {
         XCTAssertEqual(pts.last?.value, 106058)
     }
 }
+
+final class DisplayMetricsTests: XCTestCase {
+    func testObjectMetricsFlattenToDottedRows() throws {
+        let m = try XCTUnwrap(Manifest(data: Data("""
+        {"name": "x", "stages": {"train": {"status": "done", "metrics": {
+            "final_splats": 621192,
+            "brush_config": {"commit": "fbdebfb3", "layer": "full", "min_scale_factor": 0.1},
+            "dataset_fingerprint": {"images": {"count": 101, "digest": "abc"}, "excluded_views": ["a", "b"]},
+            "growth_curve": [[1,1],[2,2],[3,3],[4,4],[5,5],[6,6],[7,7],[8,8],[9,9],[10,10],[11,11],[12,12],[13,13]]
+        }}}}
+        """.utf8)))
+        let rows = try XCTUnwrap(m.stage("train")?.displayMetrics)
+        let keys = rows.map(\.0)
+        XCTAssertEqual(keys, ["brush_config.commit", "brush_config.layer", "brush_config.min_scale_factor",
+                              "dataset_fingerprint.excluded_views", "dataset_fingerprint.images",
+                              "final_splats", "growth_curve"])
+        let byKey = Dictionary(uniqueKeysWithValues: rows)
+        XCTAssertEqual(byKey["brush_config.commit"], "fbdebfb3")
+        XCTAssertEqual(byKey["dataset_fingerprint.images"], "2 fields")
+        XCTAssertEqual(byKey["growth_curve"], "13 entries")
+    }
+}
