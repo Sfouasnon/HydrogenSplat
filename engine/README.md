@@ -44,6 +44,7 @@ hs/
   movescript.py the .hsmove cue language: boom / arc / dolly / hold in capture coordinates, clamped to the hull
   board.py      ChArUco detection, DLT triangulation from rig.npz, pair-median scale, board plane, white-paper samples
   stages/       ingest select solve scale exposure masks train move prune render tools calibrate selftest
+  splatweights.py the renderer's forward weights w = alpha*T per (splat, view, cell), in numpy — under split and prune --score
   <six vendored scripts>
 ```
 
@@ -63,6 +64,10 @@ hs train   -p P [--brush PATH]                                        brush → 
 hs move    -p P --preset sweep|boom|custom [--keys ...] [--name N]    move/N.json + move/N_aim_check.jpg
 hs move    -p P --script shot.hsmove [--name N]                      compile a cue sheet against the captured hull (movescript.py)
 hs prune   -p P [--radius 0.3]                                        prune/<export>_pruned_r03.ply
+hs prune   -p P --score [--ply PLY] [--name N] [--cell 8]            prune/N_scores.npz + N_report.json — a report, prunes nothing
+hs prune   -p P --floaters [--name N] [--min-importance-quantile 0.02] [--max-blame 0.25]   prune/N_nofloat.ply + N_floaters_only.ply
+hs split   -p P [--ply PLY] [--masks vision|region|DIR] [--exclude L/cap064,…|@holdout] [--name N] [--cell 8] [--refine knn|none]
+                                                                      split/N/{full_labelled,subject,background}.ply + report.json
 hs render  -p P --move N [--ply PATH] [--width 2400] [--keep-frames]  render/N_1920.mp4, N_1080x1350.mp4  (Mac only)
 hs views   -p P [--captures 5,15,55] [--ply PATH]                     grade the model against the photographs  (Mac only)
 hs tools                                                              versions of python packages, brush, brush-path-render, ffmpeg, adb
@@ -130,6 +135,50 @@ select refused, solve through monocolmap.py, `source_kind` metric on solve). The
 camera count matters: the median refusal in `hs exposure` is an array's only — a mono orbit is the
 case the median was built for. A manifest without `kind` is a Hydrogen clip, and mono data
 ingested earlier as `array` keeps working as an array.
+## Post-hoc split and floater score (2026-09-21)
+
+Both read one thing: for every training view, which splats the renderer composites into each
+`--cell`-px cell of the photograph, front to back, and with what weight `w = α·T`
+(`hs/splatweights.py` — the 3DGS forward pass in numpy: EWA footprint from scale/rotation,
+0.3 px dilation, α clamped to 0.99, per-cell depth sort and cumulative log-transmittance, all
+vectorised; no GPU, no Brush). Footprints are prefiltered to the cell so a splat smaller than a
+cell contributes its area rather than hitting or missing (the module docstring says why a quarter
+cell², not a box's 1/12). Only the training views are used: by default the views the model was
+trained without (its archive manifest, or the train stage's fingerprint) are excluded, and
+`--exclude` takes `hs train`'s syntax or `@holdout` (`solve/holdout.json`).
+
+**`hs split`** labels the model instead of training a second one: `p = Σ w·M / Σ w` per splat
+(FlashSplat's closed form; `M` the mask's mean over the cell), the ambiguous band (0.2–0.8) and
+the unseen splats refined by label diffusion over a `cv2.flann` KNN in (xyz, DC colour), then
+exported to `split/<name>/` as `full_labelled.ply` (all properties + `subject_p`), `subject.ply`,
+`background.ply`, `report.json` and a `manifest.json` naming the rig so `hs render` / `hs views
+--ply` take the layers like an archive. Checks: `masks_cover_training_views`, `labels_bimodal`
+(< 5 % still ambiguous, `needs_human` otherwise). `--masks vision|region` checks that
+`train/dataset/masks` was made by `hs masks --method vision|geometry`; a folder works too.
+
+**`hs prune --score`** writes per-splat `importance` (Σ w, LightGaussian without the volume
+term), `top_contributor` (largest w in some cell — Mini-Splatting's guard), `views_seen` and
+`blame` (Σ w·e / Σ w, `e` the cell's |composited DC colour − photograph| in linear RGB) to
+`prune/<name>_scores.npz`, with histograms in `_report.json`. It is a report: prune's status and
+metrics, and render's, are left alone (the run is kept under `stages.prune.runs`).
+**`--floaters`** removes splats that are low-importance *and* top contributor nowhere *and*
+high-blame, writing `<name>_nofloat.ply` and `<name>_floaters_only.ply` (look at the second in the
+viewer before trusting the first) and the opacity mass kept; it reuses the scores when they match
+the ply and cell, and records `output_ply` / `input_ply_md5` so render's lineage guard accepts
+the result as prune's output. The geometric `hs prune` is unchanged.
+
+```
+hs split -p P --ply archive/holdout-base/export_40000.ply --masks vision
+hs prune -p P --score --ply archive/holdout-base/export_40000.ply --name holdout-base
+hs prune -p P --floaters --name holdout-base
+```
+
+Colour is DC only (SH off), so blame is coarse on view-dependent surfaces. The 0.25 blame default
+is the plan's and untested on real data: on the synthetic test a 25 %-opaque black floater over a
+white card scores 0.18 — a floater cannot darken a cell much further before it becomes that cell's
+top contributor and the guard keeps it. Speed on the 2-core cloud container: 200k splats × 30
+views at 1920×1080, cell 8, 45 s (`HS_TIMING=1 pytest tests/test_splatweights.py`); views run in
+a small thread pool (`--jobs`, default up to 4).
 
 ## Where the failure sits, not just how much (2026-09-17)
 
