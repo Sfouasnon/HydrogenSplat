@@ -25,7 +25,7 @@ Runs anywhere pycolmap installs (pip install pycolmap; wheels exist for macOS ar
 including cp314). Feature extraction is CPU SIFT — there is no CUDA on Apple Silicon —
 which is a few seconds per 1920x1080 image.
 """
-import argparse, json, os, shutil, sys
+import argparse, json, os, shutil, sys, time
 import numpy as np
 
 try:
@@ -157,6 +157,16 @@ def cmd_prep(a):
     print(f"{len(captures)} captures -> {a.out}/images/{{L,R}}  ({half}x{h} per eye)")
 
 
+# ---------------------------------------------------------------- matching
+
+def _pairs():
+    """hs/pairs.py, imported only when --matcher is not exhaustive, so a standalone copy of
+    this script without it still runs exactly as it always did."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import pairs
+    return pairs
+
+
 # ---------------------------------------------------------------- sfm
 
 def cmd_sfm(a):
@@ -187,6 +197,7 @@ def cmd_sfm(a):
             ro.mask_path = a.masks
         print(f"extracting SIFT from {n_img} images "
               f"(max {a.features} features, peak {a.peak_threshold}, CPU)...")
+        t0 = time.monotonic()
         pycolmap.extract_features(db, imgs,
                                   camera_mode=pycolmap.CameraMode.PER_FOLDER,
                                   reader_options=ro, extraction_options=fe)
@@ -194,11 +205,21 @@ def cmd_sfm(a):
         nk = [dbh.num_keypoints_for_image(im.image_id) for im in dbh.read_all_images()]
         dbh.close()
         print(f"  features per image: min {min(nk)}, median {int(np.median(nk))}, max {max(nk)}")
+        print(f"timing: features {time.monotonic() - t0:.1f} s")
 
         fm = pycolmap.FeatureMatchingOptions()
         fm.guided_matching = a.guided
-        print(f"exhaustive matching {n_img} images ({n_img*(n_img-1)//2} pairs)...")
-        pycolmap.match_exhaustive(db, matching_options=fm)
+        t0 = time.monotonic()
+        matcher, caps = a.matcher, None
+        if matcher != "exhaustive":     # exhaustive reads nothing new: the run is as it always was
+            caps = [c["capture"] for c in json.load(open(os.path.join(work, "captures.json")))["captures"]]
+            matcher = _pairs().resolve_matcher(matcher, len(caps))
+        if matcher == "exhaustive":
+            print(f"exhaustive matching {n_img} images ({n_img*(n_img-1)//2} pairs)...")
+            pycolmap.match_exhaustive(db, matching_options=fm)
+        else:
+            _pairs().match_sequential(db, work, caps, ("L", "R"), a, fm)
+        print(f"timing: matching {time.monotonic() - t0:.1f} s")
     else:
         print(f"reusing features/matches in {db}")
 
@@ -230,7 +251,9 @@ def cmd_sfm(a):
     o.multiple_models = False
     print(f"mapping (rig {'refined then rescaled' if a.float_rig else 'fixed'}, "
           f"intrinsics {'refined' if a.refine_intrinsics else 'fixed'})...")
+    t0 = time.monotonic()
     recs = pycolmap.incremental_mapping(db, imgs, sparse, options=o)
+    print(f"timing: mapping {time.monotonic() - t0:.1f} s")
     if not recs:
         sys.exit("mapping produced no reconstruction")
 
@@ -441,6 +464,20 @@ def write_rig_npz(rec, path):
 
 # ---------------------------------------------------------------- cli
 
+def add_matcher_args(p):
+    """--matcher and the sequential knobs; the same flags in monocolmap.py and hs solve."""
+    p.add_argument("--matcher", choices=("exhaustive", "sequential", "auto"), default="exhaustive",
+                   help="exhaustive (the default: every pair, as always), sequential (window + rig mates "
+                        "+ loop pass, hs/pairs.py) or auto (sequential above 60 captures)")
+    p.add_argument("--overlap", type=int, default=15, help="sequential: captures matched on each side")
+    p.add_argument("--loop-stride", type=int, default=8,
+                   help="sequential: every Nth capture against every other Nth (0 = no loop pass)")
+    p.add_argument("--loop", choices=("stride", "vocab"), default="stride",
+                   help="sequential loop pass: the stride pass, or vocabulary-tree retrieval (--vocab-tree)")
+    p.add_argument("--vocab-tree", default=None, help="COLMAP FAISS vocabulary tree .bin (else HS_VOCAB_TREE)")
+    p.add_argument("--vocab-neighbors", type=int, default=20, help="--loop vocab: images retrieved per image")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -474,6 +511,7 @@ def main():
     p.add_argument("--init-min-tri-angle", type=float, default=8.0)
     p.add_argument("--min-tri-angle", type=float, default=0.8)
     p.add_argument("--fresh", action="store_true", help="rebuild features and matches")
+    add_matcher_args(p)
     p.set_defaults(fn=cmd_sfm)
 
     p = sub.add_parser("conv")

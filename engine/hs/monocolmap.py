@@ -22,7 +22,7 @@ GA,GB,MM`` sets the unit from the measured distance between two camera centres; 
 S`` multiplies by a known factor. Without either the reconstruction is exported as it
 comes and ``hs solve`` fails the ``scene_scaled`` check so nobody mistakes it for metric.
 """
-import argparse, json, os, shutil, sys
+import argparse, json, os, shutil, sys, time
 import numpy as np
 
 try:
@@ -64,6 +64,13 @@ def cmd_prep(a):
 
 # ---------------------------------------------------------------- sfm
 
+def _pairs():
+    """hs/pairs.py, imported only when --matcher is not exhaustive (see rigcolmap.py)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import pairs
+    return pairs
+
+
 def cmd_sfm(a):
     work = a.work
     db = os.path.join(work, "database.db")
@@ -93,14 +100,26 @@ def cmd_sfm(a):
             ro.mask_path = a.masks
         print(f"extracting SIFT from {n_img} images "
               f"(max {a.features} features, peak {a.peak_threshold}, CPU)...")
+        t0 = time.monotonic()
         pycolmap.extract_features(db, imgs, camera_mode=pycolmap.CameraMode.SINGLE,
                                   reader_options=ro, extraction_options=fe)
         dbh = pycolmap.Database.open(db)
         nk = [dbh.num_keypoints_for_image(im.image_id) for im in dbh.read_all_images()]
         dbh.close()
         print(f"  features per image: min {min(nk)}, median {int(np.median(nk))}, max {max(nk)}")
-        print(f"exhaustive matching {n_img} images ({n_img * (n_img - 1) // 2} pairs)...")
-        pycolmap.match_exhaustive(db)
+        print(f"timing: features {time.monotonic() - t0:.1f} s")
+        t0 = time.monotonic()
+        matcher, caps = a.matcher, None
+        if matcher != "exhaustive":     # exhaustive reads nothing new: the run is as it always was
+            caps = [c["capture"] for c in json.load(open(os.path.join(work, "captures.json")))["captures"]]
+            matcher = _pairs().resolve_matcher(matcher, len(caps))
+        if matcher == "exhaustive":
+            print(f"exhaustive matching {n_img} images ({n_img * (n_img - 1) // 2} pairs)...")
+            pycolmap.match_exhaustive(db)
+        else:
+            # capture order is prep's: sorted file names, i.e. frame order for a mono clip
+            _pairs().match_sequential(db, work, caps, ("L",), a)
+        print(f"timing: matching {time.monotonic() - t0:.1f} s")
     else:
         print(f"reusing features/matches in {db}")
 
@@ -116,7 +135,9 @@ def cmd_sfm(a):
     print(f"mapping (one shared camera; focal/distortion "
           f"{'fixed' if a.fix_intrinsics else 'refined'}, principal point "
           f"{'refined' if a.refine_principal_point else 'fixed at centre'})...")
+    t0 = time.monotonic()
     recs = pycolmap.incremental_mapping(db, imgs, sparse, options=o)
+    print(f"timing: mapping {time.monotonic() - t0:.1f} s")
     if not recs:
         sys.exit("mapping produced no reconstruction")
     best = max(recs.values(), key=lambda r: r.num_reg_images())
@@ -243,6 +264,22 @@ def write_rig_npz(rec, path):
 
 # ---------------------------------------------------------------- cli
 
+def add_matcher_args(p):
+    """--matcher and the sequential knobs; the same flags as rigcolmap.py and hs solve. A mono
+    clip's captures are in frame order, so sequential suits it; an array's are in camera-name
+    order, which is why auto keeps exhaustive for small sets (an array is 12 cameras)."""
+    p.add_argument("--matcher", choices=("exhaustive", "sequential", "auto"), default="exhaustive",
+                   help="exhaustive (the default: every pair, as always), sequential (window + loop "
+                        "pass, hs/pairs.py) or auto (sequential above 60 images)")
+    p.add_argument("--overlap", type=int, default=15, help="sequential: images matched on each side")
+    p.add_argument("--loop-stride", type=int, default=8,
+                   help="sequential: every Nth image against every other Nth (0 = no loop pass)")
+    p.add_argument("--loop", choices=("stride", "vocab"), default="stride",
+                   help="sequential loop pass: the stride pass, or vocabulary-tree retrieval (--vocab-tree)")
+    p.add_argument("--vocab-tree", default=None, help="COLMAP FAISS vocabulary tree .bin (else HS_VOCAB_TREE)")
+    p.add_argument("--vocab-neighbors", type=int, default=20, help="--loop vocab: images retrieved per image")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -268,6 +305,7 @@ def main():
     p.add_argument("--init-min-tri-angle", type=float, default=8.0)
     p.add_argument("--min-tri-angle", type=float, default=0.8)
     p.add_argument("--fresh", action="store_true", help="rebuild features and matches")
+    add_matcher_args(p)
     p.set_defaults(fn=cmd_sfm)
 
     p = sub.add_parser("export")
