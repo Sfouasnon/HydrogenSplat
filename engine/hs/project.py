@@ -72,6 +72,8 @@ REQUIRES = {
     "merge": ["train"],
     # post-hoc operations on a trained model; --ply stands in for train (the stage passes satisfied)
     "split": ["train"],
+    # export needs train only for its default ply; --ply / --archive skip the check
+    "export": ["train"],
 }
 
 

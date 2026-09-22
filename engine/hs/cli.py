@@ -4,8 +4,8 @@
     hs cameras -p DIR | hs movepreview -p DIR --script F | hs tools | hs calib ... | hs selftest [--clip CLIP] | hs phone | hs replay EVENTS.jsonl
     hs stability --frames DIR | --video MP4 [-p DIR]
 
-Stages: ingest, select, solve, scale, train, move (alias paths), prune, render, views; split is an
-operation on a trained model, like archive and merge. Each wraps one of
+Stages: ingest, select, solve, scale, train, move (alias paths), prune, render, views; operations
+outside the chain: exposure, masks, archive, split, export, merge, grade. Each wraps one of
 the vendored scripts or a Brush binary as a subprocess and speaks the JSON-lines event
 contract on stdout (events.py). Exit codes: 0 ok, 1 stage error (an ``error`` event says
 why), 2 unexpected exception, 130 interrupted.
@@ -17,13 +17,13 @@ import traceback
 
 from . import __version__, events, keepawake
 from .project import Project
-from .stages import archive, calibrate, cameras, exposure, grade, ingest, masks, merge, move, movepreview, phone, prune, render, replay, scale, select, selftest, solve, split, stability, tools, train, views
+from .stages import archive, calibrate, cameras, export, exposure, grade, ingest, masks, merge, move, movepreview, phone, prune, render, replay, scale, select, selftest, solve, split, stability, tools, train, views
 
 PROJECT_STAGES = {
     "ingest": ingest, "select": select, "solve": solve, "scale": scale, "train": train,
     "move": move, "paths": move, "prune": prune, "render": render, "views": views,
     "exposure": exposure, "masks": masks, "merge": merge, "archive": archive, "grade": grade,
-    "split": split,
+    "split": split, "export": export,
 }
 FREE_STAGES = {"cameras": cameras, "movepreview": movepreview, "tools": tools, "calib": calibrate, "selftest": selftest, "phone": phone, "replay": replay, "stability": stability}
 
@@ -41,7 +41,7 @@ def build_parser():
     ap.add_argument("-p", "--project", default=None, help="project folder (created by ingest)")
     ap.add_argument("-v", "--verbose", action="store_true", help="also emit child output as {\"ev\":\"log\"} events")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<stage>")
-    for mod in (ingest, select, solve, scale, exposure, masks, train, archive, merge, split, move, prune, render, grade, views, cameras, movepreview, stability, tools, calibrate, selftest, phone, replay):
+    for mod in (ingest, select, solve, scale, exposure, masks, train, archive, export, merge, split, move, prune, render, grade, views, cameras, movepreview, stability, tools, calibrate, selftest, phone, replay):
         mod.add_parser(sub)
     seen = set()
     for name, sp in sub.choices.items():
