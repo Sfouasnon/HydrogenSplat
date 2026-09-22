@@ -203,8 +203,8 @@ public struct SolveEstimate: Equatable, Sendable {
     /// (3 runs)") after "Times", or a plain word on the seeded defaults.
     public var calibrationNote: String? {
         guard let c = calibration?.trimmingCharacters(in: .whitespaces), !c.isEmpty else { return nil }
-        if c == "defaults" { return "Times are the engine's defaults until a solve has been timed on this Mac." }
-        return "Times \(c)."
+        if c == "defaults" { return "Times are for the whole solve (features, matching, mapping, export) and are the engine's defaults until a solve has been timed on this Mac; the mapping share is the least certain." }
+        return "Times are for the whole solve (features, matching, mapping, export), \(c)."
     }
 
     public static func arguments(project: String) -> [String] {

@@ -31,6 +31,9 @@ public struct HSEvent: Identifiable, Hashable, Sendable {
     public var total: Double? { fields["total"]?.double }
     public var rate: Double? { fields["rate"]?.double }
     public var etaSeconds: Double? { fields["eta_s"]?.double }
+    /// The whole stage's remaining time when the engine can say (solve: this step's ETA plus
+    /// the phases still to come, from its cost model); nil on stages that report steps only.
+    public var stageEtaSeconds: Double? { fields["stage_eta_s"]?.double }
     public var detail: String? { fields["detail"]?.string }
     public var message: String? { fields["message"]?.string }
     public var hint: String? { fields["hint"]?.string }

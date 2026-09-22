@@ -127,3 +127,39 @@ class AutoEta(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StageEta(unittest.TestCase):
+    """`rest_s` turns a step ETA into the whole stage's remaining time (`stage_eta_s`)."""
+
+    def test_stage_eta_is_step_eta_plus_rest(self):
+        import io, json
+        from hs import events
+        buf = io.StringIO()
+        old = events._out if hasattr(events, "_out") else None
+        evs = []
+        orig = events._emit
+        events._emit = lambda ev: evs.append(ev)
+        try:
+            events._last_progress.clear()
+            events.progress("solve", 10, 100, step="features", eta_s=90.0, rest_s=3600.0, force=True)
+            events.progress("solve", 20, 100, step="features", eta_s=80.0, force=True)
+        finally:
+            events._emit = orig
+        self.assertEqual(evs[0]["eta_s"], 90)
+        self.assertEqual(evs[0]["stage_eta_s"], 3690)
+        self.assertNotIn("stage_eta_s", evs[1])
+
+
+class SolveRest(unittest.TestCase):
+    def test_rest_after_sums_the_later_phases(self):
+        from hs.stages.solve import SfmParser
+        from hs import timing
+        p = SfmParser(n_img=300, stereo=True)
+        sec = timing.phase_seconds(p.model, 300, 300 * 299 // 2)
+        self.assertAlmostEqual(p.rest_after("features"), sec["matching"] + sec["mapping"] + sec["export"])
+        self.assertAlmostEqual(p.rest_after("mapping"), sec["export"])
+        self.assertEqual(p.rest_after("export"), 0.0)
+        p.num_pairs = 1000
+        sec2 = timing.phase_seconds(p.model, 300, 1000)
+        self.assertAlmostEqual(p.rest_after("matching"), sec2["mapping"] + sec2["export"])

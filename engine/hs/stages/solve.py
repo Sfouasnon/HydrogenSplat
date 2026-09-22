@@ -174,6 +174,19 @@ class SfmParser:
         self.num_pairs = None
         self.t_map0 = None
 
+    PHASES = ("features", "matching", "mapping", "export")
+
+    def rest_after(self, step):
+        """Seconds the phases after `step` are expected to take (cost model; the pair count once
+        the matcher has said it, else the exhaustive count as the upper bound) -> stage_eta_s."""
+        try:
+            n_pairs = self.num_pairs if self.num_pairs else self.n_img * (self.n_img - 1) // 2
+            sec = timing.phase_seconds(self.model, self.n_img, n_pairs)
+            later = self.PHASES[self.PHASES.index(step) + 1:]
+            return float(sum(sec[ph] for ph in later))
+        except (ValueError, KeyError, TypeError):
+            return None
+
     def mapping_eta(self, now=None):
         if self.t_map0 is None:
             return None
@@ -186,21 +199,24 @@ class SfmParser:
         m = RE_FEAT.search(line)
         if m:
             self.step = "features"
-            events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="features")
+            events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="features",
+                            rest_s=self.rest_after("features"))
             return
         m = RE_MATCH.search(line)
         if m:
             self.step = "matching"
             i, ni, j, nj = (int(x) for x in m.groups())
             done, total = pairs.exhaustive_block_progress(i, ni, j, nj)
-            events.progress(STAGE, done, total, step="matching", detail=f"block {i}/{ni},{j}/{nj}")
+            events.progress(STAGE, done, total, step="matching", detail=f"block {i}/{ni},{j}/{nj}",
+                            rest_s=self.rest_after("matching"))
             return
         m = RE_IMPORT.search(line)
         if m:
             self.step = "matching"
             k, nk = int(m.group(1)), int(m.group(2))
             events.progress(STAGE, k - 1, nk, step="matching",
-                            detail=f"block {k}/{nk}" + (f" of {self.num_pairs} pairs" if self.num_pairs else ""))
+                            detail=f"block {k}/{nk}" + (f" of {self.num_pairs} pairs" if self.num_pairs else ""),
+                            rest_s=self.rest_after("matching"))
             return
         m = RE_MATCHING.search(line)
         if m:
@@ -214,7 +230,7 @@ class SfmParser:
             self.step = "mapping"
             self.t_map0 = time.monotonic()
             events.progress(STAGE, 0, self.n_img, step="mapping", eta_s=self.mapping_eta(),
-                            detail="images registered", force=True)
+                            detail="images registered", force=True, rest_s=self.rest_after("mapping"))
             return
         m = RE_REG.search(line)
         if m:
@@ -222,7 +238,7 @@ class SfmParser:
             if self.t_map0 is None:
                 self.t_map0 = time.monotonic()
             self.reg = int(m.group(2))
-            events.progress(STAGE, self.reg, self.n_img, step="mapping", eta_s=self.mapping_eta(),
+            events.progress(STAGE, self.reg, self.n_img, step="mapping", eta_s=self.mapping_eta(), rest_s=self.rest_after("mapping"),
                             detail="images registered")
             return
         keys = (("featstat", RE_FEATSTAT), ("recon", RE_RECON), ("reproj", RE_REPROJ),
@@ -416,7 +432,7 @@ def _run_stereo(a, pj):
     ex = runner.run(runner.python_argv("rigcolmap.py", "export", os.path.join(work, "sparse", "rig"),
                                        "--images", os.path.join(work, "images"), "-o", pj.dataset_dir),
                     STAGE, log_path=log,
-                    on_line=lambda l: (lambda m: m and events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="export"))(RE_UNDIST.search(l)))
+                    on_line=lambda l: (lambda m: m and events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="export", rest_s=0.0))(RE_UNDIST.search(l)))
     pj.metric(STAGE, "export_s", round(ex.elapsed, 1))
     if not os.path.exists(pj.rig_npz):
         raise events.StageError("export wrote no rig.npz")
@@ -564,7 +580,7 @@ def run_array(a, pj):
     ex = runner.run(runner.python_argv("monocolmap.py", "export", os.path.join(work, "sparse", "rig"),
                                        "--images", os.path.join(work, "images"), "-o", pj.dataset_dir),
                     STAGE, log_path=log,
-                    on_line=lambda l: (lambda m: m and events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="export"))(RE_UNDIST.search(l)))
+                    on_line=lambda l: (lambda m: m and events.progress(STAGE, int(m.group(1)), int(m.group(2)), step="export", rest_s=0.0))(RE_UNDIST.search(l)))
     pj.metric(STAGE, "export_s", round(ex.elapsed, 1))
     if not os.path.exists(pj.rig_npz):
         raise events.StageError("export wrote no rig.npz")

@@ -169,13 +169,17 @@ def auto_eta(key, done, total, now):
     return (total - done) * el / (done - d0)
 
 
-def progress(stage, done, total=None, rate=None, eta_s=None, detail=None, step=None, force=False):
+def progress(stage, done, total=None, rate=None, eta_s=None, detail=None, step=None, force=False, rest_s=None):
     """Rate-limited: at most one progress event per stage/step per 0.25 s unless force.
 
     ETA for free: when the caller gives a ``total`` but no ``eta_s``, ``eta_s`` is the mean
     rate since the first progress call of this (stage, step) — every call is sampled, even
     one the rate limit drops — applied to what is left (``auto_eta``). A caller that knows
-    better (train's own rate, solve's mapping from the cost model) passes ``eta_s`` itself."""
+    better (train's own rate, solve's mapping from the cost model) passes ``eta_s`` itself.
+    ``rest_s`` is what the stage's LATER steps are expected to take (solve: the phases after
+    this one, from the cost model); with it the event also carries ``stage_eta_s`` =
+    ``eta_s + rest_s``, the whole stage's remaining time, which is what a person waiting for
+    the stage wants — the per-step ETA alone read "49 min" while the solve had hours to go."""
     key = (stage, step)
     now = time.monotonic()
     if eta_s is None and total is not None:
@@ -192,6 +196,8 @@ def progress(stage, done, total=None, rate=None, eta_s=None, detail=None, step=N
         ev["rate"] = round(float(rate), 3)
     if eta_s is not None:
         ev["eta_s"] = int(round(eta_s))
+        if rest_s is not None:
+            ev["stage_eta_s"] = int(round(eta_s + max(float(rest_s), 0.0)))
     if detail is not None:
         ev["detail"] = detail
     _emit(ev)
