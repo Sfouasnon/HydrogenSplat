@@ -80,6 +80,9 @@ def add_parser(sub):
     p.add_argument("--max-displaced-fraction", type=float, default=0.10,
                    help="check threshold (rig6 golden: 0.03 on the well-covered side, 0.24 on the thin one)")
     p.add_argument("--keep-frames", action="store_true", help="keep the raw renders as well as the comparisons")
+    p.add_argument("--overlay", action="store_true",
+                   help="also write views/<name>_overlay/<view>/: the sparse points on photograph and render, and "
+                        "the global + per-quadrant shift between them (hs/overlay.py; solve fault vs training fault)")
     region = p.add_mutually_exclusive_group()
     region.add_argument("--inside-masks", dest="mask_region", action="store_const", const="inside",
                         help="score only where train/dataset/masks is white: a subject layer, which is "
@@ -537,7 +540,7 @@ def run(a, pj):
         return (m >= 128) if region_kind == "inside" else (m < 128)
 
     events.start(STAGE, "compare")
-    report, worst = [], None
+    report, worst, rig_G = [], None, None
     for i, v in enumerate(views):
         frame = os.path.join(out_dir, f"frame_{i:04d}.png")
         img = os.path.join(pj.dataset_dir, "images", a.eye, v["image"])
@@ -570,6 +573,17 @@ def run(a, pj):
         comparison_image(src_bgr, ren_bgr, res, cmp_path, label, a.displaced_px)
         pj.artifact(STAGE, cmp_path, "image")
         row = {k: val for k, val in res.items() if not k.startswith("_")}
+        if getattr(a, "overlay", False):
+            from .. import overlay
+            if rig_G is None:
+                rig_G = rig.load(pj.rig_npz)
+            vi = rig_G[1].index(v["view"])
+            odir = pj.path("views", f"{a.name}_overlay", v["view"])
+            orep = overlay.make(src_bgr, ren_bgr, overlay.points_for_view(rig_G[0], vi, pj.dataset_dir, a.eye),
+                                odir, label=v["view"])
+            row["overlay"] = {k: orep.get(k) for k in ("n_points", "points_source", "sparse_residual_px",
+                                                       "shift_px", "quadrant_spread_px", "diagnosis")}
+            pj.artifact(STAGE, os.path.join(odir, "overlay_render.jpg"), "image")
         row.update({"capture": v["capture"], "view": v["view"], "depth_mm": round(v["depth_mm"], 1),
                     "azimuth_deg": c.get("azimuth_deg"), "elevation_deg": c.get("elevation_deg"),
                     "displacement_p90_mm": round((res["displacement_p90_px"] or 0) * v["depth_mm"] / fx, 3)})
