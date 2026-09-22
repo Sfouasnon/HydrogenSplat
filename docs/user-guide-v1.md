@@ -92,23 +92,26 @@ with both eyes as one rigid rig on the calibrated intrinsics, then export the un
 training set. Bars: `solve · features`, `· matching` (block i/n), `· mapping`, `· export`.
 
 Matching is almost all of the time. Exhaustive matching compares every image with every other,
-so it grows with the square of the frame count: about 35 minutes at ~150 captures (300
-images), 4–5 hours at 422 captures (844 images, 355,746 pairs) on CirclesSculpture. Features
-grow in proportion to the image count, mapping faster than that. Before this branch the
-matching bar runs ahead of the work (it counts blocks exhaustive matching skips): do not time
-from it.
+so it grows with the square of the frame count: 422 captures (844 images, 355,746 pairs) on
+CirclesSculpture ran at 88–159 s per 50×50 block, and COLMAP visits all 289 blocks, so that
+match alone is 7–13 hours on Apple Silicon; ~150 captures (300 images, 44,850 pairs) is about
+an hour and a quarter of matching. Features grow in proportion to the image count, mapping
+faster than that. The matching bar counts blocks and is honest; before this branch it had no
+ETA, on this branch every bar does. The chooser below shows the estimate for both matchers
+before you press Solve; trust it over any figure written here.
 
 **New on this branch, the matcher chooser.** When the solve step opens and whenever the frame
 count changes, the app runs `hs solve --estimate` (no lock, writes nothing) and shows
-**exhaustive** and **sequential** as a segmented control with an estimate beside each ("≈ 35
-min", "≈ 4 h 40 min"), preselecting what `auto` would pick: sequential above 60 captures.
+**Exhaustive / Sequential / Auto** as a segmented control with an estimate beside each ("≈ 1 h
+15 min", "≈ 12 h"), Auto preselected — sequential above 60 captures, exhaustive below.
 Sequential matches each capture with the 15 before and after it (both eyes) and its rig mate,
 plus every 8th capture against every other 8th so the orbit's closure is caught; it takes
 minutes at any count. Use it for orbits and walk-arounds; use exhaustive when the camera
 returns to a view from far apart in time and the every-8th pass would miss it. Solve passes
 `--matcher`. Estimates say "measured on this Mac (N runs)" once solves have been timed, else
-"defaults". The frame count gains the matching cost beside it. The plan says "Solve page"; on
-this branch Solve is on the Frames page. The window and stride have no control:
+"defaults". The frame count gains the matching cost beside it. Solve lives on the Frames page; there is
+no Solve page. Until the first solve has been timed on this Mac the estimates come from default
+rates and say so; each finished solve refines them. The window and stride have no control:
 
 ```
 hs solve -p P --matcher sequential --overlap 15 --loop-stride 8
@@ -122,8 +125,9 @@ worst), `rig_constraint_held` (L–R separation equals the profile baseline),
 `per_image.json`, `coverage.json`) and `train/dataset/` (images, `sparse/`, `rig.npz`). A
 re-solve replaces `train/dataset`, so exposure and masks go stale.
 
-Array and mono projects have no Solve button; solve them in the Console with a metric
-reference (without one, `scene_scaled` fails and needs you):
+Array and mono projects get the same Solve box and matcher chooser on this branch (before it
+they had no Solve button). What the button cannot pass is a metric reference, so without one
+`scene_scaled` fails and needs you; give it in the Console:
 
 ```
 hs solve -p P --scale-pair GA,GB,700
