@@ -42,7 +42,8 @@ hs/
   calib.py      profile JSON <-> the stereocal npz rigcolmap.py reads; match keys
   coverage.py   azimuth / elevation / distance per capture from rig.npz; sweep-window and boom-key presets
   movescript.py the .hsmove cue language: boom / arc / dolly / hold in capture coordinates, clamped to the hull
-  stages/       ingest select solve exposure masks train move prune render tools calibrate selftest
+  stages/       ingest select solve exposure masks train move prune render tools calibrate selftest export …
+  shotsheet.py  the delivery shot sheet: manifest dicts -> Markdown + HTML (pure; hs export writes it)
   <six vendored scripts>
 ```
 
@@ -62,7 +63,8 @@ hs move    -p P --script shot.hsmove [--name N]                      compile a c
 hs prune   -p P [--radius 0.3]                                        prune/<export>_pruned_r03.ply
 hs render  -p P --move N [--ply PATH] [--width 2400] [--keep-frames]  render/N_1920.mp4, N_1080x1350.mp4  (Mac only)
 hs views   -p P [--captures 5,15,55] [--ply PATH]                     grade the model against the photographs  (Mac only)
-hs tools                                                              versions of python packages, brush, brush-path-render, ffmpeg, adb
+hs export -p P [--ply PLY|--archive NAME] [--formats ply,spz,sog,html] [--min-opacity X] [--subject PLY] [--shot-sheet]   deliver/NAME/: PLY + web formats + shot sheet
+hs tools                                                              versions of python packages, brush, brush-path-render, ffmpeg, adb, node, splat-transform
 hs calib   --photos 'board/*.jpg' | --video board.h4v -o cal.npz      stereocal.py + a profile JSON
 hs selftest [--clip CLIP] [--project DIR] [--resume|--fresh]          golden test (below)
 ```
@@ -184,6 +186,67 @@ hs solve  -p P --scale-pair GA,GB,700  # the measured distance in mm between two
 - **Known limit**: coverage's `up_world` is the mean camera −y axis. The array cameras are mounted
   portrait, so that axis is horizontal and the azimuth/elevation table (and any `hs move` preset
   built on it) is rotated 90°. Fine for train/archive/views; fix before relying on move presets.
+
+## Delivering a model: `hs export` (2026-09-21)
+
+```
+hs export -p P                                         # train's final export -> deliver/export_40000/
+hs export -p P --archive masked-exposure --shot-sheet  # an archived model, with its provenance page
+hs export -p P --ply prune/x_pruned_r03.ply --formats ply,spz --min-opacity 0.05 --name x
+hs export -p P --archive head --subject split/1/subject.ply --shot-sheet
+```
+
+Writes `deliver/<name>/` (built beside and renamed into place, replaced whole on a re-run; the
+name defaults to the archive name, else the ply's stem):
+
+| file | what |
+|---|---|
+| `<name>.ply` | the source PLY byte for byte, SH intact — what Nuke and Houdini read |
+| `<name>.spz`, `<name>.sog` | compressed web formats |
+| `<name>.html` | a self-contained single-page viewer (SOG inside) |
+| `<name>_subject.*` | the same set for `--subject` (a split subject layer) |
+| `manifest.json` | source ply + md5 + splat count, every file's md5 / bytes / splats, the exact argv that made it |
+| `shot-sheet.md`, `.html` | with `--shot-sheet` |
+
+The web formats come from PlayCanvas **splat-transform** (`@playcanvas/splat-transform`, MIT),
+one call per output in its own syntax `splat-transform [GLOBAL] input [ACTIONS] output`:
+
+```
+splat-transform -w in.ply out.spz
+splat-transform -w in.ply -V opacity,gte,0.05 out.sog        # --min-opacity 0.05
+```
+
+It is found as `--splat-transform PATH` / `HS_SPLAT_TRANSFORM`, else `splat-transform` on
+`PATH`, else `npx -y -- @playcanvas/splat-transform` (node ≥ 18; the first run downloads it).
+Node is optional: `--formats ply` needs nothing. `hs tools` reports node, npx and splat-transform
+(probing npx with `--no`, so it never downloads).
+
+- `--min-opacity` is splat-transform's `-V/--filter-value` action, which compares **linear**
+  opacity (0–1, after the sigmoid), not the PLY's stored logit. With a filter the delivered PLY
+  is written by splat-transform too, so every format carries the same splats (`splats_exported`);
+  without one the PLY is a copy and `model_ply_copy_matches_source` checks its md5.
+- SOG and HTML compress on the GPU through WebGPU. On a machine without an adapter (the Linux
+  container: "vkCreateInstance: Found no drivers") that fails; with no `--gpu` given the file is
+  retried once with `-g cpu` and `model_sog_on_gpu` / `model_html_on_gpu` fail as a note. `--gpu
+  N|cpu` is passed through and never retried.
+- `--archive NAME` exports `archive/NAME/<ply>` and refuses it if its md5 no longer matches the
+  archive manifest. A `--ply` inside an archive folder picks the manifest up the same way. Without
+  either, `train` must be done (`REQUIRES["export"]`).
+- The **shot sheet** (`hs/shotsheet.py`, a pure function of the manifest dicts) lists the project,
+  the source (kind, clip md5 or frames digest), solve metrics, the model's provenance (archive,
+  ply md5, splat count, layer, masks, train argv, Brush commit), the move (frames, fps, duration,
+  keyframes from `move/<name>.keys.json` or the `hs move` record), the hold-out medians of every
+  `views/*_report.json` — each marked "this model" only when it scored this very file — the grade
+  look, and the export md5s. The archive's stage snapshot is preferred to the project's, since the
+  project may have been re-solved since; a training record whose final-export md5 is not this ply's
+  is flagged. The move is `--move`, else the latest render of this ply, else the only move in
+  `move/`. Anything absent says "not recorded".
+
+Checked against the real splat-transform v3.5.1 (c23730c) in the container: a 2,000-splat PLY
+with `--min-opacity 0.5` delivered 966 splats in every format, exactly the count with
+sigmoid(opacity) ≥ 0.5; spz 38 KB, sog 56 KB, html 3.2 MB (SOG and HTML via the cpu retry). The
+tests run against `tests/fakebin/splat-transform` (`tests/fake_splat_transform.py`), which parses
+the same argv and logs it (`HS_FAKE_ST_LOG`); `HS_FAKE_ST_NO_GPU=1` reproduces the GPU failure.
 
 ## Golden test
 
