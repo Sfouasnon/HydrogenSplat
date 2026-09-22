@@ -8,6 +8,7 @@ Event shapes (all carry ``"stage"``)::
 
     {"ev":"start","stage":"solve","step":"sfm"}
     {"ev":"progress","stage":"train","done":23970,"total":40000,"rate":9.98,"eta_s":1605,"detail":"139455 splats"}
+    {"ev":"estimate","stage":"solve","captures":422,"matchers":{...},...}   (hs solve --estimate; timing.py)
     {"ev":"metric","stage":"solve","name":"mean_reproj_px","value":1.394}
     {"ev":"artifact","stage":"select","path":"select/contact.jpg","kind":"image"}
     {"ev":"check","stage":"solve","name":"all_frames_registered","ok":true,"value":"65/65"}
@@ -17,6 +18,10 @@ Event shapes (all carry ``"stage"``)::
     {"ev":"log","stage":"solve","line":"..."}          (only with --verbose)
 
 Consumers must ignore event kinds and keys they do not know.
+
+Every ``progress`` with a ``total`` carries an ``eta_s`` once it can: stages that do not
+compute one get the mean rate since the step's first progress call (``auto_eta``), reset
+by each ``start`` of the stage.
 
 Every project stage also records its own stream to ``<project>/logs/<stage>.events.jsonl``
 (``open_file_log``), with a ``run`` event first carrying the argv, the wall clock and a
@@ -37,6 +42,9 @@ _FILE = None            # open file handle for <project>/logs/<stage>.events.jso
 _FILE_T0 = None
 _PROGRESS_MIN_DT = 0.25  # seconds between progress events for the same stage/step
 _last_progress = {}
+_eta_first = {}          # (stage, step) -> [t, done, last done]: the sample auto-ETA measures from
+_eta_start = {}          # stage -> time of its last `start`, while no step of it has been sampled
+AUTO_ETA_MIN_S = 2.0     # no auto-ETA until this long after the first sample
 
 
 def set_verbose(flag):
@@ -110,6 +118,7 @@ def _default(o):
 
 
 def start(stage, step=None, **extra):
+    reset_eta(stage)
     ev = {"ev": "start", "stage": stage}
     if step is not None:
         ev["step"] = step
@@ -117,10 +126,60 @@ def start(stage, step=None, **extra):
     _emit(ev)
 
 
+def reset_eta(stage=None, now=None):
+    """Forget auto-ETA samples for one stage (every ``start`` does this, and remembers when it
+    started) or, with no stage, for all."""
+    for k in [k for k in _eta_first if stage is None or k[0] == stage]:
+        del _eta_first[k]
+    if stage is None:
+        _eta_start.clear()
+    else:
+        _eta_start[stage] = time.monotonic() if now is None else now
+
+
+def auto_eta(key, done, total, now):
+    """Seconds left from the mean rate since the first (t, done) sample of this (stage, step).
+    None until AUTO_ETA_MIN_S have passed and done has moved; 0 once done reaches total. A
+    done that goes backwards (a second pass over the same step) restarts the measurement.
+
+    Most loops report ``i + 1`` after item i, so their first sample already has work behind
+    it. For the first step sampled after a ``start`` of the stage, that work is anchored at the
+    start: (t_start, 0). Later steps under the same start are measured from their own first
+    sample (solve's matching must not inherit the time features took)."""
+    try:
+        done, total = float(done), float(total)
+    except (TypeError, ValueError):
+        return None
+    first = _eta_first.get(key)
+    if first is None or done < first[2]:
+        t_start = _eta_start.pop(key[0], None)
+        if first is None and t_start is not None and done > 0 and t_start <= now:
+            _eta_first[key] = first = [t_start, 0.0, done]
+        else:
+            _eta_first[key] = [now, done, done]
+            return 0.0 if done >= total else None
+    _eta_start.pop(key[0], None)
+    first[2] = done
+    if done >= total:
+        return 0.0
+    t0, d0, _ = first
+    el = now - t0
+    if el < AUTO_ETA_MIN_S or done <= d0:
+        return None
+    return (total - done) * el / (done - d0)
+
+
 def progress(stage, done, total=None, rate=None, eta_s=None, detail=None, step=None, force=False):
-    """Rate-limited: at most one progress event per stage/step per 0.25 s unless force."""
+    """Rate-limited: at most one progress event per stage/step per 0.25 s unless force.
+
+    ETA for free: when the caller gives a ``total`` but no ``eta_s``, ``eta_s`` is the mean
+    rate since the first progress call of this (stage, step) — every call is sampled, even
+    one the rate limit drops — applied to what is left (``auto_eta``). A caller that knows
+    better (train's own rate, solve's mapping from the cost model) passes ``eta_s`` itself."""
     key = (stage, step)
     now = time.monotonic()
+    if eta_s is None and total is not None:
+        eta_s = auto_eta(key, done, total, now)
     if not force and now - _last_progress.get(key, 0.0) < _PROGRESS_MIN_DT:
         return
     _last_progress[key] = now
