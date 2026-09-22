@@ -42,6 +42,11 @@ def add_parser(sub):
     p.add_argument("--name", default=None, help="output name (default: <move>[_pruned])")
     p.add_argument("--width", type=int, default=2400)
     p.add_argument("--keep-frames", action="store_true")
+    p.add_argument("--stability", action="store_true",
+                   help="measure temporal stability on the frames before they are deleted (hs stability): "
+                        "render/<name>_stability/, stability_* metrics")
+    p.add_argument("--stability-k", default="1,7", help="with --stability: frame gaps (default 1,7)")
+    p.add_argument("--stability-backend", choices=("dis", "raft"), default="dis", help="with --stability: flow backend")
     p.add_argument("--no-crop", action="store_true", help="skip the 4:5 crop")
     p.add_argument("--crf", type=int, default=17)
     p.add_argument("--render-bin", default=os.environ.get("HS_PATH_RENDER", DEFAULT_RENDER))
@@ -151,6 +156,17 @@ def run(a, pj):
         _ffmpeg(ffmpeg, fps, pattern, "scale=-2:1350,crop=1080:1350", a.crf, out45, pj, len(pngs), "encode_4x5")
         pj.artifact(STAGE, out45, "video")
         pj.metric(STAGE, "mp4_1080x1350", pj.rel(out45))
+    if getattr(a, "stability", False):
+        # on the PNGs, before they go: the mp4 is H.264 at crf 17, and its own compression
+        # flicker would be measured along with the model's
+        from . import stability
+        events.start(STAGE, "stability")
+        s = stability.measure(frames=out_dir, ks=stability.parse_k(getattr(a, "stability_k", "1,7")),
+                              backend=getattr(a, "stability_backend", "dis"),
+                              out_dir=pj.path("render", f"{name}_stability"), name=name, stage=STAGE,
+                              record=lambda n, v, **x: pj.metric(STAGE, "stability_" + n, v, **x))
+        for kind, key in (("json", "json"), ("image", "png")):
+            pj.artifact(STAGE, s["meta"]["outputs"][key], kind)
     if not a.keep_frames:
         shutil.rmtree(out_dir)
         pj.metric(STAGE, "frames_kept", False)

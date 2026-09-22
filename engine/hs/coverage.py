@@ -84,6 +84,22 @@ def write(rig_npz, out_path):
     return t
 
 
+HOLDOUT_JSON = os.path.join("solve", "holdout.json")
+
+
+def load_holdout(root):
+    """solve/holdout.json of a project (written by `hs cameras --holdout N --write`), or raise
+    ValueError saying how to make one. `hs train --exclude @holdout` and
+    `hs views --captures holdout` both read it, so the views scored are the views left out."""
+    p = os.path.join(root, HOLDOUT_JSON)
+    if not os.path.exists(p):
+        raise ValueError(f"no {HOLDOUT_JSON} in {root}: run `hs cameras -p {root} --holdout N --write` first")
+    h = json.load(open(p))
+    if not h.get("captures") or not h.get("names"):
+        raise ValueError(f"{p} names no captures")
+    return h
+
+
 # ---------------------------------------------------------------- presets (strategy §4.6)
 
 def _longest_run(ok):
@@ -187,3 +203,115 @@ def boom_keys(table, low_tol_deg=6.0, high_min_deg=8.0):
     info["settle"] = int(settle)
     info["leftmost_low"] = int(leftmost_low)
     return out, info
+
+
+# ---------------------------------------------------------------- hold-out selection
+
+HOLDOUT_METHODS = ("fps", "interval", "azimuth")
+
+
+def _fps(C, n, start, pool=None, chosen=()):
+    """Farthest-point sampling over rows of C: each pick is the capture farthest from every
+    capture already picked. ``pool`` limits the candidates, ``chosen`` seeds the picked set."""
+    pool = list(range(len(C))) if pool is None else list(pool)
+    picked = list(chosen)
+    if not picked:
+        picked.append(int(start))
+    d = np.full(len(C), np.inf)
+    for p in picked:
+        d = np.minimum(d, np.linalg.norm(C - C[p], axis=1))
+    cand = np.array([i for i in pool if i not in picked], int)
+    while len(picked) < len(chosen) + n and len(cand):
+        # ties go to the lower index, so a run is reproducible to the capture
+        j = int(cand[np.argmax(d[cand])])
+        picked.append(j)
+        d = np.minimum(d, np.linalg.norm(C - C[j], axis=1))
+        cand = cand[cand != j]
+    return picked[len(chosen):] if chosen else picked
+
+
+def select_holdout(centres, n, method="fps", azimuth=None, seed=0):
+    """Capture indices to hold out of training, sorted.
+
+    ``centres`` (M, 3) camera centres of the reference views in capture order (rig.npz C[L]);
+    ``azimuth`` (M,) degrees from the coverage table, needed by ``azimuth``.
+
+      fps       farthest-point sampling over the camera centres, seeded at the capture farthest
+                from their centroid: spatially uniform, so a dense stretch of the orbit cannot
+                take most of the hold-outs and a sparse one none (NeRF Director's selection).
+      interval  every (M // n)-th capture starting half a step in -- the hand-picked baselines'
+                cap005, cap015, ... -- kept for comparison. ``seed`` shifts the phase.
+      azimuth   n equal-width bands over the covered azimuth range, one capture per band (the
+                one nearest the band centre); a band the camera never entered gets nothing, and
+                the shortfall is filled by farthest-point sampling over what is left.
+    """
+    C = np.asarray(centres, float)
+    M = len(C)
+    if n < 1 or n >= M:
+        raise ValueError(f"cannot hold out {n} of {M} captures (need 1 <= n < {M})")
+    if method == "fps":
+        start = int(np.argmax(np.linalg.norm(C - C.mean(axis=0), axis=1)))
+        out = _fps(C, n, start)
+    elif method == "interval":
+        step = max(M // n, 1)
+        start = (step // 2 + int(seed)) % step
+        out = list(range(start, M, step))[:n]
+    elif method == "azimuth":
+        if azimuth is None:
+            raise ValueError("azimuth selection needs the coverage table's azimuths")
+        az = np.asarray(azimuth, float)
+        lo, hi = float(az.min()), float(az.max())
+        width = (hi - lo) / n or 1.0
+        out = []
+        for b in range(n):
+            b_lo = lo + b * width
+            inside = np.where((az >= b_lo) & ((az < b_lo + width) | (b == n - 1)))[0]
+            inside = [int(i) for i in inside if int(i) not in out]
+            if inside:
+                centre = b_lo + width / 2
+                out.append(min(inside, key=lambda i: (abs(az[i] - centre), i)))
+        if len(out) < n:
+            out += _fps(C, n - len(out), None, chosen=out)
+    else:
+        raise ValueError(f"unknown hold-out method {method!r} (one of {', '.join(HOLDOUT_METHODS)})")
+    return sorted(int(i) for i in out)
+
+
+def holdout_stats(centres, chosen, azimuth=None, band=None):
+    """How well a hold-out set samples the capture, as numbers.
+
+    nn_holdout_mm      each hold-out's distance to its nearest other hold-out: a small minimum
+                       means two hold-outs are spent on the same place
+    holdout_to_rest_mm each hold-out's distance to its nearest TRAINING capture: how far out of
+                       sample it is (0 would be a duplicate of a training view)
+    bands              per azimuth band (hs.bands.AZIMUTH_BAND, the band hs views scores):
+                       captures in the band, hold-outs in it
+    empty_bands        bands that have captures but no hold-out
+    """
+    from .bands import AZIMUTH_BAND, azimuth_band_lo
+    band = band or AZIMUTH_BAND
+    C = np.asarray(centres, float)
+    chosen = sorted(int(i) for i in chosen)
+    rest = [i for i in range(len(C)) if i not in chosen]
+
+    def summary(d):
+        d = np.asarray(d, float)
+        return ({"min": round(float(d.min()), 2), "median": round(float(np.median(d)), 2)}
+                if len(d) else {"min": None, "median": None})
+
+    D = np.linalg.norm(C[:, None, :] - C[None, :, :], axis=2)
+    nn_h = [min(D[i, j] for j in chosen if j != i) for i in chosen] if len(chosen) > 1 else []
+    to_rest = [min(D[i, j] for j in rest) for i in chosen] if rest else []
+    out = {"n": len(chosen), "of": len(C),
+           "nn_holdout_mm": summary(nn_h), "holdout_to_rest_mm": summary(to_rest)}
+    if azimuth is not None:
+        az = np.asarray(azimuth, float)
+        per = {}
+        for i, a in enumerate(az):
+            lo = azimuth_band_lo(a, band)
+            rec = per.setdefault(lo, {"azimuth_deg": [lo, lo + band], "captures": 0, "holdouts": 0})
+            rec["captures"] += 1
+            rec["holdouts"] += int(i in chosen)
+        out["bands"] = [per[k] for k in sorted(per)]
+        out["empty_bands"] = [per[k]["azimuth_deg"] for k in sorted(per) if not per[k]["holdouts"]]
+    return out

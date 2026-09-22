@@ -9,6 +9,10 @@ description = "HydrogenSplat engine: one `hs` CLI, JSON-lines events, wrapping t
 requires-python = ">=3.10"
 dependencies = ["numpy>=2.0", "opencv-python-headless>=4.10", "pycolmap==4.2.0"]
 
+[project.optional-dependencies]
+# hs stability --backend raft (torchvision raft_small); nothing imports torch unless asked
+metrics = ["torch", "torchvision"]
+
 [project.scripts]
 hs = "hs.cli:main"
 

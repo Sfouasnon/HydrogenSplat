@@ -63,7 +63,8 @@ SOFT_VIEW_NORM = 0.45
 def add_parser(sub):
     p = sub.add_parser("views", help="render from real capture poses and grade the model against the photographs")
     p.add_argument("--captures", default=None,
-                   help="capture indices, e.g. 5,15,55 (default: the azimuth extremes, the centre and the highest view)")
+                   help="capture indices, e.g. 5,15,55, or 'holdout' for solve/holdout.json "
+                        "(default: the azimuth extremes, the centre and the highest view)")
     p.add_argument("--ply", default=None, help="default: the train stage's final export")
     p.add_argument("--name", default="views")
     p.add_argument("--eye", choices=("L", "R"), default="L",
@@ -79,6 +80,9 @@ def add_parser(sub):
     p.add_argument("--max-displaced-fraction", type=float, default=0.10,
                    help="check threshold (rig6 golden: 0.03 on the well-covered side, 0.24 on the thin one)")
     p.add_argument("--keep-frames", action="store_true", help="keep the raw renders as well as the comparisons")
+    p.add_argument("--overlay", action="store_true",
+                   help="also write views/<name>_overlay/<view>/: the sparse points on photograph and render, and "
+                        "the global + per-quadrant shift between them (hs/overlay.py; solve fault vs training fault)")
     region = p.add_mutually_exclusive_group()
     region.add_argument("--inside-masks", dest="mask_region", action="store_const", const="inside",
                         help="score only where train/dataset/masks is white: a subject layer, which is "
@@ -104,6 +108,31 @@ def auto_captures(cov, n):
         if c not in out and 0 <= c < n:
             out.append(int(c))
     return out
+
+
+def parse_captures(text, root, cov):
+    """--captures: '5,15,55' -> [5, 15, 55]; 'holdout' -> the captures solve/holdout.json holds
+    out (`hs cameras --holdout N --write`, the same file `hs train --exclude @holdout` reads);
+    nothing -> auto_captures."""
+    if not text:
+        return auto_captures(cov, cov["n_captures"])
+    if text.strip() in ("holdout", "@holdout"):
+        from ..coverage import load_holdout
+        try:
+            h = load_holdout(root)
+        except ValueError as e:
+            raise events.StageError(str(e))
+        names = {c["capture"]: c.get("name") for c in cov["captures"]}
+        stale = [n for i, n in zip(h["captures"], h["names"]) if names.get(i) not in (None, n)]
+        if stale:
+            raise events.StageError(f"solve/holdout.json names {', '.join(stale[:3])} at indices the current "
+                                    "coverage.json gives to other captures",
+                                    hint="re-run hs cameras --holdout N --write")
+        return [int(c) for c in h["captures"]]
+    try:
+        return [int(c) for c in text.split(",") if c.strip()]
+    except ValueError:
+        raise events.StageError(f"--captures: cannot read {text!r}", hint="indices like 5,15,55, or holdout")
 
 
 def subject_extent_mm(pts, subject):
@@ -461,8 +490,7 @@ def run(a, pj):
     # A named pass (the R eye, or any --name) must not wipe the folder: both eyes are the
     # same stage, and eL - eR cannot be computed if running R deletes L's report.
     pj.begin(STAGE, argv=sys.argv, clean=(a.name == "views"))
-    captures = ([int(c) for c in a.captures.split(",")] if a.captures
-                else auto_captures(cov, cov["n_captures"]))
+    captures = parse_captures(a.captures, pj.root, cov)
     events.start(STAGE, "path")
     path_json = pj.path("views", f"{a.name}.json")
     views, subj_mm, fx = build_path(pj, captures, path_json, a.eye)
@@ -512,7 +540,7 @@ def run(a, pj):
         return (m >= 128) if region_kind == "inside" else (m < 128)
 
     events.start(STAGE, "compare")
-    report, worst = [], None
+    report, worst, rig_G = [], None, None
     for i, v in enumerate(views):
         frame = os.path.join(out_dir, f"frame_{i:04d}.png")
         img = os.path.join(pj.dataset_dir, "images", a.eye, v["image"])
@@ -545,6 +573,17 @@ def run(a, pj):
         comparison_image(src_bgr, ren_bgr, res, cmp_path, label, a.displaced_px)
         pj.artifact(STAGE, cmp_path, "image")
         row = {k: val for k, val in res.items() if not k.startswith("_")}
+        if getattr(a, "overlay", False):
+            from .. import overlay
+            if rig_G is None:
+                rig_G = rig.load(pj.rig_npz)
+            vi = rig_G[1].index(v["view"])
+            odir = pj.path("views", f"{a.name}_overlay", v["view"])
+            orep = overlay.make(src_bgr, ren_bgr, overlay.points_for_view(rig_G[0], vi, pj.dataset_dir, a.eye),
+                                odir, label=v["view"])
+            row["overlay"] = {k: orep.get(k) for k in ("n_points", "points_source", "sparse_residual_px",
+                                                       "shift_px", "quadrant_spread_px", "diagnosis")}
+            pj.artifact(STAGE, os.path.join(odir, "overlay_render.jpg"), "image")
         row.update({"capture": v["capture"], "view": v["view"], "depth_mm": round(v["depth_mm"], 1),
                     "azimuth_deg": c.get("azimuth_deg"), "elevation_deg": c.get("elevation_deg"),
                     "displacement_p90_mm": round((res["displacement_p90_px"] or 0) * v["depth_mm"] / fx, 3)})

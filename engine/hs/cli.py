@@ -2,6 +2,7 @@
 
     hs <stage> --project DIR [stage options]
     hs cameras -p DIR | hs movepreview -p DIR --script F | hs tools | hs calib ... | hs selftest [--clip CLIP] | hs phone | hs replay EVENTS.jsonl
+    hs stability --frames DIR | --video MP4 [-p DIR]
 
 Stages: ingest, select, solve, scale, train, move (alias paths), prune, render, views; split is an
 operation on a trained model, like archive and merge. Each wraps one of
@@ -16,7 +17,7 @@ import traceback
 
 from . import __version__, events, keepawake
 from .project import Project
-from .stages import archive, calibrate, cameras, exposure, grade, ingest, masks, merge, move, movepreview, phone, prune, render, replay, scale, select, selftest, solve, split, tools, train, views
+from .stages import archive, calibrate, cameras, exposure, grade, ingest, masks, merge, move, movepreview, phone, prune, render, replay, scale, select, selftest, solve, split, stability, tools, train, views
 
 PROJECT_STAGES = {
     "ingest": ingest, "select": select, "solve": solve, "scale": scale, "train": train,
@@ -24,14 +25,14 @@ PROJECT_STAGES = {
     "exposure": exposure, "masks": masks, "merge": merge, "archive": archive, "grade": grade,
     "split": split,
 }
-FREE_STAGES = {"cameras": cameras, "movepreview": movepreview, "tools": tools, "calib": calibrate, "selftest": selftest, "phone": phone, "replay": replay}
+FREE_STAGES = {"cameras": cameras, "movepreview": movepreview, "tools": tools, "calib": calibrate, "selftest": selftest, "phone": phone, "replay": replay, "stability": stability}
 
 
 # --project and --verbose are accepted on either side of the stage name: `hs -p DIR solve`
 # and `hs solve -p DIR` both work. argparse hands everything after the stage name to the
 # subparser, so the flags have to exist on both; SUPPRESS on the subparser's copy means an
 # omitted flag leaves the top-level value in place instead of overwriting it with None.
-GLOBAL_ON_SUBPARSER = set(PROJECT_STAGES) | {"tools", "selftest", "cameras", "movepreview"}
+GLOBAL_ON_SUBPARSER = set(PROJECT_STAGES) | {"tools", "selftest", "cameras", "movepreview", "stability"}
 
 
 def build_parser():
@@ -40,7 +41,7 @@ def build_parser():
     ap.add_argument("-p", "--project", default=None, help="project folder (created by ingest)")
     ap.add_argument("-v", "--verbose", action="store_true", help="also emit child output as {\"ev\":\"log\"} events")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<stage>")
-    for mod in (ingest, select, solve, scale, exposure, masks, train, archive, merge, split, move, prune, render, grade, views, cameras, movepreview, tools, calibrate, selftest, phone, replay):
+    for mod in (ingest, select, solve, scale, exposure, masks, train, archive, merge, split, move, prune, render, grade, views, cameras, movepreview, stability, tools, calibrate, selftest, phone, replay):
         mod.add_parser(sub)
     seen = set()
     for name, sp in sub.choices.items():

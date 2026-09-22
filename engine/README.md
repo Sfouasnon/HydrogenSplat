@@ -43,8 +43,9 @@ hs/
   coverage.py   azimuth / elevation / distance per capture from rig.npz; sweep-window and boom-key presets
   movescript.py the .hsmove cue language: boom / arc / dolly / hold in capture coordinates, clamped to the hull
   board.py      ChArUco detection, DLT triangulation from rig.npz, pair-median scale, board plane, white-paper samples
-  stages/       ingest select solve scale exposure masks train move prune render tools calibrate selftest
   splatweights.py the renderer's forward weights w = alpha*T per (splat, view, cell), in numpy — under split and prune --score
+  overlay.py    sparse points on photograph + render; global / per-quadrant phase-correlation shift
+  stages/       ingest select solve scale exposure masks train move prune render views stability split export tools calibrate selftest
   <six vendored scripts>
 ```
 
@@ -68,8 +69,10 @@ hs prune   -p P --score [--ply PLY] [--name N] [--cell 8]            prune/N_sco
 hs prune   -p P --floaters [--name N] [--min-importance-quantile 0.02] [--max-blame 0.25]   prune/N_nofloat.ply + N_floaters_only.ply
 hs split   -p P [--ply PLY] [--masks vision|region|DIR] [--exclude L/cap064,…|@holdout] [--name N] [--cell 8] [--refine knn|none]
                                                                       split/N/{full_labelled,subject,background}.ply + report.json
-hs render  -p P --move N [--ply PATH] [--width 2400] [--keep-frames]  render/N_1920.mp4, N_1080x1350.mp4  (Mac only)
-hs views   -p P [--captures 5,15,55] [--ply PATH]                     grade the model against the photographs  (Mac only)
+hs render  -p P --move N [--ply PATH] [--width 2400] [--keep-frames] [--stability]  render/N_1920.mp4, N_1080x1350.mp4  (Mac only)
+hs views   -p P [--captures 5,15,55|holdout] [--ply PATH]                     grade the model against the photographs  (Mac only)
+hs cameras -p P --holdout N [--method fps|interval|azimuth] [--write]  choose hold-out captures by camera position -> solve/holdout.json
+hs stability --frames DIR | --video MP4 [--k 1,7] [--backend dis|raft]  flow-warped temporal stability of a rendered move (no project needed)
 hs tools                                                              versions of python packages, brush, brush-path-render, ffmpeg, adb
 hs calib   --photos 'board/*.jpg' | --video board.h4v -o cal.npz      stereocal.py + a profile JSON
 hs selftest [--clip CLIP] [--project DIR] [--resume|--fresh]          golden test (below)
@@ -287,6 +290,55 @@ hs solve  -p P --scale-pair GA,GB,700  # the measured distance in mm between two
 - **Known limit**: coverage's `up_world` is the mean camera −y axis. The array cameras are mounted
   portrait, so that axis is horizontal and the azimuth/elevation table (and any `hs move` preset
   built on it) is rotated 90°. Fine for train/archive/views; fix before relying on move presets.
+
+## Evaluation trio: hold-outs, reproject overlay, temporal stability (2026-09-21)
+
+**Hold-outs by position.** "Every 10th from 5" left the 09-16 head's +90…+135 band without a
+hold-out. `hs cameras -p P --holdout 16 --write` picks by where the cameras are: `fps`
+(default) is farthest-point sampling over the camera centres, seeded at the capture farthest
+from their centroid; `azimuth` takes one capture per equal-width azimuth band; `interval` is the
+old every-Nth (`--seed` shifts its phase). It prints the picks, nearest-neighbour spread among
+hold-outs and to the training set, and hold-outs per 45° band (stderr; events on stdout), and
+`--write` saves `solve/holdout.json`. Then `hs train -p P --exclude @holdout` (both eyes of each
+capture on a stereo rig) and `hs views -p P --captures holdout` score exactly what was left out.
+FPS reaches the ends of the orbit first, so its hold-outs include the coverage extremes: they are
+extrapolations, which is what a move to the edge of the capture asks of the model too.
+
+**Reproject overlay** — solve fault or training fault?
+
+```
+python3 engine/tools/reproject_overlay.py -p P --capture cap045 [--eye R] [--ply PLY | --render IMG]
+hs views -p P --overlay            # the same for every scored view, on the renders views makes
+```
+
+The sparse points the image observes (rig.npz `pts` when the model has no tracks) are drawn on
+the photograph at their reprojection with a red line to their keypoint, and on the render of the
+same pose; phase correlation (×4 coarse, whole-pixel back-shift, fine residual; on the synthetic
+test whole-pixel shifts come back exact and fractional ones within 0.06 px) gives `shift_px` and per-quadrant shifts in `report.json`.
+Long keypoint lines = the solve is wrong. Short lines and a near-uniform render shift = the splats
+or the pose used in training disagree with a solve that is fine. Without `--ply`/`--render` it
+uses the frame `hs views --keep-frames` left for that pose, if any.
+
+**Temporal stability** — does the model pop?
+
+```
+hs stability --frames render/boom/ | --video render/boom_1920.mp4 [--k 1,7] [-p P]
+hs render -p P --move boom --stability          # on the PNGs before they are deleted
+```
+
+For each pair (t, t+k): DIS optical flow both ways, t+k warped onto t, occlusions masked by
+forward–backward consistency (> 1 px), then warped PSNR / MSE, mean |Δ| (flicker) and the fraction
+of pixels over 0.1 error ("popping") on the valid mask. Frames are scored by the mean over the
+pairs they are in, so a one-frame pop is blamed on itself rather than a neighbour. Output:
+`<name>_pairs.csv`, `<name>_stability.json`, `<name>_stability.png`; `hs render --stability` records
+the numbers as `stability_*` render metrics. Frames are downscaled to 960 px wide first; compare
+runs at the same width, k and backend. On the synthetic test (a textured square moving 2 px/frame,
+320×240): steady 58.4 dB median at k = 1; a 6 px jump on one frame drops its pair to 42.6 dB
+and names it worst; a one-frame 1.35× brightness flash drops it to 26.8 dB with 8% popping pixels.
+A rigid jump is the weak case, because the flow tracks most of it; appearance pops are the strong
+one. `--backend raft` uses torchvision's raft_small (`pip install -e 'engine[metrics]'`; torch is
+imported only then, and it downloads its weights on first use); `hs tools` reports `flow_dis` and
+`flow_raft`.
 
 ## Golden test
 
