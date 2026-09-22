@@ -14,6 +14,15 @@ lens): ``--frames DIR`` takes a folder of PNG/JPEG/TIFF frames named by camera, 
 camera position (``G007_A067`` -> ``GA``) and renders its first frame through REDline (16-bit
 BT.709 TIFF, converted to PNG). Frames land in ``source/frames/``; there is no clip and
 nothing to select, so ingest also marks ``select`` done and ``hs solve`` runs monocolmap.py.
+
+``source.kind`` says which of two things the frames are. ``array``: one frame from each of
+several cameras — per-camera subfolders (one frame each), an R3D take, or a flat folder of
+camera-named frames (GA.png …). ``mono``: frames from ONE camera, e.g. a phone orbit picked with
+``select_frames.py --mono`` (selNNN-FFFFF.jpg, or a selection.json that says mono) or any one
+numbered sequence (frame-0001 …). Both take the same route (select done, monocolmap.py); they
+differ where the number of cameras matters. ``--kind`` overrides the guess for a flat folder.
+A manifest without ``kind`` is a Hydrogen clip; mono data ingested before ``mono`` existed is
+tagged ``array`` and keeps working as one.
 """
 import glob
 import json
@@ -54,7 +63,60 @@ def add_parser(sub):
     p.add_argument("--redline", default=os.environ.get("HS_REDLINE", "REDline"),
                    help="REDline executable (HS_REDLINE); ~/bin/REDline is tried when it is not on PATH")
     p.add_argument("--res", type=int, default=1, help="with --r3d: REDline --res (1 full, 2 half …)")
+    p.add_argument("--kind", choices=("auto", "mono", "array"), default="auto",
+                   help="with --frames: mono = frames from ONE camera (a video's picks), array = one frame per "
+                        "camera. auto: per-camera subfolders are an array; a flat folder is mono when it is one "
+                        "numbered sequence (select_frames.py --mono picks, frame-0001 …), else an array of "
+                        "camera-named frames (GA.png …)")
     return p
+
+
+RE_MONO_PICK = re.compile(r"^sel\d+-\d+$")          # select_frames.py --mono: selNNN-FFFFF
+RE_NUMBERED = re.compile(r"^(.*?)(\d{3,})$")          # frame-0001, IMG1234, 000017
+
+
+def guess_flat_kind(src_root, stems):
+    """(kind, why) for a flat folder of frames. A camera array's frames are named by camera
+    (GA, GB, cam0 …); one camera's frames are one numbered sequence. selection.json is what
+    select_frames.py writes beside its picks, and says outright when they are mono."""
+    sel = os.path.join(src_root, "selection.json")
+    if os.path.exists(sel):
+        try:
+            if json.load(open(sel)).get("mono"):
+                return "mono", "selection.json from select_frames.py --mono"
+        except (OSError, ValueError, AttributeError):
+            pass
+    if stems and all(RE_MONO_PICK.match(s) for s in stems):
+        return "mono", "select_frames.py --mono pick names (selNNN-FFFFF)"
+    m = [RE_NUMBERED.match(s) for s in stems]
+    if len(stems) >= 3 and all(m) and len({x.group(1) for x in m}) == 1 and len({int(x.group(2)) for x in m}) == len(stems):
+        return "mono", f"one numbered sequence ({stems[0]} … {stems[-1]})"
+    return "array", "one frame per named camera"
+
+
+def frames_layout(src_root):
+    """-> (kind or None, [(view name, source path)], why). Per-camera subfolders (two or more,
+    each holding one frame) are an array whatever --kind says; a single subfolder is looked into;
+    a flat folder is left to guess_flat_kind / --kind (kind None)."""
+    entries = sorted(os.listdir(src_root))
+    flat = [f for f in entries if f.lower().endswith(FRAME_EXTS) and os.path.isfile(os.path.join(src_root, f))]
+    subs = [d for d in entries if os.path.isdir(os.path.join(src_root, d))
+            and any(f.lower().endswith(FRAME_EXTS) for f in os.listdir(os.path.join(src_root, d)))]
+    if flat:
+        return None, [(os.path.splitext(f)[0], os.path.join(src_root, f)) for f in flat], None
+    if len(subs) == 1:
+        return frames_layout(os.path.join(src_root, subs[0]))
+    if len(subs) >= 2:
+        views = []
+        for d in subs:
+            fs = sorted(f for f in os.listdir(os.path.join(src_root, d)) if f.lower().endswith(FRAME_EXTS))
+            if len(fs) != 1:
+                raise events.StageError(
+                    f"camera folder {d!r} holds {len(fs)} frames; an array takes one frame per camera",
+                    hint="leave one frame in each camera's folder (the same instant in all of them)")
+            views.append((d, os.path.join(src_root, d, fs[0])))
+        return "array", views, f"one folder per camera ({len(subs)})"
+    return None, [], None
 
 
 def redline_runs(exe):
@@ -158,8 +220,12 @@ def run_array(a, pj):
     fdir = pj.path("source", "frames")
     os.makedirs(fdir, exist_ok=True)
     src_root = os.path.abspath(os.path.expanduser(a.r3d or a.frames))
+    want = getattr(a, "kind", None) or "auto"
     origin = {}
     if a.r3d:
+        if want == "mono":
+            raise events.StageError("--kind mono with --r3d: an RDM tree is one clip per camera, an array")
+        kind, kind_why = "array", "R3D clips, one per camera"
         exe = redline_exe(a.redline)
         clips = r3d_clips(src_root, a.take)
         pj.record_tool("redline", {"path": exe})
@@ -174,19 +240,25 @@ def run_array(a, pj):
         if not os.path.isdir(src_root):
             raise events.StageError(f"not a folder: {src_root}")
         events.start(STAGE, "copy")
-        files = sorted(f for f in os.listdir(src_root) if f.lower().endswith(FRAME_EXTS))
-        if not files:
+        kind, views, kind_why = frames_layout(src_root)
+        if not views:
             raise events.StageError(f"no frames ({', '.join(FRAME_EXTS)}) in {src_root}")
-        for f in files:
-            cam = os.path.splitext(f)[0]
-            if not re.fullmatch(r"[A-Za-z0-9-]+", cam):
-                raise events.StageError(f"frame name {f!r} must be letters, digits or '-' (it becomes the view name)")
-            dst = os.path.join(fdir, f)
-            if a.link:
-                os.symlink(os.path.join(src_root, f), dst)
+        if kind is None:                        # a flat folder: --kind, else the names decide
+            if want != "auto":
+                kind, kind_why = want, f"--kind {want}"
             else:
-                shutil.copy2(os.path.join(src_root, f), dst)
-            origin[cam] = _where(pj, os.path.join(src_root, f))
+                kind, kind_why = guess_flat_kind(os.path.dirname(views[0][1]), [v for v, _ in views])
+        elif want not in ("auto", kind):
+            raise events.StageError(f"--kind {want}, but {src_root} has {kind_why}: that is an {kind}")
+        for cam, src in views:
+            if not re.fullmatch(r"[A-Za-z0-9-]+", cam):
+                raise events.StageError(f"frame name {cam!r} must be letters, digits or '-' (it becomes the view name)")
+            dst = os.path.join(fdir, cam + os.path.splitext(src)[1])
+            if a.link:
+                os.symlink(src, dst)
+            else:
+                shutil.copy2(src, dst)
+            origin[cam] = _where(pj, src)
 
     events.start(STAGE, "probe")
     frames, sizes = [], {}
@@ -208,13 +280,18 @@ def run_array(a, pj):
     pj.check(STAGE, "one_frame_size", len(sizes) == 1,
              value=f"{frames[0]['width']}x{frames[0]['height']} x {n}" if len(sizes) == 1
              else "; ".join(f"{w}x{h}: {','.join(c)}" for (w, h), c in sizes.items()))
-    pj.check(STAGE, "enough_cameras", n >= 3, value=f"{n} cameras (COLMAP needs 3+)")
+    unit = "cameras" if kind == "array" else "frames"
+    pj.check(STAGE, f"enough_{unit}", n >= 3, value=f"{n} {unit} (COLMAP needs 3+)")
+    pj.metric(STAGE, "source_kind", kind)
+    pj.metric(STAGE, "source_kind_why", kind_why)
     if len(sizes) != 1 or n < 3:
-        raise events.StageError("array rejected", hint="one size for every camera, at least three of them")
+        raise events.StageError(f"{kind} rejected", hint=f"one size for every frame, at least three {unit}")
     pj.m["profile_id"] = None
     pj.m["profile_path"] = None
-    pj.m["source"] = {"kind": "array", "frames": pj.rel(fdir), "md5": digest, "original_path": _where(pj, src_root),
-                      "take": a.take, "cameras": frames,
+    # "cameras" keeps its name for a mono source too (the app and older readers look for it):
+    # there each entry is one frame of the one camera
+    pj.m["source"] = {"kind": kind, "kind_why": kind_why, "frames": pj.rel(fdir), "md5": digest,
+                      "original_path": _where(pj, src_root), "take": a.take, "cameras": frames,
                       "probe": {"width": frames[0]["width"], "height": frames[0]["height"], "nb_frames": n}}
     for k, v in tool_versions().items():
         pj.record_tool(k, v)
@@ -231,7 +308,8 @@ def run_array(a, pj):
         link = os.path.join(pj.frames_dir, fr["file"])
         os.symlink(os.path.relpath(os.path.join(fdir, fr["file"]), os.path.dirname(link)), link)
     pj.metric("select", "selected", n)
-    pj.metric("select", "note", "array source: one frame per camera, nothing to select")
+    pj.metric("select", "note", "array source: one frame per camera, nothing to select" if kind == "array"
+              else "mono source: the frames were picked before ingest (select_frames.py --mono)")
     pj.finish("select", ok=True)
 
 
