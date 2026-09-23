@@ -62,6 +62,12 @@ def add_parser(sub):
                         "own best joint fit for this rig is 11.71 mm against the 10.595 it ships")
     p.add_argument("--no-float-rig", action="store_true", help="NOT recommended: keep sensor_from_rig fixed")
     p.add_argument("--reuse-matches", action="store_true", help="keep an existing database.db (skip features/matching)")
+    p.add_argument("--allow-partial", action="store_true",
+                   help="export the registered captures when some did not register (the check fails and needs a "
+                        "human; the unregistered captures are listed; the coverage will have a hole)")
+    p.add_argument("--export-only", action="store_true",
+                   help="skip prep and sfm: export solve/sparse/rig from an earlier run (with --allow-partial "
+                        "when that run stopped at a partial registration)")
     p.add_argument("--max-reproj", type=float, default=1.8, help="check threshold, px")
     m = p.add_argument_group("matching (hs/pairs.py)")
     m.add_argument("--matcher", choices=pairs.MATCHER_CHOICES, default="auto",
@@ -328,11 +334,19 @@ def _run_stereo(a, pj):
         raise events.StageError("project has no calibration profile", hint="re-run hs ingest")
     prof_path, prof = calib.load_profile(prof_ref)
     work = pj.stage_dir(STAGE)
+    export_only = bool(getattr(a, "export_only", False))
+    if export_only:
+        for need in ("sparse/rig", "captures.json", "sfm_report.json", "images"):
+            if not os.path.exists(os.path.join(work, need)):
+                raise events.StageError(f"--export-only: no {pj.rel(os.path.join(work, need))} from an earlier solve",
+                                        hint="run hs solve without --export-only")
+        # keep the earlier run's numbers: begin() replaces the stage entry, and there is no sfm log to re-read
+        prev = dict(pj.stage(STAGE).get("metrics") or {})
     keep_db = None
-    if a.reuse_matches and os.path.exists(os.path.join(work, "database.db")):
+    if a.reuse_matches and not export_only and os.path.exists(os.path.join(work, "database.db")):
         keep_db = os.path.join(pj.root, "database.db.keep")
         shutil.move(os.path.join(work, "database.db"), keep_db)
-    pj.begin(STAGE, argv=sys.argv)
+    pj.begin(STAGE, argv=sys.argv, clean=not export_only)
     reused = bool(keep_db)
     if keep_db:
         shutil.move(keep_db, os.path.join(work, "database.db"))
@@ -352,31 +366,53 @@ def _run_stereo(a, pj):
     pj.metric(STAGE, "source_kind", pj.source_kind)
     log = pj.log_path(STAGE)
 
-    # ---- prep
-    events.start(STAGE, "prep")
-    runner.run(runner.python_argv("rigcolmap.py", "prep", frames, "-o", work), STAGE, log_path=log)
-    caps = json.load(open(os.path.join(work, "captures.json")))["captures"]
-    pj.metric(STAGE, "captures", len(caps))
-    n_img = 2 * len(caps)
-    matcher, m_argv = _matcher_argv(a, len(caps), pj)
+    if export_only:
+        caps = json.load(open(os.path.join(work, "captures.json")))["captures"]
+        n_img = 2 * len(caps)
+        pj.metric(STAGE, "captures", len(caps))
+        pj.metric(STAGE, "export_only", True)
+        parser = SfmParser(n_img, stereo=True, model=_load_model())
+        parser.matcher = prev.get("matcher")
+        parser.num_pairs = prev.get("num_pairs")
+        for ph in ("features", "matching", "mapping"):
+            if isinstance(prev.get(f"{ph}_s"), (int, float)):
+                parser.timings[ph] = float(prev[f"{ph}_s"])
+        for k in ("matcher", "num_pairs", "features_s", "matching_s", "mapping_s", "features_per_image_median",
+                  "median_reproj_px", "eye_L_rms_px", "eye_R_rms_px", "ba_rig_rotation_shift_deg",
+                  "rig_baseline_mm", "path_length_mm", "capture_step_median_mm",
+                  "scene_depth_p5_mm", "scene_depth_median_mm", "scene_depth_p95_mm"):
+            if k in prev:
+                pj.metric(STAGE, k, prev[k])
+        events.log(STAGE, f"[hs] --export-only: exporting solve/sparse/rig from the earlier run ({prev.get('matcher', '?')} matcher)")
+        rep = json.load(open(os.path.join(work, "sfm_report.json")))
+        rep_path = os.path.join(work, "sfm_report.json")
+        mm = {}
+    else:
+        # ---- prep
+        events.start(STAGE, "prep")
+        runner.run(runner.python_argv("rigcolmap.py", "prep", frames, "-o", work), STAGE, log_path=log)
+        caps = json.load(open(os.path.join(work, "captures.json")))["captures"]
+        pj.metric(STAGE, "captures", len(caps))
+        n_img = 2 * len(caps)
+        matcher, m_argv = _matcher_argv(a, len(caps), pj)
 
-    # ---- sfm
-    events.start(STAGE, "sfm")
-    argv = runner.python_argv("rigcolmap.py", "sfm", work, "--calib", calib_npz,
-                              "--peak-threshold", a.peak_threshold, "--features", a.features, *m_argv)
-    if not a.no_float_rig:
-        argv.append("--float-rig")
-    if a.masks:
-        argv += ["--masks", a.masks]
-    parser = SfmParser(n_img, stereo=True, model=_load_model())
+        # ---- sfm
+        events.start(STAGE, "sfm")
+        argv = runner.python_argv("rigcolmap.py", "sfm", work, "--calib", calib_npz,
+                                  "--peak-threshold", a.peak_threshold, "--features", a.features, *m_argv)
+        if not a.no_float_rig:
+            argv.append("--float-rig")
+        if a.masks:
+            argv += ["--masks", a.masks]
+        parser = SfmParser(n_img, stereo=True, model=_load_model())
 
-    runner.run(argv, STAGE, log_path=log, on_line=parser)
-    _record_matching(pj, parser, matcher, reused)
-    rep_path = os.path.join(work, "sfm_report.json")
-    if not os.path.exists(rep_path):
-        raise events.StageError("sfm wrote no sfm_report.json", hint="see logs/solve.log")
-    rep = json.load(open(rep_path))
-    mm = parser.metrics
+        runner.run(argv, STAGE, log_path=log, on_line=parser)
+        _record_matching(pj, parser, matcher, reused)
+        rep_path = os.path.join(work, "sfm_report.json")
+        if not os.path.exists(rep_path):
+            raise events.StageError("sfm wrote no sfm_report.json", hint="see logs/solve.log")
+        rep = json.load(open(rep_path))
+        mm = parser.metrics
     if "featstat" in mm:
         pj.metric(STAGE, "features_per_image_median", int(mm["featstat"][1]))
     pj.metric(STAGE, "num_images", rep["num_images"])
@@ -412,20 +448,24 @@ def _run_stereo(a, pj):
     per_path = os.path.join(work, "per_image.json")
     json.dump(per, open(per_path, "w"), indent=1)
     pj.artifact(STAGE, per_path, "json")
-    worst = max(per["images"], key=lambda r: r["mean_reproj_px"]) if per["images"] else None
-    if worst:
-        pj.metric(STAGE, "worst_image_reproj_px", worst["mean_reproj_px"])
-        pj.check(STAGE, "no_image_over_3px", worst["mean_reproj_px"] <= 3.0,
-                 value=f"worst {worst['name']} {worst['mean_reproj_px']:.2f} px")
+    _per_image_checks(pj, per)
 
     if not all_reg:
-        pj.finish(STAGE, ok=False, error="partial registration")
         missing = sorted(set(c["capture"] for c in caps) - set(r["name"].split("/")[1].split(".")[0] for r in per["images"]))
-        raise events.StageError(
-            f"only {rep['num_frames']} of {len(caps)} frames registered — the chain broke "
-            f"(unregistered: {', '.join(missing[:12])}{'…' if len(missing) > 12 else ''})",
-            hint="in order: `hs select --max-gap 45`; trim the clip's tail with `hs select --end N`; "
-                 "then look at solve/per_image.json. Do not train on a partial solve.")
+        pj.metric(STAGE, "unregistered_captures", missing)
+        runs = _runs(missing)
+        if not getattr(a, "allow_partial", False):
+            pj.finish(STAGE, ok=False, error="partial registration")
+            raise events.StageError(
+                f"only {rep['num_frames']} of {len(caps)} frames registered — the chain broke "
+                f"(unregistered: {runs})",
+                hint="a block in the middle of the clip is a passage COLMAP could not see (sky, a blown "
+                     "wall, motion blur): `hs solve --export-only --allow-partial` trains on the rest and "
+                     "leaves a hole in the coverage; a block at the end: `hs select --end N`; a chain of "
+                     "single misses: `hs select --max-gap 45`. Then read solve/per_image.json.")
+        pj.check(STAGE, "partial_solve_accepted", False, needs_human=True,
+                 value=f"{rep['num_frames']}/{len(caps)} registered, exporting without {len(missing)} "
+                       f"captures ({runs}); the coverage has a hole there")
 
     # ---- export
     events.start(STAGE, "export")
@@ -469,10 +509,78 @@ def _run_stereo(a, pj):
     pj.metric(STAGE, "lr_separation_max_dev_mm", round(dev, 4))
     pj.check(STAGE, "rig_constraint_held", dev < 0.01,
              value=f"L–R separation {seps.min():.3f}–{seps.max():.3f} mm vs profile {baseline:.3f} mm")
+    _outlier_check(pj, G)
     # the stage completed; a failed quality check stays visible in the manifest and the
     # event stream rather than blocking (partial registration raised above — that one blocks)
     pj.finish(STAGE, ok=True)
     _append_timing(pj, parser, len(caps), n_img, ex.elapsed, reused)
+
+
+def _runs(names):
+    """'cap245–255, cap257–269, cap294–318' from a list of capture names, for a message."""
+    import re
+    nums = []
+    for n in names:
+        m = re.search(r"(\d+)$", str(n))
+        if m:
+            nums.append((int(m.group(1)), str(n)[:m.start()]))
+    if not nums:
+        return ", ".join(str(n) for n in names[:12]) + ("…" if len(names) > 12 else "")
+    nums.sort()
+    out, start, prev, pre = [], nums[0][0], nums[0][0], nums[0][1]
+    for k, p in nums[1:]:
+        if k == prev + 1:
+            prev = k
+            continue
+        out.append(f"{pre}{start}" if start == prev else f"{pre}{start}–{prev}")
+        start = prev = k
+        pre = p
+    out.append(f"{pre}{start}" if start == prev else f"{pre}{start}–{prev}")
+    return ", ".join(out)
+
+
+def _per_image_checks(pj, per):
+    """worst image (over the images that have observations) and the registered-but-empty ones:
+    an image COLMAP posed with no surviving 3D observation has a pose nothing supports. The
+    solve on 2026-09-22 had one (L/cap256, 0 observations) and `max()` over a None crashed the
+    stage after two hours of work."""
+    rows = per.get("images") or []
+    scored = [r for r in rows if isinstance(r.get("mean_reproj_px"), (int, float))]
+    empty = [r["name"] for r in rows if r.get("n_obs", 0) == 0]
+    if scored:
+        worst = max(scored, key=lambda r: r["mean_reproj_px"])
+        pj.metric(STAGE, "worst_image_reproj_px", worst["mean_reproj_px"])
+        pj.check(STAGE, "no_image_over_3px", worst["mean_reproj_px"] <= 3.0,
+                 value=f"worst {worst['name']} {worst['mean_reproj_px']:.2f} px")
+    if empty:
+        pj.metric(STAGE, "images_without_observations", empty)
+    pj.check(STAGE, "registered_images_have_observations", not empty, needs_human=bool(empty),
+             value=("every registered image has 3D observations" if not empty else
+                    f"{len(empty)} registered with none: {', '.join(empty[:8])}{'…' if len(empty) > 8 else ''} "
+                    f"— exclude them from train (hs train --exclude) or re-select around them"))
+
+
+def _outlier_check(pj, G):
+    """Camera centres far from everyone else: a capture COLMAP placed somewhere impossible
+    drags the path length and the scene depth (24.6 km and 78 m on the 09-22 solve) and would
+    be a hole in a move's hull. Median distance from the median centre, 10x = an outlier."""
+    try:
+        names = [str(x) for x in G["names"]]
+        C = np.asarray(G["C"], float)
+    except Exception:
+        return
+    if len(C) < 4:
+        return
+    d = np.linalg.norm(C - np.median(C, axis=0), axis=1)
+    med = float(np.median(d))
+    far = [names[i] for i in np.flatnonzero(d > 10.0 * max(med, 1e-9))]
+    caps = sorted({n[:-2] if n[-2:] in ("_L", "_R") else n for n in far})
+    if caps:
+        pj.metric(STAGE, "outlier_captures", caps)
+    pj.check(STAGE, "no_outlier_camera_positions", not caps, needs_human=bool(caps),
+             value=(f"all camera centres within 10x the median distance ({med:.0f} mm) of the middle" if not caps else
+                    f"{len(caps)} capture(s) placed >10x the median distance ({med:.0f} mm) from the rest: "
+                    f"{_runs(caps)} — exclude them from train and moves"))
 
 
 def run_array(a, pj):
@@ -562,11 +670,7 @@ def run_array(a, pj):
     per_path = os.path.join(work, "per_image.json")
     json.dump(per, open(per_path, "w"), indent=1)
     pj.artifact(STAGE, per_path, "json")
-    worst = max(per["images"], key=lambda r: r["mean_reproj_px"] or 0) if per["images"] else None
-    if worst:
-        pj.metric(STAGE, "worst_image_reproj_px", worst["mean_reproj_px"])
-        pj.check(STAGE, "no_image_over_3px", (worst["mean_reproj_px"] or 0) <= 3.0,
-                 value=f"worst {worst['name']} {worst['mean_reproj_px']:.2f} px")
+    _per_image_checks(pj, per)
     if not all_reg:
         pj.finish(STAGE, ok=False, error="partial registration")
         got = set(os.path.splitext(os.path.basename(r["name"]))[0] for r in per["images"])

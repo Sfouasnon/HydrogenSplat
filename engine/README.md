@@ -503,6 +503,18 @@ hs solve  -p P --scale-pair GA,GB,700  # the measured distance in mm between two
   portrait, so that axis is horizontal and the azimuth/elevation table (and any `hs move` preset
   built on it) is rotated 90°. Fine for train/archive/views; fix before relying on move presets.
 
+**Partial registration and export-only (2026-09-22).** A solve that registers only some
+captures fails by design — never train on a partial solve without saying so. Two flags say so:
+`hs solve -p P --export-only --allow-partial` exports `solve/sparse/rig` from the earlier run as
+it stands (no prep, no sfm, the earlier run's metrics kept), records `unregistered_captures`,
+fails `partial_solve_accepted` with `needs_human`, and leaves the hole in the coverage for the
+move editor to see. `--export-only` alone re-exports a complete solve. Two more checks come out
+of the same failure: `registered_images_have_observations` (an image COLMAP posed with no
+surviving 3D observation — L/cap256 on the 09-22 solve — has a pose nothing supports; exclude
+it from train) and `no_outlier_camera_positions` (a camera centre more than 10× the median
+distance from the rest; such a capture dragged that solve's path length to 24.6 km). Both name
+the captures; `hs train --exclude` takes them.
+
 ## Evaluation trio: hold-outs, reproject overlay, temporal stability (2026-09-21)
 
 **Hold-outs by position.** "Every 10th from 5" left the 09-16 head's +90…+135 band without a
