@@ -141,24 +141,37 @@ hs scale -p P --board 7,5,40,30
 
 or from a phone LiDAR scan of the place, taken right before the shoot (Scaniverse Classic on
 an iPhone Pro: Mesh capture, Large Object / Area, process in Detail, Share → Export Model →
-PLY; put the file in the project's `lidar/` folder):
+PLY). The **Scale** box under Solve does this without Terminal once a solve exists:
+
+- **Choose scan…** copies the file into the project's `lidar/` folder. The picker beside it
+  says which axis of the file is up; Auto reads it off the scan (Scaniverse writes Z up,
+  Polycam Y up) and only needs overriding if the report says the gravity is 90° off.
+- **Measure** runs `hs scale --lidar … --dry-run`: the scan is matched to the solve's point
+  cloud and nothing in the project changes. The "Last measurement" panel then says whether it
+  aligned, what the scale is (on a Hydrogen project: how far off the baseline's scale is), the
+  scan's up axis, the camera height above the scan's ground, and how many captures stood
+  outside the scan. Open report shows the full `scale/lidar_report.json`; Reveal aligned scan
+  finds the scan in the solve's frame for the viewer or CloudCompare.
+- **Apply scan scale** runs it for real: the training set is rewritten in millimetres, Train
+  and everything after it go stale.
+- **A factor you already have** applies a number found some other way (`hs scale --factor`):
+  a tape measure, or a fit made outside the app.
+
+It refuses, with a reason, when the scan and the solve do not share enough shape to match — a
+scan of a bare lawn or floor cannot fix a scale, and the sparse cloud of a glossy subject holds
+almost none of it. The same commands, for the Console:
 
 ```
+hs scale -p P --lidar lidar/scan.ply --dry-run
 hs scale -p P --lidar lidar/scan.ply
 ```
-
-The scan is matched to the solve's point cloud and its metric scale applied; the report
-(`scale/lidar_report.json`) also gives the ground plane, which way is up, and which captures
-stood outside the scan. It refuses, with a reason, when the two do not share enough shape to
-match — a scan of a bare lawn or floor cannot fix a scale, and the sparse cloud of a glossy
-subject holds almost none of it.
 
 **Hydrogen One projects and scale.** The H1's two lenses are 10.6 mm apart, so the solve calls
 itself metric and `hs scale` normally refuses to touch it. That trust only holds close up: at
 30 cm the two eyes see a bust 60 pixels apart, at 4 m a sculpture 5 pixels apart, and the solve
 of the Circles sculpture came out 5.8 times too small — every millimetre figure on that project
 (crop sizes, distances, move speeds) was off by that. Past a metre or so, take a scan or shoot a
-board and apply it with `--trust-scan`:
+board and apply it with "Trust the scan over the H1 baseline" on in the Scale box (`--trust-scan`):
 
 ```
 hs scale -p P --lidar lidar/scan.ply --trust-scan

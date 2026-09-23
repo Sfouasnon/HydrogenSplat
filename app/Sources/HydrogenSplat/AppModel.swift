@@ -66,6 +66,9 @@ final class AppModel: ObservableObject {
     /// The masks run per project path, and its panel settings.
     @Published var maskQueues: [String: RunQueue] = [:]
     @Published var maskSettings: [String: MaskSettings] = [:]
+    /// The scale run (LiDAR scan measured / applied, or a factor) per project path, and its settings.
+    @Published var scaleQueues: [String: RunQueue] = [:]
+    @Published var scaleSettings: [String: ScaleSettings] = [:]
     @Published var consoleHistory: [ConsoleSession] = []
     /// Pipeline or Viewer, per project path.
     @Published var projectPage: [String: ProjectPage] = [:]
@@ -161,7 +164,7 @@ final class AppModel: ObservableObject {
     /// One of the app's queues is running on `path` — between its steps too, when the session in
     /// `projectRuns` has finished and the next has not been created yet.
     private func appQueueRunning(_ path: String) -> Bool {
-        [trainQueues, selectQueues, exposureQueues, maskQueues, moveQueues].contains { $0[path]?.isRunning == true }
+        [trainQueues, selectQueues, exposureQueues, maskQueues, moveQueues, scaleQueues].contains { $0[path]?.isRunning == true }
     }
 
     // MARK: live status — window title and Dock badge

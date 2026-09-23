@@ -1,0 +1,106 @@
+{
+ "name": "circles",
+ "source": {
+  "kind": "clip"
+ },
+ "stages": {
+  "solve": {
+   "status": "done"
+  },
+  "scale": {
+   "status": "pending",
+   "lidar_check": {
+    "at": "2026-09-23T16:01:18-0700",
+    "argv": [
+     ".venv/bin/hs",
+     "scale",
+     "-p",
+     "/tmp/claude-0/-home-claude/38af1061-0292-5b20-968e-58a4ea49acf5/scratchpad/circles",
+     "--lidar",
+     "/tmp/claude-0/-home-claude/38af1061-0292-5b20-968e-58a4ea49acf5/scratchpad/circles/lidar/scan.ply",
+     "--dry-run",
+     "--pairs=-1.320,0.017,2.676=-36.8,-139.1,13.6;-1.215,-0.313,0.501=37.7,231.2,47.8;6.300,-1.468,0.447=345.2,155.1,1318.1;0.450,-5.248,0.260=909.5,222.5,261.7;-5.715,-0.598,0.427=21.8,288.3,-726.3"
+    ],
+    "scan": "/tmp/claude-0/-home-claude/38af1061-0292-5b20-968e-58a4ea49acf5/scratchpad/circles/lidar/scan.ply",
+    "applied": false,
+    "aligned": false,
+    "metrics": {
+     "lidar_scan": "scan.ply",
+     "scan_points": 733944,
+     "scan_faces": 0,
+     "scan_units": "m",
+     "scan_units_source": "extent",
+     "scan_up": "z",
+     "scan_up_source": "detected",
+     "lidar_init": "pairs",
+     "lidar_icp_iterations": 100,
+     "lidar_rms_mm": 91.663,
+     "lidar_inlier_fraction": 0.2733,
+     "lidar_inlier_fraction_in_scan": 0.5503,
+     "solve_overlap_fraction": 0.4966,
+     "lidar_icp_trim": 0.394,
+     "lidar_inlier_mm": 91.5,
+     "lidar_max_rms_mm": 68.6,
+     "scene_distance_mm": 4573.5,
+     "lidar_aligned": false,
+     "solve_strays_removed": 47449,
+     "lidar_scale_sensitivity": 0.2338,
+     "lidar_pose_min_eig": 0.04849,
+     "lidar_up_world": [
+      0.0596,
+      -0.995709,
+      -0.070793
+     ],
+     "lidar_up_to_current_up_deg": 5.981,
+     "captures_off_scan": 252,
+     "ground_normal_world": [
+      0.008145,
+      -0.994383,
+      -0.105524
+     ],
+     "camera_height_mm_median": 1272.3,
+     "scale_ratio": 4.646407,
+     "implied_baseline_mm": 49.4475
+    },
+    "report": "scale/lidar_report.json",
+    "aligned_ply": "scale/lidar_aligned.ply",
+    "checks": [
+     {
+      "name": "lidar_aligned",
+      "ok": false,
+      "value": "55.0% of the 9933 solve points on the scan (50% of 20000) within 91.4696 mm, trimmed RMS 91.66 mm (want >= 50% and <= 68.6022 mm); trimmed RMS 91.7 mm after ICP (want <= 68.6022)"
+     },
+     {
+      "name": "lidar_geometry_constrains",
+      "ok": true,
+      "value": "scale sensitivity 0.234 (want >= 0.1), smallest pose eigenvalue 0.0485 (want >= 0.01) over 5466 points on the scan",
+      "needs_human": false
+     },
+     {
+      "name": "lidar_scale_agrees",
+      "ok": false,
+      "value": "scale ratio 4.64641 (+364.64%; want within 2%), implied baseline 49.447 mm",
+      "needs_human": true
+     },
+     {
+      "name": "lidar_covers_captures",
+      "ok": false,
+      "value": "252 of 373 off the scan: cap015, cap025, cap026, cap027, cap028, cap029, cap030, cap031, cap032, cap033, cap034, cap035 ..."
+     },
+     {
+      "name": "lidar_up_agrees",
+      "ok": true,
+      "value": "scan up Z is 6.0 deg from coverage's up (want <= 10)",
+      "needs_human": false
+     },
+     {
+      "name": "lidar_units_known",
+      "ok": true,
+      "value": "m from extent (extent 10.8303 file units)",
+      "needs_human": false
+     }
+    ]
+   }
+  }
+ }
+}

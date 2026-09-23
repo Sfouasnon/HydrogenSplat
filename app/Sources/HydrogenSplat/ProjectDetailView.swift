@@ -119,6 +119,9 @@ struct ProjectDetailView: View {
                 stagesBox(m)
             case .frames:
                 SelectView(project: project, manifest: m)
+                if m.stage("solve")?.status == .done || m.stage("scale") != nil {
+                    ScaleView(project: project, manifest: m)
+                }
             case .exposure:
                 ExposureView(project: project, manifest: m)
             case .masks:
