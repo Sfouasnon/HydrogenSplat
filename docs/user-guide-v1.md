@@ -289,6 +289,9 @@ hs merge -p P --models subject-a,background-a --name merged
 
 ## Move (the Viewer)
 
+If the page says **Viewer unavailable — no compiled Metal shaders**, the app was launched with
+`swift run`; build it with `app/scripts/make_app.sh --install` (see Setup and About).
+
 The Viewer page: **Model**, **Reload**, **Open in New Window**, **Unload** (frees 1–2 GB),
 **Move** (the move panel). Loading runs `hs cameras`, which takes no lock and works during a
 train. It is a preview, not brush-path-render: judge frames from a render. **Capture** ‹ › (←
@@ -378,6 +381,26 @@ hs replay P/logs/train.events.jsonl --last --speed 50
 ```
 
 ## Setup and About
+
+**Building and launching the app.** Two ways to build, and they are not equivalent:
+
+| command | what you get | when |
+|---|---|---|
+| `app/scripts/make_app.sh --install` | `HydrogenSplat.app` in `~/Applications`, release build through `xcodebuild`, **with the splat viewer** | the app you use |
+| `swift build` / `swift run HydrogenSplat` (in `app/`) | a debug build, everything works **except the Viewer**, which says "Viewer unavailable … no compiled Metal shaders" | quick checks that a change compiles |
+
+The viewer's renderer (MetalSplatter) loads its shaders from a compiled `default.metallib` in
+its resource bundle; `swift build` copies the `.metal` sources without compiling them and writes
+no Info.plist into resource bundles, so only the `xcodebuild` route produces a working viewer.
+`make_app.sh` needs the full Xcode (`sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`)
+and the Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`, a separate download
+since Xcode 26); it prints those commands if either is missing. After pulling a change, rebuild
+and relaunch from `~/Applications`; a running solve or train is unaffected, and the new app
+re-attaches to it within a few seconds.
+
+```
+cd ~/Desktop/Apps/HydrogenSplat && app/scripts/make_app.sh --install
+```
 
 **Setup**: **Repository**, **hs executable**, **Projects folder** (**Choose…**), **Extra PATH**
 (so a Finder-launched app finds ffmpeg, ffprobe, adb), problems with their fix command, **Use
