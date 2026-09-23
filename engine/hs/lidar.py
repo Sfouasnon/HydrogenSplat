@@ -408,6 +408,10 @@ class NN:
         self.n = len(pts)
         self.origin = pts.mean(axis=0) if len(pts) else np.zeros(3)
         self.data = np.ascontiguousarray(pts - self.origin, np.float32)
+        # the kd-tree's split dimensions are drawn from OpenCV's process RNG: seed it so the
+        # same clouds give the same neighbours on every machine (the Mac and the container
+        # disagreed by 0.4 % of scale on the noisy synthetic room before this)
+        cv2.setRNGSeed(0)
         self.index = cv2.flann_Index(self.data, dict(algorithm=1, trees=1))
 
     def knn(self, q, k=1, chunk=200000):

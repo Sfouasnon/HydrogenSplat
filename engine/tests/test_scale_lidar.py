@@ -383,7 +383,7 @@ class Refusals(Base):
         before = open(pj.rig_npz, "rb").read()
         with self.assertRaises(events.StageError) as e:
             scale.run(args(lidar=self.scan), pj)
-        self.assertRegex(str(e.exception), "scale|ambiguous")
+        self.assertRegex(str(e.exception), "scale|ambiguous|pin the pose")     # refused, whichever cue fires first
         self.assertEqual(open(pj.rig_npz, "rb").read(), before)
         self.assertEqual(pj.status("scale"), "pending")
         rec = pj.stage("scale")["lidar_check"]
