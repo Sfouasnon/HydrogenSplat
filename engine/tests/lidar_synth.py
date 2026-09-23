@@ -142,8 +142,9 @@ class Scene:
         BS.write_mono_dataset(dataset, names, self.K, R, t, self.size, self.pts)
         return names
 
-    def write_stereo_rig(self, dataset, baseline_mm=10.6):
-        """A rigcolmap.py-style stereo rig.npz: capNNN_L, capNNN_R interleaved, no stereo key."""
+    def write_stereo_rig(self, dataset, baseline_mm=10.6, sparse=False):
+        """A rigcolmap.py-style stereo rig.npz: capNNN_L, capNNN_R interleaved, no stereo key;
+        with `sparse`, the text model beside it that an apply transforms and rewrites."""
         C, R, t = self.cameras_solve()
         names, Ks, Rs, ts, Cs = [], [], [], [], []
         for i in range(len(C)):
@@ -159,6 +160,29 @@ class Scene:
         np.savez(os.path.join(dataset, "rig.npz"), names=np.array(names), K=np.array(Ks), R=np.array(Rs),
                  t=np.array(ts), C=np.array(Cs), pts=self.pts, wh=np.tile([w, h], (len(names), 1)),
                  w=w, h=h, s_mm=1.0)
+        if sparse:
+            # the text sparse model `hs scale` transforms and rigcolmap.write_rig_npz rewrites:
+            # two PINHOLE cameras, images L/capNNN.jpg and R/capNNN.jpg, COLMAP units = mm / 1000
+            from board_synth import quat_wxyz
+            sp = os.path.join(dataset, "sparse")
+            os.makedirs(sp, exist_ok=True)
+            with open(os.path.join(sp, "cameras.txt"), "w") as f:
+                for cid in (1, 2):
+                    f.write(f"{cid} PINHOLE {w} {h} {float(self.K[0, 0])!r} {float(self.K[1, 1])!r} "
+                            f"{float(self.K[0, 2])!r} {float(self.K[1, 2])!r}\n")
+            pts_m = np.asarray(self.pts, float) / 1000.0
+            with open(os.path.join(sp, "images.txt"), "w") as f:
+                for i, n in enumerate(names):
+                    cap, eye = n.split("_")
+                    q = quat_wxyz(Rs[i])
+                    tv = np.asarray(ts[i], float) / 1000.0
+                    f.write(f"{i + 1} {float(q[0])!r} {float(q[1])!r} {float(q[2])!r} {float(q[3])!r} "
+                            f"{float(tv[0])!r} {float(tv[1])!r} {float(tv[2])!r} {1 if eye == 'L' else 2} {eye}/{cap}.jpg\n")
+                    f.write(" ".join(f"{10.0 + j} {20.0 + j} {j + 1}" for j in range(len(pts_m))) + "\n")
+            with open(os.path.join(sp, "points3D.txt"), "w") as f:
+                for j, p in enumerate(pts_m):
+                    track = " ".join(f"{i + 1} {j}" for i in range(len(names)))
+                    f.write(f"{j + 1} {float(p[0])!r} {float(p[1])!r} {float(p[2])!r} 128 128 128 0.5 {track}\n")
         return names
 
 

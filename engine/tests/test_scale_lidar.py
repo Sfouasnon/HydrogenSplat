@@ -32,8 +32,8 @@ import lidar_synth as S  # noqa: E402
 
 def args(**kw):
     base = dict(board=None, legacy_board=False, eye="L", min_views=3, dry_run=False, lidar=None, units=None,
-                scan_up="y", pairs=None, init=None, apply=False, min_inlier=0.5, max_rms_mm=30.0, inlier_mm=50.0,
-                min_scale_sensitivity=0.1, icp_iters=100, seed=0)
+                scan_up="y", pairs=None, init=None, apply=False, trust_scan=False, factor=None, note=None, min_inlier=0.5,
+                max_rms_mm=30.0, inlier_mm=50.0, min_scale_sensitivity=0.1, icp_iters=100, seed=0)
     base.update(kw)
     return Namespace(**base)
 
@@ -59,7 +59,7 @@ class Base(unittest.TestCase):
     def metrics(self):
         return {e["name"]: e["value"] for e in self.events() if e["ev"] == "metric"}
 
-    def project(self, kind="mono", k=1.21, seed=21, baseline_mm=10.6, **scene_kw):
+    def project(self, kind="mono", k=1.21, seed=21, baseline_mm=10.6, sparse=False, **scene_kw):
         self.scene = sc = S.Scene(k=k, seed=seed, **scene_kw)
         pj = Project(self.root, create=True)
         pj.m["source"] = {"kind": "mono"} if kind == "mono" else {}
@@ -71,7 +71,7 @@ class Base(unittest.TestCase):
         if kind == "mono":
             self.names = sc.write_mono_rig(pj.dataset_dir)
         else:
-            self.names = sc.write_stereo_rig(pj.dataset_dir, baseline_mm=baseline_mm)
+            self.names = sc.write_stereo_rig(pj.dataset_dir, baseline_mm=baseline_mm, sparse=sparse)
             # the solve carries the profile's baseline: in a solve k times too big that is baseline * k
             pj.m["stages"]["solve"]["metrics"]["profile_baseline_mm"] = baseline_mm * k
         pj.save()
@@ -215,6 +215,21 @@ class MonoApplies(Base):
         self.assertTrue(c["lidar_up_agrees"]["ok"], c["lidar_up_agrees"])
         rep = self.report(pj)
         self.assertLess(L.angle_deg(rep["up"]["up_world"], sc.Rg @ [0, 1.0, 0]), 0.1)
+        self.assertEqual((rep["scan_up"], rep["scan_up_source"]), ("z", "flag"))
+
+    def test_up_axis_is_detected(self):
+        # Scaniverse writes +Z up, Polycam +Y: with --scan-up auto (the default) the floor decides
+        pj = self.project(k=0.95, seed=25)
+        sc = self.scene
+        for axis, Rz in (("z", S.rot([1, 0, 0], 90.0)), ("y", np.eye(3))):
+            S.write_ply(self.scan, sc.scan_m @ Rz.T, sc.colors)
+            scale.run(args(lidar=self.scan, scan_up="auto", dry_run=True), pj)
+            rep = self.report(pj)
+            self.assertEqual((rep["scan_up"], rep["scan_up_source"]), (axis, "detected"), axis)
+            self.assertTrue(self.checks()["lidar_up_agrees"]["ok"])
+            self.assertLess(L.angle_deg(rep["up"]["up_world"], sc.Rg @ [0, 1.0, 0]), 0.1)
+        m = pj.stage("scale")["lidar_check"]["metrics"]
+        self.assertEqual((m["scan_up"], m["scan_up_source"]), ("y", "detected"))
 
 
 class Stereo(Base):
@@ -238,14 +253,15 @@ class Stereo(Base):
         self.assertNotIn("scene_scaled", c)
         rep = self.report(pj)
         self.assertFalse(rep["applied"])
-        self.assertEqual(rep["solve_to_scan"]["s"], 1.0)              # the alignment is rigid
+        self.assertEqual(rep["mode"], "sim3")                        # the scale is solved for on stereo too
+        self.assertAlmostEqual(rep["solve_to_scan"]["s"], 1.0, delta=0.001)
         M = np.array(rep["transform"]["scan_mm_to_solve"])
-        np.testing.assert_allclose(M[:3, :3] @ M[:3, :3].T, np.eye(3), atol=1e-6)
-        # --apply is refused, as for a board
+        np.testing.assert_allclose(M[:3, :3] @ M[:3, :3].T, np.eye(3) / rep["solve_to_scan"]["s"] ** 2, atol=1e-6)
+        # --apply alone is refused, as for a board; --trust-scan is the way in (tested below)
         with self.assertRaises(events.StageError) as e:
             scale.run(args(lidar=self.scan, apply=True), pj)
         self.assertIn("baseline", str(e.exception))
-        self.assertIn("without --apply", e.exception.hint)
+        self.assertIn("--trust-scan", e.exception.hint)
 
     def test_a_wrong_baseline_is_flagged_and_its_size_implied(self):
         # the solve is 3 % too big (the profile's baseline is 3 % long); capture 0 stood outside the scan
@@ -267,6 +283,68 @@ class Stereo(Base):
         self.assertFalse(c["lidar_covers_captures"]["ok"])
         self.assertIn("cap000", c["lidar_covers_captures"]["value"])
         self.assertNotIn("cap001", c["lidar_covers_captures"]["value"])
+
+    def test_a_baseline_far_off_is_still_found_and_trust_scan_applies_it(self):
+        # CirclesSculpture: the realigned H1 solve came out 5.8x small. The old SE(3) search could
+        # only fail there; the Sim(3) one must find the ratio, and --trust-scan must apply it
+        # through the rig route's own writer (rig.npz stays interleaved L,R, the eyes scaled too).
+        pj = self.project(kind="stereo", k=1 / 5.8, seed=33, sparse=True)
+        for st in ("train", "views"):
+            pj.m["stages"][st] = {"status": "done"}
+        pj.save()
+        G0 = dict(np.load(pj.rig_npz, allow_pickle=True))
+        b0 = float(np.linalg.norm(G0["C"][0] - G0["C"][1]))
+        scale.run(args(lidar=self.scan), pj)                       # measure: ratio reported, nothing applied
+        m = pj.stage("scale")["lidar_check"]["metrics"]
+        self.assertAlmostEqual(m["scale_ratio"], 5.8, delta=0.03)
+        self.assertAlmostEqual(m["implied_baseline_mm"], 10.6, delta=0.06)      # the true baseline
+        c = self.checks()
+        self.assertTrue(c["lidar_aligned"]["ok"], c["lidar_aligned"])
+        self.assertFalse(c["lidar_scale_agrees"]["ok"])
+        self.assertEqual(pj.status("train"), "done")
+        scale.run(args(lidar=self.scan, trust_scan=True), pj)      # apply
+        self.assertEqual(pj.status("scale"), "done")
+        self.assertEqual(pj.status("train"), "stale")
+        G1 = np.load(pj.rig_npz, allow_pickle=True)
+        self.assertEqual(list(G1["names"]), list(G0["names"]))
+        self.assertTrue(bool(G1["stereo"]) if "stereo" in G1.files else True)
+        b1 = float(np.linalg.norm(G1["C"][0] - G1["C"][1]))
+        self.assertAlmostEqual(b1 / b0, m["scale_ratio"], delta=0.02)
+        s1 = pj.stage("solve")
+        self.assertEqual(s1["metrics"]["scale_source"], "lidar")
+        self.assertTrue([x for x in s1["checks"] if x["name"] == "scene_scaled"][0]["ok"])
+        # aligned once more, the scan and the solve now agree
+        scale.run(args(lidar=self.scan, dry_run=True), pj)
+        self.assertAlmostEqual(pj.stage("scale")["lidar_check"]["metrics"]["scale_ratio"], 1.0, delta=0.01)
+
+
+class Factor(Base):
+    def test_a_known_factor_is_applied_and_stereo_needs_trust(self):
+        pj = self.project(kind="stereo", k=1 / 5.8, seed=34, sparse=True)
+        G0 = dict(np.load(pj.rig_npz, allow_pickle=True))
+        with self.assertRaises(events.StageError) as e:
+            scale.run(args(factor=5.8), pj)
+        self.assertIn("--trust-scan", e.exception.hint)
+        with self.assertRaises(events.StageError):
+            scale.run(args(factor=5.8, trust_scan=True, dry_run=True), pj)
+        with self.assertRaises(events.StageError):
+            scale.run(args(factor=-1.0, trust_scan=True), pj)
+        scale.run(args(factor=5.8, trust_scan=True, note="ring silhouette fit"), pj)
+        self.assertEqual(pj.status("scale"), "done")
+        G1 = np.load(pj.rig_npz, allow_pickle=True)
+        np.testing.assert_allclose(G1["C"], G0["C"] * 5.8, rtol=1e-6)
+        srt = lambda X: X[np.lexsort(X.T[::-1])]                  # points3D come back in the map's order
+        np.testing.assert_allclose(srt(G1["pts"]), srt(G0["pts"] * 5.8), rtol=1e-5)
+        self.assertEqual(pj.m["scale"]["source"], "manual")
+        self.assertEqual(pj.stage("solve")["metrics"]["scale_source"], "manual")
+        self.assertAlmostEqual(pj.stage("scale")["metrics"]["implied_baseline_mm"], 10.6, delta=0.05)
+        # the scan now agrees with the solve
+        scale.run(args(lidar=self.scan, dry_run=True), pj)
+        self.assertAlmostEqual(pj.stage("scale")["lidar_check"]["metrics"]["scale_ratio"], 1.0, delta=0.01)
+        # mono: no trust needed
+        pj = self.project(kind="mono", k=1.21, seed=35)
+        scale.run(args(factor=1 / 1.21), pj)
+        self.assertEqual(pj.status("scale"), "done")
 
 
 class Refusals(Base):
@@ -342,6 +420,8 @@ class Refusals(Base):
         a = cli.build_parser().parse_args(["scale", "-p", "/x", "--lidar", "s.ply", "--units", "cm", "--scan-up", "z",
                                            "--pairs", "1,2,3=4,5,6", "--init", "pairs", "--apply",
                                            "--min-inlier", "0.4", "--max-rms-mm", "20", "--inlier-mm", "40"])
+        self.assertFalse(a.trust_scan)
+        self.assertIsNone(a.factor)
         self.assertEqual((a.lidar, a.units, a.scan_up, a.pairs, a.init, a.apply, a.min_inlier, a.max_rms_mm, a.inlier_mm),
                          ("s.ply", "cm", "z", "1,2,3=4,5,6", "pairs", True, 0.4, 20.0, 40.0))
         self.assertIsNone(a.board)

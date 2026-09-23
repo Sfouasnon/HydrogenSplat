@@ -139,6 +139,39 @@ or from a ChArUco board in view (`hs scale` has no button):
 hs scale -p P --board 7,5,40,30
 ```
 
+or from a phone LiDAR scan of the place, taken right before the shoot (Scaniverse Classic on
+an iPhone Pro: Mesh capture, Large Object / Area, process in Detail, Share → Export Model →
+PLY; put the file in the project's `lidar/` folder):
+
+```
+hs scale -p P --lidar lidar/scan.ply
+```
+
+The scan is matched to the solve's point cloud and its metric scale applied; the report
+(`scale/lidar_report.json`) also gives the ground plane, which way is up, and which captures
+stood outside the scan. It refuses, with a reason, when the two do not share enough shape to
+match — a scan of a bare lawn or floor cannot fix a scale, and the sparse cloud of a glossy
+subject holds almost none of it.
+
+**Hydrogen One projects and scale.** The H1's two lenses are 10.6 mm apart, so the solve calls
+itself metric and `hs scale` normally refuses to touch it. That trust only holds close up: at
+30 cm the two eyes see a bust 60 pixels apart, at 4 m a sculpture 5 pixels apart, and the solve
+of the Circles sculpture came out 5.8 times too small — every millimetre figure on that project
+(crop sizes, distances, move speeds) was off by that. Past a metre or so, take a scan or shoot a
+board and apply it with `--trust-scan`:
+
+```
+hs scale -p P --lidar lidar/scan.ply --trust-scan
+```
+
+or, when the scale was found some other way (a tape measure, the silhouette fit):
+
+```
+hs scale -p P --factor 5.8 --trust-scan --note 'ring silhouette fit'
+```
+
+Either way Train goes stale and the model has to be retrained in the new units.
+
 ## Exposure (optional)
 
 Rewrites the training images to one exposure and white point; poses untouched. Shown once

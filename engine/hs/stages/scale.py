@@ -35,16 +35,23 @@ reports is the baseline's own scale error (1.0 = the calibration is right).
 
 `--lidar SCAN` is the second measurement source, feeding the same apply path (`_apply_and_mark`).
 A phone LiDAR scan (hs/lidar.py) is registered to rig.npz's sparse points — solve -> scan,
-Sim(3) on a mono/array solve, SE(3) on a stereo one — by global registration (or `--pairs`),
-then trimmed ICP against the dense scan. On a mono/array project the Sim(3) scale is applied
-(`--dry-run` measures only); on a stereo project nothing is ever applied: the SE(3) fit is the
-alignment, a Sim(3) refinement from it gives `scale_ratio` (the factor the solve is off by, 1.0
-= the baseline is right) and `implied_baseline_mm`, and `--apply` is refused as for a board.
+Sim(3) whatever the source — by global registration (or `--pairs`), then trimmed ICP against
+the dense scan. On a mono/array project the scale is applied (`--dry-run` measures only); on a
+stereo project the fit gives `scale_ratio` (the factor the solve is off by, 1.0 = the baseline
+is right) and `implied_baseline_mm`, and nothing is applied unless `--trust-scan` says the scan
+is the better reference — which past a metre or two it is: the H1's 10.6 mm baseline puts 5 px
+of disparity on a subject at 4 m, the floating rig's rotation shift is ten times that, and the
+realigned CirclesSculpture solve came out 5.8x small (2026-09-23). The scan's up axis is read
+off the scan (`--scan-up auto`: Polycam keeps ARKit's +Y, Scaniverse's PLY is +Z). Outdoors the
+SfM points run far past the phone's 5 m LiDAR range, so only points near the camera path are
+registered, ICP's trim follows the measured overlap, and the tolerances grow with the scene
+(2 % of the camera-subject distance). `--factor F` applies a factor found some other way (a
+tape, the ring-silhouette fit) through the same path.
 Checks: lidar_aligned, lidar_scale_agrees (stereo), lidar_covers_captures, lidar_up_agrees.
 Written: scale/lidar_report.json and scale/lidar_aligned.ply (the scan in the solve frame, mm,
-for the viewer). A measurement that is not applied (stereo, --dry-run, or an alignment that
-failed) leaves the stage's status alone and records under stages.scale.lidar_check; a failed
-alignment exits 1.
+for the viewer). A measurement that is not applied (stereo without --trust-scan, --dry-run, or
+an alignment that failed) leaves the stage's status alone and records under
+stages.scale.lidar_check; a failed alignment exits 1.
 """
 import contextlib
 import json
@@ -75,6 +82,14 @@ LIDAR_ICP_SOLVE = 20000      # ...ICP's solve points...
 LIDAR_ICP_SCAN = 400000      # ...and its scan (the target, and what the coverage check measures to)
 LIDAR_VIEW_POINTS = 100000   # scale/lidar_aligned.ply
 LIDAR_MIN_POSE_EIG = 0.01    # lidar_geometry_constrains: every direction of motion is seen (lidarlib.constraints)
+LIDAR_REL_INLIER = 0.02      # tolerances grow with the scene: --inlier-mm is at least 2 % of the camera-subject
+LIDAR_REL_RMS = 0.015         # distance (the SfM's own depth noise at 4 m is tens of mm), --max-rms-mm 1.5 %,
+LIDAR_REL_PTS = 0.02          # and the coverage check's per-frustum median 2 %; indoors the flags' values hold
+LIDAR_NEAR_PATH = 2.0        # solve points further than this x the camera path's extent from every camera are not registered
+LIDAR_OVERLAP_FACTOR = 10.0  # a solve point within this x --inlier-mm of the scan is one the scan could contain
+LIDAR_MIN_TRIM = 0.15        # ICP keeps at least this share of the solve's points, however small the overlap
+LIDAR_MIN_OVERLAP_POINTS = 2000   # lidar_aligned: the scan must contain at least this many of ICP's solve points...
+LIDAR_MIN_OVERLAP = 0.05          # ...and this share of them
 
 
 def add_parser(sub):
@@ -92,8 +107,13 @@ def add_parser(sub):
                         "mono/array solve and checked against a stereo one")
     g.add_argument("--units", choices=tuple(lidarlib.UNIT_MM), default=None,
                    help="the scan file's units (default: a header comment, else inferred from its extent)")
-    g.add_argument("--scan-up", choices=tuple(lidarlib.SCAN_UP), default="y",
-                   help="the scan's gravity axis: +Y (ARKit / Polycam / Scaniverse, the default) or +Z")
+    g.add_argument("--scan-up", choices=("auto",) + tuple(lidarlib.SCAN_UP), default="auto",
+                   help="the scan's gravity axis: auto (default: the axis whose lowest band is a floor), "
+                        "y (ARKit / Polycam) or z (Scaniverse PLY, Blender-style exports)")
+    g.add_argument("--trust-scan", action="store_true",
+                   help="stereo projects: apply the scan's scale even though the solve is nominally metric "
+                        "(the H1 baseline is unobservable past a metre or two: CirclesSculpture came out "
+                        "5.8x small); implies --apply")
     g.add_argument("--pairs", default=None, metavar="'SX,SY,SZ=PX,PY,PZ;...'",
                    help=">= 3 matching points: scan coordinates (scan units) = solve coordinates (rig.npz mm) "
                         "— the initial alignment instead of the automatic search")
@@ -115,6 +135,11 @@ def add_parser(sub):
                    help="ICP iterations at most (a room converges slowly along its scale: the walls do not "
                         "care, only the furniture pulls; from --pairs' few-percent start it takes ~60)")
     g.add_argument("--seed", type=int, default=0, help="random seed of the subsamples and the global search")
+    g.add_argument("--factor", type=float, default=None, metavar="F",
+                   help="apply a known scale factor instead of measuring one: the solve's units x F = mm "
+                        "(a tape measure, or the ring-silhouette fit of 2026-09-23 that gave Circles 5.8); "
+                        "stereo projects need --trust-scan; --note says where F came from")
+    g.add_argument("--note", default=None, help="with --factor: where the factor came from (recorded)")
     return p
 
 
@@ -222,6 +247,11 @@ def measure(pj, spec, eyes, min_views):
 
 
 def run(a, pj):
+    if getattr(a, "factor", None) is not None:
+        if getattr(a, "board", None) or getattr(a, "lidar", None):
+            raise events.StageError("give --factor alone, without --board or --lidar",
+                                    hint="--factor applies a number you already have; the others measure one")
+        return run_factor(a, pj)
     if getattr(a, "lidar", None):
         if getattr(a, "board", None):
             raise events.StageError("give --board or --lidar, not both",
@@ -323,7 +353,15 @@ def apply_scale(pj, s):
     # stream here, so its lines go to logs/scale.log where a child's output would
     os.makedirs(os.path.dirname(pj.log_path(STAGE)), exist_ok=True)
     with open(pj.log_path(STAGE), "a") as log, contextlib.redirect_stdout(log):
-        monocolmap.finish_dataset(rec, pj.dataset_dir, write_binary=True)
+        if rig.is_stereo(np.load(pj.rig_npz, allow_pickle=True)):
+            # the stereo dataset is written by the rig route's own writer (views interleaved L,R)
+            from .. import rigcolmap
+            rec.write(sp)
+            rec.export_PLY(os.path.join(sp, "points3D.ply"))
+            rec.write_text(sp)
+            rigcolmap.write_rig_npz(rec, pj.rig_npz)
+        else:
+            monocolmap.finish_dataset(rec, pj.dataset_dir, write_binary=True)
     src = pj.path("solve", "sparse", "rig")
     if os.path.isdir(src) and any(f.endswith((".bin", ".txt")) for f in os.listdir(src)):
         r0 = pycolmap.Reconstruction(src)
@@ -366,6 +404,48 @@ def _apply_and_mark(pj, s, source, desc):
     return to_m
 
 
+# ============================================================================ --factor
+
+def run_factor(a, pj):
+    """Apply a scale factor the user already has (solve units x F = mm) through the same path as a
+    board or a scan: for a length measured with a tape, or a factor found outside the stage — the
+    2026-09-23 ring-silhouette fit on CirclesSculpture, where the sparse cloud was a lawn and no
+    registration could fix the scale but the sculpture's outline in the photographs could."""
+    pj.require(STAGE)
+    if not os.path.exists(pj.rig_npz):
+        raise events.StageError("no train/dataset/rig.npz", hint="hs solve first")
+    f = float(a.factor)
+    if not (np.isfinite(f) and f > 0):
+        raise events.StageError(f"--factor {a.factor}: want a positive number")
+    if a.dry_run:
+        raise events.StageError("--factor with --dry-run does nothing: the factor is already known",
+                                hint="drop --dry-run to apply it")
+    stereo = rig.is_stereo(rig.load(pj.rig_npz)[0])
+    if stereo and not getattr(a, "trust_scan", False):
+        raise events.StageError(
+            "a stereo solve is nominally metric: its scale comes from the calibrated baseline, so a factor "
+            "is not applied to it unless you say your measurement is the better reference",
+            hint="add --trust-scan (the H1 baseline is unobservable past a metre or two: Circles came out 5.8x small)")
+    pj.begin(STAGE, argv=sys.argv)
+    pj.metric(STAGE, "scale_factor", round(f, 8))
+    pj.metric(STAGE, "scale_source", "manual")
+    if a.note:
+        pj.metric(STAGE, "scale_note", a.note)
+    if stereo:
+        prof = pj.stage("solve").get("metrics", {}).get("profile_baseline_mm")
+        pj.metric(STAGE, "implied_baseline_mm", round(prof * f, 4) if prof else None)
+    desc = f"x{f:.6f} given by hand (hs scale --factor" + (f": {a.note}" if a.note else "") + ")"
+    to_m = _apply_and_mark(pj, f, "manual", desc)
+    rep = {"note": "hs scale: a scale factor given by hand, applied as one Sim3d to the solve",
+           "scale_factor": f, "scale_to_m": to_m, "source": "manual", "from": a.note, "stereo": stereo}
+    rp = os.path.join(pj.stage_dir(STAGE), "scale_report.json")
+    json.dump(rep, open(rp, "w"), indent=1)
+    pj.artifact(STAGE, rp, "json")
+    pj.m["scale"] = {"source": "manual", "note": a.note, "scale_factor": f, "scale_to_m": to_m,
+                     "at": now_iso(), "argv": list(sys.argv)}
+    pj.finish(STAGE, ok=True)
+
+
 # ============================================================================ --lidar
 
 def parse_pairs(text):
@@ -406,6 +486,8 @@ def _fit_record(r):
     return {"s": r["s"], "R": np.asarray(r["R"]).tolist(), "t": np.asarray(r["t"]).tolist(),
             "rms_mm": round(r["rms"], 4), "median_mm": round(r["median"], 4),
             "inlier_fraction": round(r.get("inlier_fraction", float("nan")), 5),
+            "inlier_fraction_in_scan": round(r.get("inlier_fraction_in_scan", float("nan")), 5),
+            "overlap_fraction": round(r.get("overlap_fraction", float("nan")), 5),
             "iterations": r["iterations"], "converged": r["converged"],
             "rms_mm_per_iteration": [round(x, 4) for x in r["rms_history"]]}
 
@@ -422,26 +504,46 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
     keep = lidarlib.denoise(pts_all)
     pts = pts_all[keep]
     C, Rc, Kc, tc = (G[k].astype(np.float64) for k in ("C", "R", "K", "t"))
+    # only what a phone scan can reach: SfM triangulates the trees at 30 m, the LiDAR stops at
+    # 5, so the solve's far points are kept out of the registration (a voxel subsample of the
+    # whole cloud was 98 % trees on Circles). "Far" is measured against the camera path's own
+    # size, the one length known in the solve's units: further than LIDAR_NEAR_PATH x its
+    # extent from every camera is out. Cameras placed off in the distance by a bad solve do
+    # not count (the outlier rule of hs solve).
+    Cg = C[np.linalg.norm(C - np.median(C, 0), axis=1) <= 10 * np.median(np.linalg.norm(C - np.median(C, 0), axis=1)) + 1e-9]
+    path_extent = float(np.linalg.norm(Cg.max(0) - Cg.min(0))) if len(Cg) else 0.0
+    if path_extent > 0 and len(pts) > LIDAR_ICP_SOLVE:
+        dcam, _ = lidarlib.NN(Cg).query(pts)
+        near = dcam <= LIDAR_NEAR_PATH * path_extent
+        if near.sum() >= LIDAR_MIN_OVERLAP_POINTS:
+            pts = pts[near]
+    n_near = int(len(pts))
     if "wh" in G.files and len(G["wh"]) == len(names):
         wh = G["wh"]
     else:
         wh = np.tile([int(G["w"]), int(G["h"])], (len(names), 1))
     X = scan.points
-    with_scale = not stereo
+    # the scale is always solved for: a stereo solve is nominally metric, but its baseline is
+    # only observable when the scene is close (rig6's bust at 0.3 m: 60 px of disparity; the
+    # Circles ring at 4 m: 5 px, and the float rig's 1.5-degree rotation shift swamped it, so
+    # the realigned solve came out 5.8x small). An SE(3) search there could only fail; the
+    # Sim(3) fit gives the ratio and the pose whatever the baseline did.
+    with_scale = True
     seed = a.seed
 
     events.start(STAGE, "lidar_subsample")
     dense = X[lidarlib.subsample(X, LIDAR_ICP_SCAN, seed=seed)]
     nn = lidarlib.NN(dense)
-    icp_i = lidarlib.subsample(pts, LIDAR_ICP_SOLVE, seed=seed)
+    icp_i = lidarlib.subsample(pts, LIDAR_ICP_SOLVE, method="random", seed=seed)
     sub = {"scan_points": int(len(X)), "scan_icp": int(len(dense)), "solve_points": int(len(pts_all)),
-           "solve_strays_removed": int((~keep).sum()),
+           "solve_strays_removed": int((~keep).sum()), "solve_points_near_path": n_near,
+           "path_extent_solve_units": round(path_extent, 1),
            "solve_icp": int(len(icp_i)), "scan_icp_spacing_mm": round(lidarlib.spacing(dense, nn, seed=seed), 3)}
 
     glob = None
     if init == "auto":
         reg_scan = lidarlib.subsample(X, LIDAR_REG_POINTS, seed=seed)
-        reg_solve = lidarlib.subsample(pts, LIDAR_REG_POINTS, seed=seed)
+        reg_solve = lidarlib.subsample(pts, LIDAR_REG_POINTS, method="random", seed=seed)
         sub.update(scan_register=int(len(reg_scan)), solve_register=int(len(reg_solve)))
         events.start(STAGE, "lidar_register")
         glob = lidarlib.global_register(
@@ -470,37 +572,58 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
         events.progress(STAGE, it, n, step=step, detail=f"trimmed RMS {rms:.2f} mm", force=(it == n))
 
     Ps = pts[icp_i]
+    # how much of the solve the scan can contain at all: indoors nearly all of it, but outdoors
+    # the SfM points run out to the trees at 30 m while the phone's LiDAR stops at 5 (Circles,
+    # 2026-09-23: 15 % of the sparse cloud lay on the scan). The trim follows that overlap, else
+    # the points with no surface under them drag the fit off; the verdict below is read over
+    # the points the scan does contain, with a floor on how many that must be.
+    # the scene's size in mm, from the initial scale: the tolerances are relative to it
+    subject0 = np.median(pts, axis=0)
+    scene_mm = float(T0[0] * np.median(np.linalg.norm(Cg - subject0, axis=1))) if len(Cg) else 0.0
+    inlier_mm = max(float(a.inlier_mm), LIDAR_REL_INLIER * scene_mm)
+    max_rms_mm = max(float(a.max_rms_mm), LIDAR_REL_RMS * scene_mm)
+    pts_max_mm = max(LIDAR_PTS_MAX_MM, LIDAR_REL_PTS * scene_mm)
+    overlap_mm = LIDAR_OVERLAP_FACTOR * inlier_mm
+    d0, _ = nn.query(lidarlib.apply(T0, Ps))
+    overlap0 = float(np.mean(d0 <= overlap_mm))
+    trim = float(np.clip(0.9 * overlap0, LIDAR_MIN_TRIM, 0.7))
     # a global search that found nothing has decided the verdict: a few iterations fill the report
     iters = a.icp_iters if glob is None or glob["aligned"] else min(10, a.icp_iters)
-    fit = lidarlib.icp(Ps, None, T0, max_iter=iters, trim=0.7, with_scale=with_scale, index=nn,
-                       inlier_dist=a.inlier_mm, scale_bounds=bounds, keep_within=a.inlier_mm, callback=cb)
+    fit = lidarlib.icp(Ps, None, T0, max_iter=iters, trim=trim, with_scale=with_scale, index=nn,
+                       inlier_dist=inlier_mm, scale_bounds=bounds, keep_within=inlier_mm, callback=cb)
     sim = fit
-    if stereo:
-        # the metric solve is aligned rigidly; the scale it is off by is a separate Sim(3) refinement
-        events.start(STAGE, "lidar_icp_sim3")
-        step = "lidar_icp_sim3"
-        sim = lidarlib.icp(Ps, None, (1.0, fit["R"], fit["t"]), max_iter=iters, trim=0.7, with_scale=True,
-                           index=nn, inlier_dist=a.inlier_mm, scale_bounds=1.1, keep_within=a.inlier_mm,
-                           callback=cb)
     s = float(sim["s"])                    # solve -> scan scale: what turns solve units into mm
-    R, t = fit["R"], fit["t"]              # the reported alignment: Sim(3) on mono, SE(3) on stereo
+    R, t = fit["R"], fit["t"]              # the reported alignment, Sim(3) on every source
     T = (float(fit["s"]), R, t)
+    d_fit = np.asarray(sim["distances"])
+    in_scan = d_fit <= overlap_mm
+    n_in = int(in_scan.sum())
+    overlap = float(np.mean(in_scan))
+    inl_in = float(np.mean(d_fit[in_scan] <= inlier_mm)) if n_in else 0.0
+    sim["inlier_fraction_in_scan"] = inl_in
+    sim["overlap_fraction"] = overlap
+    sim["rms_in_scan"] = float(np.sqrt(np.mean(np.minimum(d_fit[in_scan], overlap_mm) ** 2))) if n_in else float("inf")
 
     # ---- the verdict, on the fit the scale is read from
     reasons = []
     if glob is not None and not glob["aligned"]:
         reasons.append(f"global registration: {glob['reason']}")
-    if sim["inlier_fraction"] < a.min_inlier:
-        reasons.append(f"{100 * sim['inlier_fraction']:.0f}% of the solve's points within {a.inlier_mm:g} mm "
-                       f"of the scan after ICP (want >= {100 * a.min_inlier:.0f}%)")
-    if sim["rms"] > a.max_rms_mm:
-        reasons.append(f"trimmed RMS {sim['rms']:.1f} mm after ICP (want <= {a.max_rms_mm:g})")
+    if n_in < LIDAR_MIN_OVERLAP_POINTS or overlap < LIDAR_MIN_OVERLAP:
+        reasons.append(f"only {n_in} of the solve's {len(Ps)} points ({100 * overlap:.0f}%) lie within "
+                       f"{overlap_mm:g} mm of the scan after ICP (want >= {LIDAR_MIN_OVERLAP_POINTS} and "
+                       f">= {100 * LIDAR_MIN_OVERLAP:.0f}%): the scan does not cover what the cameras saw")
+    if inl_in < a.min_inlier:
+        reasons.append(f"{100 * inl_in:.0f}% of the solve's points on the scan are within {inlier_mm:g} mm "
+                       f"of it after ICP (want >= {100 * a.min_inlier:.0f}%; {100 * overlap:.0f}% of the "
+                       f"solve is on the scan at all)")
+    if sim["rms"] > max_rms_mm:
+        reasons.append(f"trimmed RMS {sim['rms']:.1f} mm after ICP (want <= {max_rms_mm:g})")
     aligned = not reasons
 
     # ---- does the overlap's shape fix the pose and the scale at all? (lidarlib.constraints)
     Y = lidarlib.apply((sim["s"], sim["R"], sim["t"]), Ps)
     dY, jY = nn.query(Y)
-    inl = dY <= a.inlier_mm
+    inl = dY <= inlier_mm
     if inl.sum() >= 10:
         nY, _ = lidarlib.estimate_normals(dense[jY[inl]], 16, ref=dense, index=nn)
         con = lidarlib.constraints(Y[inl], nY)
@@ -543,7 +666,7 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
     tcL = T[0] * tc[L] - np.einsum("nij,j->ni", RcL, t)
     rows = lidarlib.coverage_check(CL_scan, None, pts=Pscan, K=Kc[L], R=RcL, t=tcL, wh=wh[L],
                                    names=[rig.capture_name(names[v]) for v in L], index=nn,
-                                   cam_max_mm=LIDAR_CAM_MAX_MM, pts_max_mm=LIDAR_PTS_MAX_MM)
+                                   cam_max_mm=LIDAR_CAM_MAX_MM, pts_max_mm=pts_max_mm)
     bad = [r["capture"] for r in rows if not r["ok"]]
 
     meta = scan.meta
@@ -551,8 +674,13 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
     metrics = {
         "lidar_scan": os.path.basename(a.lidar), "scan_points": meta["points"], "scan_faces": meta["faces"],
         "scan_units": meta["units"], "scan_units_source": meta["units_source"],
+        "scan_up": a.scan_up, "scan_up_source": a.scan_up_source,
         "lidar_init": init, "lidar_icp_iterations": fit["iterations"],
         "lidar_rms_mm": round(sim["rms"], 3), "lidar_inlier_fraction": round(sim["inlier_fraction"], 4),
+        "lidar_inlier_fraction_in_scan": round(sim["inlier_fraction_in_scan"], 4),
+        "solve_overlap_fraction": round(sim["overlap_fraction"], 4), "lidar_icp_trim": round(trim, 3),
+        "lidar_inlier_mm": round(inlier_mm, 1), "lidar_max_rms_mm": round(max_rms_mm, 1),
+        "scene_distance_mm": round(scene_mm, 1),
         "lidar_aligned": aligned,
         "solve_strays_removed": sub["solve_strays_removed"],
         "lidar_scale_sensitivity": round(con["scale_sensitivity"], 4),
@@ -570,15 +698,14 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
     if stereo:
         prof = pj.stage("solve").get("metrics", {}).get("profile_baseline_mm")
         implied = round(prof * s, 4) if prof else None
-        metrics.update({"scale_ratio": round(s, 6), "implied_baseline_mm": implied,
-                        "lidar_rms_se3_mm": round(fit["rms"], 3),
-                        "lidar_inlier_fraction_se3": round(fit["inlier_fraction"], 4)})
+        metrics.update({"scale_ratio": round(s, 6), "implied_baseline_mm": implied})
     else:
         metrics["scale_factor"] = round(s, 8)
 
     checks = [{"name": "lidar_aligned", "ok": aligned,
-               "value": (f"{100 * sim['inlier_fraction']:.1f}% of {len(Ps)} solve points within {a.inlier_mm:g} mm, "
-                         f"trimmed RMS {sim['rms']:.2f} mm (want >= {100 * a.min_inlier:.0f}% and <= {a.max_rms_mm:g} mm)"
+               "value": (f"{100 * sim['inlier_fraction_in_scan']:.1f}% of the {n_in} solve points on the scan "
+                         f"({100 * overlap:.0f}% of {len(Ps)}) within {inlier_mm:g} mm, trimmed RMS "
+                         f"{sim['rms']:.2f} mm (want >= {100 * a.min_inlier:.0f}% and <= {max_rms_mm:g} mm)"
                          + ("" if aligned else "; " + "; ".join(reasons)))}]
     checks.append({"name": "lidar_geometry_constrains", "ok": constrained, "needs_human": not constrained,
                    "value": (f"scale sensitivity {con['scale_sensitivity']:.3f} (want >= {a.min_scale_sensitivity:g}), "
@@ -592,7 +719,7 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
                                 + (f", implied baseline {implied:.3f} mm" if implied else "")})
     checks.append({"name": "lidar_covers_captures", "ok": not bad,
                    "value": (f"all {len(rows)} captures within {LIDAR_CAM_MAX_MM / 1000:g} m of the scan, their points "
-                             f"within {LIDAR_PTS_MAX_MM:g} mm" if not bad else
+                             f"within {pts_max_mm:g} mm" if not bad else
                              f"{len(bad)} of {len(rows)} off the scan: {', '.join(bad[:12])}"
                              + (" ..." if len(bad) > 12 else ""))})
     ok = up_angle <= LIDAR_UP_TOL_DEG
@@ -605,12 +732,14 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
         "note": "hs scale --lidar: a LiDAR scan registered to the solve's sparse points (solve -> scan, trimmed "
                 "ICP); lengths in mm unless a key says otherwise",
         "scan": {k: v for k, v in meta.items()},
-        "stereo": stereo, "mode": "se3 (+ sim3 for the ratio)" if stereo else "sim3", "scan_up": a.scan_up,
-        "thresholds": {"min_inlier": a.min_inlier, "max_rms_mm": a.max_rms_mm, "inlier_mm": a.inlier_mm,
+        "stereo": stereo, "mode": "sim3", "scan_up": a.scan_up, "scan_up_source": a.scan_up_source,
+        "scan_up_detection": a.scan_up_detection,
+        "thresholds": {"min_inlier": a.min_inlier, "max_rms_mm": max_rms_mm, "inlier_mm": inlier_mm,
+                       "max_rms_mm_flag": a.max_rms_mm, "inlier_mm_flag": a.inlier_mm, "scene_distance_mm": round(scene_mm, 1),
                        "scale_tol": LIDAR_SCALE_TOL, "up_tol_deg": LIDAR_UP_TOL_DEG,
-                       "camera_max_mm": LIDAR_CAM_MAX_MM, "points_max_mm": LIDAR_PTS_MAX_MM},
+                       "camera_max_mm": LIDAR_CAM_MAX_MM, "points_max_mm": pts_max_mm},
         "subsample": sub, "init": init_rep,
-        "icp": _fit_record(fit), "icp_sim3": _fit_record(sim) if stereo else None,
+        "icp": _fit_record(fit),
         "aligned": aligned, "reasons": reasons, "constrained": constrained, "weak": weak, "constraints": con,
         "rms_mm": round(sim["rms"], 4), "inlier_fraction": round(sim["inlier_fraction"], 5),
         "solve_to_scan": {"s": T[0], "R": np.asarray(R).tolist(), "t": np.asarray(t).tolist()},
@@ -658,15 +787,19 @@ def run_lidar(a, pj):
         raise events.StageError("no train/dataset/rig.npz", hint="hs solve first")
     G, names, L = rig.load(pj.rig_npz)
     stereo = rig.is_stereo(G)
+    trust = bool(getattr(a, "trust_scan", False))
+    if trust:
+        a.apply = True
     if a.apply and a.dry_run:
         raise events.StageError("--apply and --dry-run contradict each other")
-    if stereo and a.apply:
+    if stereo and a.apply and not trust:
         raise events.StageError(
-            "a stereo solve is already metric: its scale comes from the calibrated baseline, so a LiDAR "
-            "scale is not applied to it",
+            "a stereo solve is nominally metric: its scale comes from the calibrated baseline, so a LiDAR "
+            "scale is not applied to it unless you say the scan is the better reference",
             hint="`hs scale --lidar SCAN` without --apply measures the baseline's scale error against the scan; "
-                 "to change the baseline re-solve with `hs solve --baseline-mm MM`")
-    apply = not stereo and not a.dry_run
+                 "`--trust-scan` applies the scan's scale (the H1 baseline is unobservable past a metre or two); "
+                 "to change the baseline itself re-solve with `hs solve --baseline-mm MM`")
+    apply = (not stereo or trust) and not a.dry_run
     init = a.init or ("pairs" if a.pairs else "auto")
     pairs = None
     if init == "pairs" and not a.pairs:
@@ -684,13 +817,26 @@ def run_lidar(a, pj):
     except (ValueError, OSError) as e:
         raise events.StageError(f"cannot read the scan {os.path.basename(a.lidar)}: {e}",
                                 hint="export a PLY (point cloud or mesh), OBJ or XYZ/CSV from Polycam / Scaniverse")
+    # which of the file's axes is up: told, or read off the scan (the lowest band along the
+    # true up is a floor). Polycam keeps ARKit's +Y; Scaniverse's PLY is +Z.
+    a.scan_up_source, a.scan_up_detection = "flag", None
+    if a.scan_up == "auto":
+        axis, det = lidarlib.detect_up(scan.points, seed=a.seed)
+        a.scan_up_detection = det
+        if axis is None:
+            pj.release()
+            raise events.StageError(f"cannot tell which axis of the scan is up: {det['reason']}",
+                                    hint="pass --scan-up y (ARKit / Polycam) or --scan-up z (Scaniverse PLY, "
+                                         "Blender-style exports); scale/lidar_report.json is not written")
+        a.scan_up, a.scan_up_source = axis, "detected"
     m = measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo)
     metrics, checks = m["metrics"], m["checks"]
 
     if not (apply and m["aligned"] and m["constrained"]):
         # measured, not applied: stereo, --dry-run, or an alignment that failed or fixes no scale
         if stereo:
-            to_frame, note = m["to_metric"], "mm (stereo solve, rigid alignment; not scaled)"
+            to_frame, note = m["to_current"], ("the current solve units (stereo: nominally mm, off by the "
+                                               "scale ratio); nothing was applied")
         else:
             to_frame, note = m["to_current"], "the current (unscaled) solve units: nothing was applied"
         m["report"]["applied"] = False

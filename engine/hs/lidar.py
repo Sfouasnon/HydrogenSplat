@@ -1091,11 +1091,52 @@ def global_register(src, dst, with_scale=True, *, seed=0, max_samples=60, time_b
 # ======================================================================== up, ground, coverage
 
 SCAN_UP = {"y": np.array([0.0, 1.0, 0.0]), "z": np.array([0.0, 0.0, 1.0])}
+DETECT_UP_MAX_TILT_DEG = 20.0     # detect_up: the lowest band along the true up is a floor, not a wall
+
+
+def detect_up(points, band_mm=300.0, thresh_mm=15.0, seed=0, min_extent_ratio=1.15):
+    """Which of the file's axes is gravity.
+
+    ARKit's world frame is +Y up and the parser assumed every phone export kept it; Scaniverse's
+    PLY (2026-09-23, CirclesSculpture) is +Z up. Two cues, both needed: a scanned world is wider
+    than it is tall (a room 5 x 4 x 2.6 m, a lawn 11 x 9 x 2.6), so the up axis has the smallest
+    robust extent; and the lowest band along the up axis is a floor, a plane whose normal lies
+    along that axis (`ground_plane`). The extent alone would be fooled by a stairwell; the plane
+    alone by a wall facing the other axis (its normal lies along it just as a floor's does — the
+    synthetic room is ambiguous on that cue). -> (axis or None, {"candidates": {axis: {"extent_mm",
+    "tilt_to_up_deg", "inlier_share", ...}}, "reason"}); None means the scan does not say (extents
+    within `min_extent_ratio`, or no floor under the shorter axis) and the caller should ask for
+    --scan-up."""
+    P = np.asarray(points, np.float64)
+    lo, hi = np.percentile(P, [2, 98], axis=0)
+    ext = hi - lo
+    cands = {}
+    for ax, u in SCAN_UP.items():
+        g = ground_plane(P, u, band_mm=band_mm, thresh_mm=thresh_mm, seed=seed)
+        c = {"extent_mm": round(float(ext @ u), 1)}
+        if g:
+            c.update({k: (round(float(g[k]), 4) if isinstance(g[k], float) else g[k])
+                      for k in ("tilt_to_up_deg", "inlier_share", "inliers", "band_points", "rms_mm")})
+        cands[ax] = c
+    short = min(cands, key=lambda ax: cands[ax]["extent_mm"])
+    other = [ax for ax in cands if ax != short][0]
+    ratio = cands[other]["extent_mm"] / max(cands[short]["extent_mm"], 1e-9)
+    if ratio < min_extent_ratio:
+        return None, {"candidates": cands, "reason": f"the scan is about as tall along {short.upper()} as along "
+                                                     f"{other.upper()} (extents within x{min_extent_ratio:g})"}
+    tilt = cands[short].get("tilt_to_up_deg")
+    if tilt is None or tilt > DETECT_UP_MAX_TILT_DEG:
+        return None, {"candidates": cands, "reason": f"the shortest axis {short.upper()} has no floor under it "
+                                                     f"(lowest band tilted {tilt if tilt is not None else 'n/a'} deg, "
+                                                     f"want <= {DETECT_UP_MAX_TILT_DEG:g})"}
+    return short, {"candidates": cands, "reason": f"{short.upper()} is the scan's shortest axis (x{ratio:.2f}) and "
+                                                  f"its lowest band is a plane {tilt:.1f} deg from it"}
 
 
 def up_axis(R_scan_to_solve, scan_up="y", current_up=None):
-    """The scan's gravity up (ARKit / Polycam / Scaniverse export +Y; some Z-up exports +Z) in the
-    solve frame, and its angle in degrees to the solve's current up (None without one)."""
+    """The scan's gravity up (ARKit / Polycam export +Y; Scaniverse's PLY and other Z-up exports
+    +Z — `detect_up` tells them apart) in the solve frame, and its angle in degrees to the
+    solve's current up (None without one)."""
     u = np.asarray(R_scan_to_solve, np.float64) @ SCAN_UP[scan_up]
     u = u / np.linalg.norm(u)
     return u, (angle_deg(u, current_up) if current_up is not None else None)

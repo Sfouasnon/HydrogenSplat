@@ -66,8 +66,9 @@ hs solve   -p P [--matcher auto|sequential|exhaustive] [--overlap 15 --loop-stri
 hs solve   -p P --estimate | --estimate --captures N [--eyes 1|2]     one `estimate` event: pairs and seconds per phase for both matchers (no lock, no writes)
 hs solve   -p P --scale-pair GA,GB,700 [--focal-px F] [--board B]     array/mono project: monocolmap.py, one shared camera, metric scale from a measured spacing (or --board: hs scale after)
 hs scale   -p P --board SX,SY,SQ_MM,MK_MM[,DICT] [--min-views 3] [--eye L] [--dry-run]   metric scale from a ChArUco board in the views, applied to the solve; board plane vs up
-hs scale   -p P --lidar SCAN.ply [--units m|mm|cm] [--scan-up y|z] [--pairs 'sx,sy,sz=px,py,pz;…'] [--init auto|pairs] [--apply|--dry-run]
-                                                                      a phone LiDAR scan aligned to the solve: mono/array scale applied, stereo scale checked; up, ground
+hs scale   -p P --lidar SCAN.ply [--units m|mm|cm] [--scan-up auto|y|z] [--pairs 'sx,sy,sz=px,py,pz;…'] [--init auto|pairs] [--apply|--dry-run] [--trust-scan]
+                                                                      a phone LiDAR scan aligned to the solve: mono/array scale applied, stereo scale checked (applied with --trust-scan); up, ground
+hs scale   -p P --factor F [--note '…'] [--trust-scan]                 apply a scale factor you already have (solve units x F = mm)
 hs exposure -p P [--reference median|auto|capNNN|board|checker] [--reference-view V] [--mode rgb|luma] [--restore] [--dry-run]   match every view to one reference (board/checker: a shared target, fine on an array)
 hs masks   -p P [--radius 0.10] [--margin-mm 5] [--min-opacity 0.2]   per-view subject silhouettes for Brush's mask channel
 hs train   -p P [--brush PATH]                                        brush → train/exports/export_NNNNN.ply   (Mac only)
@@ -224,7 +225,12 @@ hs scale -p P --lidar room.obj --units cm --scan-up z # a Z-up export in centime
 hs scale -p P --lidar room.ply --pairs '2.61,0.50,1.79=812.4,-310.2,955.0;1.30,0.60,2.80=...;0.02,2.31,0.41=...'
 ```
 
-Exactly one of `--board` / `--lidar`. The scan (Polycam / Scaniverse from an iPhone Pro, scanned
+```
+hs scale -p P --lidar room.ply --trust-scan            # stereo: apply the scan's scale after all (the baseline was wrong)
+hs scale -p P --factor 5.8 --trust-scan --note 'ring silhouette fit'   # a factor found outside the stage
+```
+
+Exactly one of `--board` / `--lidar` / `--factor`. The scan (Polycam / Scaniverse from an iPhone Pro, scanned
 before the shoot) is registered to rig.npz's sparse points **solve → scan**: the solve's points
 are a subset of what the scan saw, so every one has a surface under it and the scan's extra
 rooms need no explaining, and the fitted scale is then exactly the factor that turns the solve's
@@ -257,15 +263,15 @@ units into mm. It feeds the board's apply path unchanged (`_apply_and_mark`: Sim
    best 12 get a short trimmed ICP ranked by truncated-quadratic cost; it stops once the best
    pose has been found from two different triples (at least 15 samples), and the best four are
    refined against the dense scan. `--pairs` (≥ 3, scan units = solve mm) is Umeyama instead.
-4. **ICP**: trimmed point-to-point (the best 70 % of correspondences, plus every one within
-   `--inlier-mm`), Sim(3) on mono/array, SE(3) on stereo, scale bounded about its start. The
+4. **ICP**: trimmed point-to-point (the best 70 % of correspondences — less when the measured
+   overlap is smaller — plus every one within `--inlier-mm`), Sim(3), scale bounded about its start. The
    "plus" matters: scaling about the corner where floor and walls meet moves no wall point off its
    plane, so a few percent off it is the furniture that is the worst 30 % — a pure trim throws
    away exactly the correspondences that pull the scale back. Progress events carry a total.
-5. **Stereo**: SE(3) is the alignment (and the transform stored); a Sim(3) refinement from it
-   gives `scale_ratio` (the factor the solve is off by — 1.0 = the baseline is right; the same
-   sense as the board's factor) and `implied_baseline_mm = profile_baseline × ratio`. Nothing is
-   applied and the stage's status is left alone; `--apply` is refused as for a board.
+5. **Stereo**: the same Sim(3) fit; its scale is `scale_ratio` (the factor the solve is off by
+   — 1.0 = the baseline is right; the same sense as the board's factor) and
+   `implied_baseline_mm = profile_baseline × ratio`. Nothing is applied and the stage's status
+   is left alone unless `--trust-scan`, which applies it through the rig route's own writer.
 
 **Honest failure.** A scan that does not align, or aligns ambiguously, exits 1 with an error and
 a hint (`--units`, `--pairs`, coverage) and still writes the report; the project is untouched
@@ -314,15 +320,41 @@ covered, 3 mm noise, a random Sim(3) with scale 0.7–1.4, stereo 1.0; 2-core co
 | stereo, the profile baseline 3 % long | scale_ratio 0.9709 (true 1/1.03 = 0.9709), implied baseline 10.600 mm (true 10.600), needs_human |
 | mono stage end to end (`hs scale --lidar`, 4 s) | scale 0.826438 against 0.826446 (0.001 %); every camera spacing in mm within 0.001 % |
 
-**What the parser assumes about the real exports** (not yet checked against one — the first
-sample scan arrives later): Polycam and Scaniverse write ARKit's world frame, **+Y up, metres**,
-as binary little-endian PLY with float `x y z` and uchar `red green blue` (maybe `alpha`,
-`nx ny nz`, a confidence, a face list on a mesh). If an export is Z-up (some "for Blender"
-options), pass `--scan-up z`; the up check will say so otherwise (an angle near 90°). A Scaniverse
-splat PLY reads as its centres with DC colour — usable, floaters and all. LAS/LAZ/E57/USDZ/GLB
-are refused with a hint to export PLY, OBJ or XYZ. A header comment is the only declared unit
-understood; PLY has no standard one. Things to look at on the first real scan: `scan.units` and
-`extent_mm`, `vertex_properties`, whether `has_colour` is true, and `lidar_up_to_current_up_deg`.
+**The first real export (Scaniverse Classic, Mesh capture, Share → Export → PLY, iPhone 17 Pro
+Max, CirclesSculpture 2026-09-23):** binary little-endian, 733,944 vertices of float `x y z` +
+uchar `red green blue`, no faces, no normals, one comment (`Created with Scaniverse`), metres
+(extent 10.8 × 8.6 × 2.6 m, read as m from the extent), 10 mm point spacing — and **+Z up**, not
+ARKit's +Y. So `--scan-up` defaults to `auto`: `lidar.detect_up` takes the axis with the
+smallest robust extent (a scanned world is wider than tall) whose lowest band is a plane lying
+along it (a floor); Polycam's +Y and Scaniverse's +Z both come out right, a scan that cannot
+say (a stairwell, no floor) exits with a hint to pass `--scan-up y|z`. A Scaniverse splat PLY
+reads as its centres with DC colour — usable, floaters and all. LAS/LAZ/E57/USDZ/GLB are
+refused with a hint to export PLY, OBJ or XYZ. A header comment is the only declared unit
+understood; PLY has no standard one.
+
+**What the first real registration taught (Circles, H1 stereo, 373 captures at 3–5 m from a
+2 m glossy red ring on a lawn).** The scan was fine; the solve was not what the design assumed.
+(1) The solve's sparse cloud was the lawn (a plane) and the trees at 20–30 m (past the LiDAR's
+range): the sculpture itself, glossy and uniform, contributed almost no points — so the overlap
+was a plane, which fixes no scale, and the registration refused, ambiguous, as designed. (2) The
+solve was **5.8x too small**: the profile's 10.642 mm baseline puts ~5 px of disparity on a
+subject at 4 m, the floating rig's 1.47° rotation shift is ~44 px, and after `--float-rig`'s
+realignment to the profile baseline the whole scene shrank (the reconstruction behaves as if
+the eyes were 62 mm apart). A stereo SE(3) search could only fail there; the stage now fits
+Sim(3) on every source and reports the ratio, `--trust-scan` applies it, and `--factor` applies
+a number found elsewhere — the 5.8 came from a ring-silhouette fit: the scan's red points
+projected through the solve's cameras against the red mask of 14 photographs, gravity locked,
+Sim(3) by Nelder–Mead (IoU 0.49; scale 5.81 with tilt fixed, 5.69 free). (3) Outdoors the
+"solve ⊂ scan" premise fails the other way — the SfM sees further than the LiDAR — so the
+registration keeps only solve points within 2x the camera path's extent of a camera, subsamples
+them at random rather than by voxel (a voxel grid over a 70 m cloud was 98 % trees), trims ICP
+to the measured overlap, reads the verdict over the points the scan contains (with a floor of
+2,000 / 5 %), and scales the tolerances with the camera–subject distance (inlier 2 %, RMS 1.5 %,
+per-frustum 2 %; indoors the flags' 50 / 30 / 50 mm hold). With `--pairs` from the silhouette
+fit Circles then aligns to 55 % within 91 mm, RMS 92 mm — and ICP still slides the scale 4.6–5.4
+with the ring absent from the sparse cloud, so the number to apply is the silhouette's, by
+`--factor`. The lesson for the H1: its baseline gives a trustworthy scale only within a metre
+or so (rig6's bust at 0.3 m: 60 px of disparity); anything further needs the scan or a board.
 
 **Limits.** ICP is point-to-point: it converges slowly along a room's weak scale direction (60
 iterations from 1 % off; `--icp-iters` 100). The scale's accuracy on a real capture will be
