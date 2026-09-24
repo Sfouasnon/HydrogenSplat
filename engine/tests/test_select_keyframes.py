@@ -67,7 +67,10 @@ def make_clip(path, n=60, gop=10, eye=(320, 180), mono=False, hot=()):
 
 
 def run_select(clip, out, *extra, env=None):
-    argv = [sys.executable, SCRIPT, clip, "-o", out, "--work-width", "160"] + [str(x) for x in extra]
+    # --residual 0.8: the crossing must land well before the next keyframe on every platform (with
+    # 1.5 it fell on frame 20 or 21 depending on the libx264 / OpenCV build — the Mac read frame 30
+    # as the first candidate after pick 10, the container frame 20)
+    argv = [sys.executable, SCRIPT, clip, "-o", out, "--work-width", "160", "--residual", "0.8"] + [str(x) for x in extra]
     r = subprocess.run(argv, capture_output=True, text=True, env=env)
     if r.returncode != 0:
         raise AssertionError(f"select_frames.py failed:\n{r.stdout}\n{r.stderr}")
@@ -204,7 +207,7 @@ class KeyframeSelection(unittest.TestCase):
         r = subprocess.run(sf.ffprobe_argv("ffprobe", self.clip), capture_output=True, text=True, check=True)
         self.assertEqual(sf.keyframe_indices(sf.parse_pict_types(r.stdout)), list(range(0, 60, 10)))
 
-    def check_keyframe_picks(self, sel, min_gap=6, residual=1.5, max_gap=90):
+    def check_keyframe_picks(self, sel, min_gap=6, residual=0.8, max_gap=90):
         kf = sel["keyframes"]["frames"]
         self.assertEqual(kf, list(range(0, 60, 10)))
         self.assertEqual(sel["params"]["mode"], "keyframes")
