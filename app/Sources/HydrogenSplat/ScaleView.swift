@@ -42,6 +42,7 @@ struct ScaleView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 scanRow
+                methodRow
                 trustRow
                 measureRow
                 if let c = check { report(c) }
@@ -89,6 +90,18 @@ struct ScaleView: View {
             }
             .labelsHidden().fixedSize()
             .help("Which axis of the file is up. Auto reads it off the scan; say so only if it gets it wrong.")
+        }
+    }
+
+    private var methodRow: some View {
+        Handle(title: "Place it by",
+               help: "Geometry matches the shapes the scan and the solve share — a room, furniture. Silhouettes projects the scan's subject through the solve's cameras against the subject masks (run Masks first): for a subject the point cloud barely holds, like a glossy sculpture on a lawn, where Geometry says \"ambiguous\".") {
+            Picker("", selection: settings.scanInit) {
+                ForEach(ScanInit.allCases) { Text($0.title).tag($0) }
+            }
+            .labelsHidden().pickerStyle(.segmented).fixedSize()
+            Toggle("Write init points for Train", isOn: settings.initPoints)
+                .help("Also write scale/lidar_init.ply: the scan in the solve's frame as Brush's starting splats. Train then offers \"Start from the LiDAR scan\".")
         }
     }
 

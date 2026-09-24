@@ -15,6 +15,12 @@ final class ScaleTests: XCTestCase {
         s.trustScan = true
         XCTAssertEqual(s.applyScanArguments(project: "/p"),
                        ["scale", "-p", "/p", "--lidar", "/p/lidar/scan.ply", "--scan-up", "z", "--trust-scan"])
+        s.scanInit = .silhouette
+        s.initPoints = true
+        XCTAssertEqual(s.measureArguments(project: "/p"),
+                       ["scale", "-p", "/p", "--lidar", "/p/lidar/scan.ply", "--scan-up", "z", "--init", "silhouette",
+                        "--init-points", "--dry-run"])
+        s.scanInit = .auto; s.initPoints = false
         s.scan = "/elsewhere/room.obj"                                     // an absolute path is passed as is
         XCTAssertEqual(s.measureArguments(project: "/p")[4], "/elsewhere/room.obj")
     }

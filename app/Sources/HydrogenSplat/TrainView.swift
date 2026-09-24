@@ -31,6 +31,13 @@ struct TrainView: View {
     }
 
     private var captureSet: CaptureSet { CaptureSet.read(project: project.path) }
+    /// scale/lidar_init.ply recorded by `hs scale --lidar --init-points` (applied, or the last dry run)
+    private var lidarInitAvailable: Bool {
+        let rel = manifest.raw["scale"]?["init_ply"]?.string
+            ?? manifest.raw["stages"]?["scale"]?["lidar_check"]?["metrics"]?["init_ply"]?.string
+        guard let r = rel else { return false }
+        return FileManager.default.fileExists(atPath: (project.path as NSString).appendingPathComponent(r))
+    }
     private var captures: Int { captureSet.count }
 
     /// Crop sizes every previous views report in this project used. A score is only comparable
@@ -240,6 +247,10 @@ struct TrainView: View {
                     }
                     Handle(title: "Background noise", help: "Random noise on the background colour each step pushes splats to cover every pixel. Brush default 0.1. A room capture always has a real background, so try 0 when the far background ghosts.") {
                         OptionalNumber(value: settings.backgroundNoise, placeholder: "0.1 default", choices: [0])
+                    }
+                    if lidarInitAvailable {
+                        Toggle("Start from the LiDAR scan", isOn: settings.initFromLidar)
+                            .help("hs train --init lidar: Brush's first splats are the scan's points in the solve's frame (scale/lidar_init.ply, from Measure with \"write init points\" on the Frames page) plus the solve's own points beyond the scan's reach, instead of the sparse points alone. The subject exists from iteration 0 instead of being grown from nothing.")
                     }
                     Handle(title: "Leave out views", help: "Extra views to exclude, e.g. a bad photograph: L/cap064,R/cap069.") {
                         TextField("L/cap064,R/cap069", text: settings.excludeExtra).textFieldStyle(.roundedBorder).frame(maxWidth: 320)

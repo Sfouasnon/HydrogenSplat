@@ -445,13 +445,21 @@ sparse cloud does not hold the subject (glossy, uniform, thin), `hs/silhouette.p
    (`--silhouette-icp vertical`, `lidar.icp_vertical`) ICP moves only height and the two tilts —
    what a floor or lawn observes — point-to-plane, over the solve points within 10 × the inlier
    distance of the scan (the far ones matched nothing and their exact kd-tree queries were 2 s of
-   every iteration). `se3` is the rigid ICP. `--icp-iters 0` keeps the silhouettes' pose.
-5. **Verdict**: `lidar_aligned` is the silhouette check plus ICP's in-scan inlier fraction and the
-   overlap floor (the trimmed RMS is reported, not judged — on a lawn it is grass; the global search
-   is not run). `lidar_silhouette_fits`: mean IoU ≥ `--min-iou` (0.35) over ≥ 6 views, at the final
-   pose. `lidar_ground_agrees_with_silhouettes` (needs_human): ICP kept ≥ 90 % of the fit's IoU and
-   tilted it ≤ 3° — when not, the solve's floor and the subject's outline disagree (a bent solve, a
-   drifted scan) and the overlays are the thing to look at. `lidar_geometry_constrains` is not
+   every iteration). `se3` is the rigid ICP. `none` (or `--icp-iters 0`) keeps the silhouettes'
+   pose. **The subject decides**: when the ICP's move costs the silhouettes more than 10 % of their
+   IoU or tilts the solve more than 3°, the pose reverts to the silhouettes' and the ICP's move is
+   only reported — on Circles the lawn ICP lowered the cameras 284 mm and tilted the solve 8.1°
+   (IoU 0.45 → 0.37, and in the overlays the cyan ring sits above the red one while the yellow one
+   is on it): the sparse lawn is a bowl (SfM drift), the ring is where the cameras see it, and an
+   init cloud has to put the subject there.
+5. **Verdict**: `lidar_aligned` is the silhouette check plus the overlap floor (the trimmed RMS and
+   the ground's inlier fraction are reported, not judged — on a lawn the RMS is grass, and the
+   ground's fit is the cross-check below; the global search is not run). `lidar_silhouette_fits`:
+   mean IoU ≥ `--min-iou` (0.35) over ≥ 6 views, at the final pose.
+   `lidar_ground_agrees_with_silhouettes` (needs_human): ICP kept ≥ 90 % of the fit's IoU, tilted it
+   ≤ 3°, and ≥ 50 % of the solve's on-scan points sit within the inlier distance — when not, the
+   solve's floor and the subject's outline disagree (a bent solve, a drifted scan), the silhouettes'
+   pose stands, and the overlays are the thing to look at. `lidar_geometry_constrains` is not
    emitted (the scale is not the geometry's). Metrics: `silhouette_scale`, `silhouette_yaw_deg`,
    `silhouette_iou_mean` (final) / `_fit`, `silhouette_views_used` / `_offered`,
    `scan_subject_points`, `scan_subject_extent_mm`, `scan_subject_cut_mm`,

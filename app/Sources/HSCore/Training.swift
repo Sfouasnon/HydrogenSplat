@@ -108,6 +108,9 @@ public struct TrainSettings: Equatable, Sendable {
     public var scoreViews = true
     public var scoreBothEyes = false
     public var subjectMM: Double? = nil
+    /// Start Brush from the LiDAR scan (`hs train --init lidar`: scale/lidar_init.ply, written by
+    /// `hs scale --lidar … --init-points`) instead of the solve's sparse points.
+    public var initFromLidar = false
 
     public init() {}
 
@@ -153,6 +156,7 @@ public struct TrainSettings: Equatable, Sendable {
         if !ex.isEmpty { a.append("--exclude=\(ex.joined(separator: ","))") }
         a.append("--layer=\(layer.rawValue)")
         if layer == .subject { a.append("--alpha-mode=\(alphaMode.rawValue)") }   // explicit, so the manifest says which
+        if initFromLidar { a.append("--init=lidar") }
         let b = brushArgs
         if !b.isEmpty { a.append("--brush-args=\(b)") }
         return a

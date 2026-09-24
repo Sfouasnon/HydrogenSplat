@@ -16,6 +16,20 @@ public enum ScanUp: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// How the scan is first placed on the solve (`hs scale --init`). Geometry: the shapes the two
+/// share (a room, furniture). Silhouette: the scan's subject projected through the solve's cameras
+/// against `hs masks` — for a subject the sparse cloud does not hold (glossy, uniform; Circles).
+public enum ScanInit: String, CaseIterable, Identifiable, Sendable {
+    case auto, silhouette
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .auto: return "Geometry"
+        case .silhouette: return "Silhouettes (masks)"
+        }
+    }
+}
+
 /// The Scale box on the Frames page: a phone LiDAR scan measured against the solve and applied,
 /// or a scale factor found some other way. Per project, kept for the session.
 ///
@@ -28,6 +42,9 @@ public struct ScaleSettings: Equatable, Sendable {
     /// The scan file, project-relative ("lidar/scan.ply") once the picker has copied it in.
     public var scan: String?
     public var scanUp: ScanUp = .auto
+    public var scanInit: ScanInit = .auto
+    /// Also write scale/lidar_init.ply, the scan as Brush's starting splats (`--init-points`).
+    public var initPoints = false
     /// Stereo projects: apply the scan's (or the factor's) scale over the calibrated baseline.
     public var trustScan = false
     /// A known factor (solve units x F = mm), instead of the scan.
@@ -43,6 +60,8 @@ public struct ScaleSettings: Equatable, Sendable {
         let path = s.hasPrefix("/") ? s : (project as NSString).appendingPathComponent(s)
         var a = ["scale", "-p", project, "--lidar", path]
         if scanUp != .auto { a += ["--scan-up", scanUp.rawValue] }
+        if scanInit != .auto { a += ["--init", scanInit.rawValue] }
+        if initPoints { a.append("--init-points") }
         return a
     }
 
@@ -124,6 +143,12 @@ public struct LidarCheck: Equatable, Sendable {
     public var rmsMM: Double? { metrics["lidar_rms_mm"]?.double }
     public var scanPoints: Int? { metrics["scan_points"]?.int }
     public var scanUnits: String? { metrics["scan_units"]?.string }
+    public var initMethod: String? { metrics["lidar_init"]?.string }
+    public var silhouetteIoU: Double? { metrics["silhouette_iou_mean"]?.double }
+    public var silhouetteViews: Int? { metrics["silhouette_views_used"]?.int }
+    public var initPointsScan: Int? { metrics["init_points_scan"]?.int }
+    public var initPointsSparse: Int? { metrics["init_points_sparse"]?.int }
+    public var initPLY: String? { metrics["init_ply"]?.string }
 
     public func check(_ name: String) -> CheckResult? { checks.first { $0.name == name } }
 
@@ -167,6 +192,12 @@ public struct LidarCheck: Equatable, Sendable {
         }
         if let p = scanPoints {
             out.append("\(p.formatted()) scan points" + (scanUnits.map { " (\($0))" } ?? ""))
+        }
+        if initMethod == "silhouette", let i = silhouetteIoU {
+            out.append(String(format: "placed by the subject's silhouettes: IoU %.2f over %d views", i, silhouetteViews ?? 0))
+        }
+        if let a = initPointsScan {
+            out.append("init points written: \(a.formatted()) from the scan" + (initPointsSparse.map { " + \($0.formatted()) from the solve" } ?? "") + " — Train can start from them")
         }
         return out
     }

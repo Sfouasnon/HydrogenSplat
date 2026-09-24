@@ -201,6 +201,9 @@ final class TrainingTests: XCTestCase {
         XCTAssertFalse(t.contains { $0.hasPrefix("--brush-args") })
         XCTAssertTrue(t.contains("--layer=full"))
         XCTAssertFalse(t.contains { $0.hasPrefix("--alpha-mode") })   // no masks, no alpha mode
+        XCTAssertFalse(t.contains("--init=lidar"))                    // the sparse points unless asked
+        var l = s; l.initFromLidar = true
+        XCTAssertTrue(l.steps(project: "/p", captures: 160)[0].arguments.contains("--init=lidar"))
         XCTAssertEqual(steps[2].arguments, ["views", "-p", "/p", "--captures",
                                             "5,15,25,35,45,55,65,75,85,95,105,115,125,135,145,155",
                                             "--subject-mm", "350", "--name", "views_holdout-base"])

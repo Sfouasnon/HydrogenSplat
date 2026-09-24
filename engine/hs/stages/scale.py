@@ -147,10 +147,11 @@ def add_parser(sub):
     g.add_argument("--silhouette-tilt", action="store_true",
                    help="--init silhouette: also fit two small tilts (off: gravity is locked to the mean camera "
                         "up; on Circles a free tilt overfitted the masks and put the cameras through the lawn)")
-    g.add_argument("--silhouette-icp", choices=("vertical", "se3"), default="vertical",
+    g.add_argument("--silhouette-icp", choices=("vertical", "se3", "none"), default="vertical",
                    help="--init silhouette: what ICP may move after the fit, the scale locked either way. vertical "
                         "(default): height and tilt only, what a floor or lawn observes; se3: also yaw and "
-                        "horizontal position (slid along the Circles lawn)")
+                        "horizontal position (slid along the Circles lawn); none: keep the silhouettes' pose — "
+                        "the subject where the cameras see it, for --init-points on a solve whose floor is bent")
     g.add_argument("--min-iou", type=float, default=0.35,
                    help="lidar_silhouette_fits: mean IoU of the projected subject and the masks over the views used")
     g.add_argument("--init-points", action="store_true",
@@ -733,7 +734,13 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo, sil_rows=None):
         # the first three, point-to-plane over the solve points on the scan; `se3` is the stage's
         # ICP with the scale locked (on Circles it slid along the lawn: IoU 0.45 -> 0.36).
         s0 = float(T0[0])
-        if getattr(a, "silhouette_icp", "vertical") == "se3":
+        sil_icp = getattr(a, "silhouette_icp", "vertical")
+        if sil_icp == "none" or iters == 0:
+            # the silhouettes' pose as it is: an ICP with zero iterations only measures at T0
+            fit = lidarlib.icp(Ps, None, T0, max_iter=0, trim=trim, with_scale=False, index=nn,
+                               inlier_dist=inlier_mm, keep_within=inlier_mm)
+            fit["s"], fit["R"], fit["t"] = s0, T0[1], T0[2]
+        elif sil_icp == "se3":
             fit = lidarlib.icp(s0 * Ps, None, (1.0, T0[1], T0[2]), max_iter=iters, trim=trim, with_scale=False,
                                index=nn, inlier_dist=inlier_mm, keep_within=inlier_mm, callback=cb)
             fit["s"] = s0
@@ -750,6 +757,20 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo, sil_rows=None):
             "lift_mm": round(float(((lidarlib.apply(T_icp, Cg) - lidarlib.apply(T0, Cg)) @ up_sc).mean()), 1),
             "note": "the ICP's change to the silhouette pose: tilt of the solve's up, and the mean move of the "
                     "(non-outlier) cameras along the scan's up, mm"}
+        if sil_icp != "none" and iters > 0:
+            # the subject decides: when the ground pulls the pose off the silhouettes (a bent solve — the
+            # Circles lawn tilted it 8 deg and lowered the cameras 0.28 m, IoU 0.45 -> 0.37, the ring
+            # off the ring in the overlays), the silhouettes' pose is kept and the ICP's move reported
+            from .. import silhouette as silib
+            io_icp = silib.ious_at(sil["views"], lidarlib.apply(lidarlib.invert(T_icp), sil["subject"]["fit"]))
+            used0 = sil["fit"]["views_used"]
+            keep0 = (float(np.mean([io_icp[n] for n in used0])) if used0 else 0.0) / max(sil["fit"]["iou_mean"], 1e-9)
+            init_rep["icp_moved"]["iou_kept"] = round(keep0, 4)
+            if keep0 < SIL_AGREE_IOU or init_rep["icp_moved"]["tilt_deg"] > SIL_AGREE_TILT_DEG:
+                init_rep["icp_reverted"] = True
+                fit = lidarlib.icp(Ps, None, T0, max_iter=0, trim=trim, with_scale=False, index=nn,
+                                   inlier_dist=inlier_mm, keep_within=inlier_mm)
+                fit["s"], fit["R"], fit["t"] = s0, T0[1], T0[2]
     else:
         fit = lidarlib.icp(Ps, None, T0, max_iter=iters, trim=trim, with_scale=with_scale, index=nn,
                            inlier_dist=inlier_mm, scale_bounds=bounds, keep_within=inlier_mm, callback=cb)
@@ -774,10 +795,16 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo, sil_rows=None):
         reasons.append(f"only {n_in} of the solve's {len(Ps)} points ({100 * overlap:.0f}%) lie within "
                        f"{overlap_mm:g} mm of the scan after ICP (want >= {LIDAR_MIN_OVERLAP_POINTS} and "
                        f">= {100 * LIDAR_MIN_OVERLAP:.0f}%): the scan does not cover what the cameras saw")
+    ground_short = None
     if inl_in < a.min_inlier:
-        reasons.append(f"{100 * inl_in:.0f}% of the solve's points on the scan are within {inlier_mm:g} mm "
-                       f"of it after ICP (want >= {100 * a.min_inlier:.0f}%; {100 * overlap:.0f}% of the "
-                       f"solve is on the scan at all)")
+        msg = (f"{100 * inl_in:.0f}% of the solve's points on the scan are within {inlier_mm:g} mm "
+               f"of it after ICP (want >= {100 * a.min_inlier:.0f}%; {100 * overlap:.0f}% of the "
+               f"solve is on the scan at all)")
+        if sil is None:
+            reasons.append(msg)
+        else:
+            # in silhouette mode the subject decides; the ground is the cross-check below
+            ground_short = msg
     sil_check = sil_agree = None
     if sil is not None:
         # the silhouettes at the pose the scale is reported with (after ICP moved it), over the
@@ -802,13 +829,19 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo, sil_rows=None):
         # or a scan drifted — and a person should look at the overlays (not a failure: the scale is
         # the silhouettes' either way)
         mv = init_rep.get("icp_moved") or {}
-        keep = iou_now / max(sil["fit"]["iou_mean"], 1e-9)
-        agree = keep >= SIL_AGREE_IOU and mv.get("tilt_deg", 0.0) <= SIL_AGREE_TILT_DEG
+        reverted = bool(init_rep.get("icp_reverted"))
+        keep = mv.get("iou_kept", iou_now / max(sil["fit"]["iou_mean"], 1e-9))
+        agree = (not reverted and keep >= SIL_AGREE_IOU and mv.get("tilt_deg", 0.0) <= SIL_AGREE_TILT_DEG
+                 and ground_short is None)
         sil_agree = {"name": "lidar_ground_agrees_with_silhouettes", "ok": agree, "needs_human": not agree,
-                     "value": (f"ICP on the ground kept {100 * keep:.0f}% of the silhouettes' IoU (want >= "
-                               f"{100 * SIL_AGREE_IOU:.0f}%), tilted the solve {mv.get('tilt_deg', 0.0):.1f} deg (want <= "
-                               f"{SIL_AGREE_TILT_DEG:g}) and moved the cameras {mv.get('lift_mm', 0.0):+.0f} mm along the up; "
-                               "see scale/silhouette_overlay_*.jpg (yellow: the silhouettes' pose, cyan: the final)")}
+                     "value": ((f"ICP on the ground kept {100 * keep:.0f}% of the silhouettes' IoU (want >= "
+                                f"{100 * SIL_AGREE_IOU:.0f}%), tilted the solve {mv.get('tilt_deg', 0.0):.1f} deg (want <= "
+                                f"{SIL_AGREE_TILT_DEG:g}) and moved the cameras {mv.get('lift_mm', 0.0):+.0f} mm along the up"
+                                + ("; the solve's floor and the subject disagree, so the silhouettes' pose is kept "
+                                   "(the subject where the cameras see it) and the floor's move is only reported" if reverted else "")
+                                if mv else "no ICP: the silhouettes' pose as fitted")
+                               + (f"; {ground_short}" if ground_short else "")
+                               + "; see scale/silhouette_overlay_*.jpg (yellow: the silhouettes' pose, cyan: the final)")}
     elif sim["rms"] > max_rms_mm:
         reasons.append(f"trimmed RMS {sim['rms']:.1f} mm after ICP (want <= {max_rms_mm:g})")
     aligned = not reasons
