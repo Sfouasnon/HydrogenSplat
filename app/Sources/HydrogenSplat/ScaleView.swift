@@ -14,7 +14,9 @@ struct ScaleView: View {
     let manifest: Manifest
 
     @State private var showFactor = false
-    @State private var confirmApply: [String]?     // the arguments of the apply about to run
+    /// The apply about to run, once confirmed: its step title and arguments.
+    private struct Pending: Equatable { let title: String; let arguments: [String] }
+    @State private var confirmApply: Pending?
     @State private var copyError: String?
 
     private var settings: Binding<ScaleSettings> {
@@ -25,7 +27,6 @@ struct ScaleView: View {
     private var running: Bool { queue?.isRunning ?? false }
     private var lockAlive: Bool { project.lock?.alive == true }
     private var scaleStage: StageState? { manifest.stage("scale") }
-    private var solveDone: Bool { manifest.stage("solve")?.status == .done }
     /// A Hydrogen clip: the solve calls itself metric, so applying needs --trust-scan.
     private var stereo: Bool { !manifest.isArray }
     private var check: LidarCheck? { LidarCheck(manifest: manifest) }
@@ -64,7 +65,7 @@ struct ScaleView: View {
             }
         }
         .confirmationDialog("Apply this scale to the solve?", isPresented: Binding(get: { confirmApply != nil }, set: { if !$0 { confirmApply = nil } })) {
-            Button("Apply", role: .destructive) { if let a = confirmApply { run("Apply scale", a) }; confirmApply = nil }
+            Button("Apply", role: .destructive) { if let a = confirmApply { run(a.title, a.arguments) }; confirmApply = nil }
         } message: {
             Text("The training set is rewritten in the new units. Train, Move, Render and Views go stale and need running again; archives keep their old units.")
         }
@@ -108,7 +109,7 @@ struct ScaleView: View {
                 .disabled(busy || s.scanProblem != nil)
                 .help("hs scale --lidar SCAN --dry-run: align the scan to the solve and report; nothing in the project changes.")
                 Button(running && queue?.steps.first?.title == "Apply scale" ? "Applying…" : "Apply scan scale") {
-                    confirmApply = s.applyScanArguments(project: project.path)
+                    confirmApply = Pending(title: "Apply scale", arguments: s.applyScanArguments(project: project.path))
                 }
                 .disabled(busy || s.scanProblem != nil || (stereo && !s.trustScan))
                 .help(stereo && !s.trustScan ? "Turn on \"Trust the scan\" to apply on a Hydrogen project" : "hs scale --lidar SCAN: align and apply the scan's scale")
@@ -181,7 +182,7 @@ struct ScaleView: View {
                     let s = settings.wrappedValue
                     HStack(spacing: 12) {
                         Button(running && queue?.steps.first?.title == "Apply factor" ? "Applying…" : "Apply factor") {
-                            confirmApply = s.applyFactorArguments(project: project.path)
+                            confirmApply = Pending(title: "Apply factor", arguments: s.applyFactorArguments(project: project.path))
                         }
                         .disabled(busy || s.factorProblem != nil || (stereo && !s.trustScan))
                         .help(stereo && !s.trustScan ? "Turn on \"Trust the scan\" above to apply on a Hydrogen project" : "hs scale --factor F")
