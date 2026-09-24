@@ -5,7 +5,9 @@ sharpest. That makes every pick locally sensible and says nothing about the set:
 pick is soft next to the rest of the clip, whether its exposure wanders off the others, or
 whether a clearly sharper frame sat a few frames away, outside the window. This module turns
 selection.json's per-frame trace (every frame read) plus a measurement of the written frames
-(both eyes) into quality.json, which the app draws as the contact sheet.
+(both eyes) into quality.json, which the app draws as the contact sheet. With --keyframes the
+selector takes H.264 I-frames only; then only keyframes count as a "sharper frame nearby", and
+the "keyframes" block says how many picks are I-frames and what the clip's GOP is.
 
 Everything here is a *report*. The thresholds are starting guesses, not calibrated against a
 solve — they flag frames for a human to look at; nothing is dropped automatically. Pure numpy
@@ -125,6 +127,26 @@ def neighbourhood(picks, i, first, last):
     return lo, hi
 
 
+def keyframe_summary(selection):
+    """How many picks are H.264 I-frames, and the clip's keyframe count and GOP.
+
+    mode: "keyframes" when only I-frames were candidates (select_frames.py --keyframes), else
+    "parallax". picks_known is how many picks carry a keyframe mark at all (none when ffprobe
+    could not list the frame types); keyframes_total / gop_median are None then too."""
+    sel = selection.get("selected", [])
+    kf = selection.get("keyframes") or {}
+    known = [s for s in sel if s.get("keyframe") is not None]
+    return {
+        "mode": "keyframes" if (selection.get("params") or {}).get("keyframes") else "parallax",
+        "picks": len(sel),
+        "picks_known": len(known),
+        "picks_keyframes": sum(1 for s in known if s["keyframe"]),
+        "keyframes_total": kf.get("total"),
+        "gop_median": kf.get("gop_median"),
+        "quality_fallbacks": sum(1 for s in sel if s.get("quality_fallback")),
+    }
+
+
 def analyse(selection, measured=None):
     """quality.json content from selection.json (with its trace) and optional per-frame
     measurements of the written frames.
@@ -160,6 +182,10 @@ def analyse(selection, measured=None):
     med_clip = _median([s.get("clip") for s in sel]) or 0.0
     clip_ok = max(max_clip, CLIP_REL * med_clip)   # a usable alternative clips no worse than this
     fps = float(selection.get("fps") or 0) or None
+    # --keyframes: only an I-frame could have replaced a pick, so only keyframes are "nearby"
+    # (a P-frame's higher Laplacian is its compression artefacts — select_frames.py)
+    kf = selection.get("keyframes") or {}
+    kf_only = set(kf.get("frames") or []) if params.get("keyframes") else None
     first = t_frames[0] if t_frames else (picks[0] if picks else 0)
     last = t_frames[-1] if t_frames else (picks[-1] if picks else 0)
 
@@ -186,6 +212,8 @@ def analyse(selection, measured=None):
                 if g > hi:
                     break
                 if g == f or tr["clip"][k] >= clip_ok or t_focus[k] is None:
+                    continue
+                if kf_only is not None and g not in kf_only:
                     continue
                 if best is None or t_focus[k] > best[1]:
                     best = (g, t_focus[k], tr["sharp"][k])
@@ -214,7 +242,10 @@ def analyse(selection, measured=None):
         noise = m.get("noise")
         if noise is not None and med_noise and noise > NOISY_REL * med_noise:
             flags.append("noisy")
-        if s.get("gap", 0) >= max_gap:
+        # a keyframe pick says what made the frame due; its gap also includes the wait for the
+        # next I-frame, so a parallax pick can overshoot max-gap without the camera standing still
+        on_max_gap = s["trigger"] == "max-gap" if "trigger" in s else s.get("gap", 0) >= max_gap
+        if on_max_gap:
             flags.append("stood_still")
         if s.get("residual", 0) is not None and s.get("residual", 0) < 0:
             flags.append("untracked")
@@ -230,6 +261,7 @@ def analyse(selection, measured=None):
             "clip": _r(s.get("clip"), 5), "clip_R": _r(m.get("clip_R"), 5), "dark": _r(dark, 5),
             "noise": _r(noise, 3), "noise_rel": _r(noise / med_noise, 3) if noise is not None and med_noise else None,
             "candidates": s.get("candidates", []),
+            "keyframe": s.get("keyframe"), "quality_fallback": s.get("quality_fallback"),
             "sharper_nearby": nearby,
             "flags": flags,
         })
@@ -267,6 +299,7 @@ def analyse(selection, measured=None):
         "flag_counts": counts,
         "flagged": sum(1 for fr in frames if fr["flags"]),
         "exposure_reference": pick_reference(frames),
+        "keyframes": keyframe_summary(selection),
         "frames": frames,
         "trace": {"frame": t_frames, "sharp": tr.get("sharp", []),
                   "focus_rel": [_r(x / med_focus, 3) if x and med_focus else None for x in t_focus],

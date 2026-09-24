@@ -62,6 +62,7 @@ hs ingest  -p P --clip VID_..._2x1.h4v [--link]                       copy, MD5,
 hs ingest  -p P --frames DIR | --r3d RDM_DIR --take 067 [--res 1]     frames source, select is marked done: array (one frame per camera; REDline renders the R3Ds)
            [--kind auto|mono|array]                                   or mono (one camera's frames, e.g. select_frames.py --mono picks) — see below
 hs select  -p P [--residual 1.5 --max-gap 90 --end N --dry-run]      frames + selection.json + quality.json + thumbs/ + contact.jpg
+           [--keyframes [--search-keyframes 2 --min-sharp-rel 0.6]] [--highlight-knee 0.85]   I-frames only; soft highlight knee on the written frames
 hs solve   -p P [--matcher auto|sequential|exhaustive] [--overlap 15 --loop-stride 8]   prep → sfm --float-rig → export; per_image.json, coverage.json
 hs solve   -p P --estimate | --estimate --captures N [--eyes 1|2]     one `estimate` event: pairs and seconds per phase for both matchers (no lock, no writes)
 hs solve   -p P --scale-pair GA,GB,700 [--focal-px F] [--board B]     array/mono project: monocolmap.py, one shared camera, metric scale from a measured spacing (or --board: hs scale after)
@@ -98,6 +99,57 @@ metrics, checks and artifacts in `manifest.json`. `-v` also streams the child's 
 `{"ev":"log"}` events. Opening a project reconciles it first: a stage the manifest still calls
 `running` whose recorded pid is gone becomes `failed — interrupted`, so a ^C'd or crashed run
 reports that instead of blocking the next stage with "solve is running".
+
+## Keyframes only, and a highlight knee on the frames (2026-09-23)
+
+CirclesSculpture (3 minutes, 5,880 frames, every angle) showed two things about the Hydrogen's
+video that the selector did not know. **The codec, not motion, limits sharpness.** The clip is
+H.264 Baseline at ~12 Mbit/s with a GOP of 30: one I-frame, then 29 P-frames, each coded as a
+change from the one before. The Laplacian rises through every GOP — the P-frames' accumulated
+compression artefacts read as detail — so "sharpest of the next 4" drifts to the most artefacted
+frame; only 7 of 422 picks were I-frames. The shutter was 1/1000 s, so motion blur was never the
+issue. `hs select --keyframes` makes only I-frames candidates. The I-frame indices come from
+ffprobe (`-show_entries frame=pict_type -of csv=p=0`, one line per frame; Baseline has no
+B-frames, so that is display order too), found the way `hs ingest` finds it (`--ffprobe`,
+`HS_FFPROBE`); without ffprobe keyframe mode stops with that said. The parallax rule still decides
+*when* a frame is due (the residual crossing, `--min-gap`, `--max-gap`); the pick is then the first
+keyframe at or after the crossing that passes quality, looking at no more than
+`--search-keyframes` (2: the first keyframe at or after the crossing, and the next). Quality is
+clipping under `--max-clip`, focus (the contrast-normalised Laplacian the report's "soft" flag
+uses) at least `--min-sharp-rel` (0.6, the "soft" threshold) of the running median over the picks,
+and crushed shadows under the report's 10%. If none passes, the least bad is taken and its record
+says why (`quality_fallback`). The first pick is a keyframe too; `--mono` works the same. Expect
+gaps in whole GOPs (30, 60, …) and fewer, cleaner picks; `median_gap_in_range` then asks for at
+most 2 GOPs, and `keyframes_used` checks every pick is an I-frame. In the default mode ffprobe runs
+alongside the decode, best effort, so every run's report says how many picks happen to be
+I-frames (`keyframes_picked` of `frames_selected`); the picks themselves do not change.
+
+**Highlights at the ceiling.** The clip was ISO 250, 1/1000 — the lowest the phone offers — in
+sun and shade: ~14% of pixels at ≥ 250 in some channel, 1.8% at 255. `hs exposure` is not the
+tool: it moves whole views to a common median and would pull the sunny side down. `--highlight-knee
+K` puts a soft knee on every written frame, per channel, in linear light: sRGB → linear, above K
+`x → K + (1−K)(1 − e^−(x−K)/(1−K))`, back to sRGB, from a 256-entry table. It meets the identity with
+slope 1 at K, keeps order, never reaches 1, and touches nothing below K; both eyes get the same
+curve. K = 0.85 starts at code 238 and takes 255 to 249 (18 codes into 12 — neighbouring highlight
+values can merge in 8 bits); 0.9 starts at 244 and takes 255 to 251. It lives in select because
+select writes the photographs: solve, masks, train and views all read `select/frames`, so every
+consumer sees the same pictures, and `hs views` compares renders against the knee'd frames the
+model was trained on. It is not exposure matching (`hs exposure`) and not a look (`hs grade`), and
+it cannot bring back what the sensor clipped. The selector's measurements (trace, per-pick clip
+and sharpness) are of the source before the knee — the knee changes no pick — while the report's
+right-eye columns are measured on the written frames, so `clip_R` reads near zero with a knee.
+`highlight_knee_applied` in the checks says K and how many frames.
+
+selection.json gains `keyframes` (`frames`, `total`, `gop_median`, `probe_frames`, `source`; null
+when ffprobe could not list the types), `params.mode` (`parallax` | `keyframes`) and the new flags
+in `params`; every pick gets `keyframe` (true/false, null unknown), keyframe picks also `crossing`,
+`trigger` (`parallax` | `max-gap` | `untracked`) and, when nothing passed, `quality_fallback`.
+quality.json gains a `keyframes` block (`mode`, `picks`, `picks_known`, `picks_keyframes`,
+`keyframes_total`, `gop_median`, `quality_fallbacks`) and `keyframe` / `quality_fallback` per
+frame; in keyframe mode only keyframes count as a "sharper frame nearby", and `stood_still` follows
+the trigger rather than the gap (a gap includes the wait for the next I-frame). Metrics:
+`selection_mode`, `keyframes_picked`, `keyframes_total`, `gop_median`, and in the new modes
+`quality_fallbacks`, `highlight_knee`.
 
 ## Matching, estimates and ETAs (2026-09-22)
 

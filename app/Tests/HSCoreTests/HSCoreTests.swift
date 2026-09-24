@@ -285,6 +285,22 @@ final class TrainingTests: XCTestCase {
         XCTAssertFalse(g.contains("--feather-px"))           // a Vision-only setting
     }
 
+    func testSelectArgumentsMatchTheStage() {
+        var s = SelectSettings()
+        // defaults pass nothing, so the engine's own defaults decide
+        XCTAssertEqual(s.arguments(project: "/p"), ["select", "-p", "/p"])
+        s.keyframes = true
+        XCTAssertEqual(s.arguments(project: "/p"), ["select", "-p", "/p", "--keyframes"])
+        s.highlightKnee = 0.85
+        XCTAssertEqual(s.arguments(project: "/p"), ["select", "-p", "/p", "--keyframes", "--highlight-knee", "0.85"])
+        XCTAssertNil(s.problem)
+        s.keyframes = false
+        s.residual = 2
+        XCTAssertEqual(s.arguments(project: "/p"), ["select", "-p", "/p", "--residual", "2", "--highlight-knee", "0.85"])
+        s.highlightKnee = 1
+        XCTAssertNotNil(s.problem)
+    }
+
     func testLogFollowsTheLastRun() {
         let log = """
         ### 2026-09-15 21:11:41  $ /x/brush old

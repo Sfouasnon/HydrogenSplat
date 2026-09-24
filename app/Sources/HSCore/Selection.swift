@@ -13,6 +13,8 @@ public struct SelectSettings: Equatable, Sendable {
     public var maxClip: Double = 0.02     // fraction of pixels >= 250
     public var start: Int = 0
     public var end: Int = -1              // -1 = to the end of the clip
+    public var keyframes: Bool = false    // only H.264 I-frames are candidates
+    public var highlightKnee: Double? = nil   // soft highlight knee at linear K; nil = off
 
     public init() {}
 
@@ -28,6 +30,8 @@ public struct SelectSettings: Equatable, Sendable {
         if maxClip != d.maxClip { a += ["--max-clip", SelectSettings.num(maxClip)] }
         if start != d.start { a += ["--start", String(start)] }
         if end != d.end { a += ["--end", String(end)] }
+        if keyframes { a.append("--keyframes") }
+        if let k = highlightKnee { a += ["--highlight-knee", SelectSettings.num(k)] }
         return a
     }
 
@@ -39,6 +43,7 @@ public struct SelectSettings: Equatable, Sendable {
         if maxClip <= 0 || maxClip >= 1 { return "max clip is a fraction between 0 and 1" }
         if start < 0 { return "start must be 0 or later" }
         if end >= 0 && end <= start { return "end must be after start (or -1 for the whole clip)" }
+        if let k = highlightKnee, k <= 0 || k >= 1 { return "highlight knee is a fraction between 0 and 1" }
         return nil
     }
 

@@ -68,13 +68,27 @@ Hydrogen clips only; array and mono projects say there is nothing to select.
 | Control | What it does |
 |---|---|
 | **Parallax residual** | Take a frame once the camera has moved this far (px) after rotation is removed. Lower = more frames. Default 1.5. |
-| **More settings** | **Gap between picks** (6 to 90 frames; a max-gap pick is taken even if the camera stood still), **Search window** (sharpest of 4), **Max clipped** (0.02), **Frame range** (end −1 = to the end), **Defaults**. |
+| **Keyframes only** | Take only the video's keyframes (I-frames): the frames without the codec's built-up compression smear, one in 30 on a Hydrogen clip. The parallax still decides when a frame is due; the pick is the next keyframe that is clean enough. Off by default. |
+| **More settings** | **Gap between picks** (6 to 90 frames; a max-gap pick is taken even if the camera stood still), **Search window** (sharpest of 4), **Max clipped** (0.02), **Highlight knee** (off; 0.8 or 0.9 — eases the brightest values down off 255 on every written frame), **Frame range** (end −1 = to the end), **Defaults**. |
 | **Select Frames** (⌘⇧S) | `hs select` with the values you changed. Again asks "Select the frames again?"; **Select again** marks solve and everything after it stale. |
 
 It reads every frame of the clip, then measures each pick, so time grows with clip length.
 Checks: `frame_count_in_range` (30–120), `median_gap_in_range` (6–15), `maxgap_fraction_low`
 (under 15%; high means the camera stood still and coverage is thin there). Remedy: change the
 residual or gaps and select again, or reshoot.
+
+**Keyframes only** is for a clip shot with a fast shutter, where the camera was steady enough
+that the picture is limited by the video compression, not by motion. A Hydrogen clip stores one
+complete picture every 30 frames and, in between, only changes; those in-between frames look
+"sharper" to the selector because the compression adds false detail. With the switch on, every
+pick is a complete picture, so you get fewer frames (gaps of 30 or 60) and cleaner ones. If none
+of the keyframes near a pick is clean, the least bad is taken and the report says why. The check
+`keyframes_used` confirms every pick is a keyframe, and the gap check then asks for no more than
+two keyframes apart. **Highlight knee** is for sunlit subjects near white: it gently lowers only
+the brightest values (0.85 turns 255 into 249) in the saved frames, keeping them in order, and
+leaves everything else alone. Every later step — solve, masks, train, and the score in views —
+uses these same frames. It is not exposure matching (that is the Exposure box) and not a look
+(that is Grade); the check `highlight_knee_applied` shows the value used.
 
 The report: counts, median gap and Laplacian; chips **All**, **Flagged**, **Clean** and one
 per flag (hover for its meaning); **Sort**; focus and exposure traces along the clip with the

@@ -103,6 +103,10 @@ struct SelectView: View {
                     .textFieldStyle(.roundedBorder).frame(width: 80)
                 Text("px").foregroundStyle(.secondary)
             }
+            Handle(title: "Keyframes",
+                   help: "H.264 I-frames are the frames without accumulated compression artefacts; on a GOP-30 clip that is one frame in 30. Use when the shutter is fast and the codec, not motion, limits sharpness.") {
+                Toggle("Keyframes only", isOn: settings.keyframes)
+            }
             DisclosureGroup("More settings", isExpanded: $showAdvanced) {
                 VStack(alignment: .leading, spacing: 8) {
                     Handle(title: "Gap between picks",
@@ -124,6 +128,10 @@ struct SelectView: View {
                            help: "Skip a candidate with more than this fraction of pixels at 250+ when a cleaner one is in the window.") {
                         TextField("0.02", value: settings.maxClip, format: .number)
                             .textFieldStyle(.roundedBorder).frame(width: 80)
+                    }
+                    Handle(title: "Highlight knee",
+                           help: "Eases the brightest values of every written frame down from the ceiling, smoothly and in order; nothing below the knee changes. 0.85 takes 255 to 249; 0.9 is gentler. Every later step sees these frames. It is not exposure matching (Exposure) and not a look (Grade).") {
+                        OptionalNumber(value: settings.highlightKnee, placeholder: "off", choices: [0.8, 0.9])
                     }
                     Handle(title: "Frame range",
                            help: "Only look at these source frames. End −1 = to the end of the clip.") {

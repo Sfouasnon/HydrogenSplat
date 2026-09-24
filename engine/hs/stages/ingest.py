@@ -313,8 +313,13 @@ def run_array(a, pj):
     pj.finish("select", ok=True)
 
 
+def find_ffprobe(ffprobe_bin):
+    """The ffprobe executable for --ffprobe / HS_FFPROBE (a name on PATH or a path), or None."""
+    return shutil.which(os.path.expanduser(ffprobe_bin))
+
+
 def ffprobe(ffprobe_bin, path):
-    exe = shutil.which(os.path.expanduser(ffprobe_bin)) or ffprobe_bin
+    exe = find_ffprobe(ffprobe_bin) or ffprobe_bin
     argv = [exe, "-v", "error", "-show_entries",
             "format=duration,size,format_name:format_tags:stream=index,codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames",
             "-of", "json", path]

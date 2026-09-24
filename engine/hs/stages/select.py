@@ -6,6 +6,14 @@ picks < 15% — and select/quality.json: every pick's sharpness (Laplacian varia
 the set's median in stops, both eyes, noise, clipping, the sharpest frame in its interval, and
 report-only flags (hs/frame_quality.py). select/thumbs/ holds a left-eye thumbnail per pick for
 the app; select/contact.jpg is the same data drawn on one sheet.
+
+--keyframes (opt-in): only H.264 I-frames are candidates — on the Hydrogen's Baseline GOP-30
+stream the P-frames' Laplacian is inflated by compression artefacts, and the I-frame is the
+cleanest picture in each GOP (select_frames.py has the why). The median-gap check then reads
+in GOPs, and keyframes_used checks every pick is one. --highlight-knee K: a soft highlight knee
+on the written frames, here because every later stage reads these photographs; not exposure
+matching (hs exposure) and not a look (hs grade). quality.json's "keyframes" block and the
+keyframe metrics say how many picks are I-frames in either mode (when ffprobe could list them).
 """
 import json
 import os
@@ -15,6 +23,7 @@ import sys
 import numpy as np
 
 from .. import events, frame_measure, frame_quality, runner
+from .ingest import find_ffprobe
 
 STAGE = "select"
 SEL_RE = re.compile(r"^\s*sel\s+(\d+)\s+frame\s+(\d+)\s+gap\s+(\d+)\s+residual\s+([-\d.]+) px\s+sharp\s+([\d.]+)\s+clip\s+([\d.]+)%\s+\[(\w[\w-]*)\]")
@@ -31,6 +40,16 @@ def add_parser(sub):
     p.add_argument("--start", type=int, default=0)
     p.add_argument("--end", type=int, default=-1)
     p.add_argument("--dry-run", action="store_true", help="selection.json only (the threshold slider path)")
+    p.add_argument("--keyframes", action="store_true",
+                   help="only H.264 I-frames are candidates (the frames without accumulated compression artefacts)")
+    p.add_argument("--search-keyframes", type=int, default=2,
+                   help="--keyframes: keyframes looked at per pick, from the first at or after the parallax crossing")
+    p.add_argument("--min-sharp-rel", type=float, default=frame_quality.SOFT_REL,
+                   help="--keyframes: a keyframe's focus must be at least this fraction of the picks' running median")
+    p.add_argument("--highlight-knee", type=float, default=None, metavar="K",
+                   help="soft highlight knee at linear K (0 < K < 1) on the written frames; off by default")
+    p.add_argument("--ffprobe", default=os.environ.get("HS_FFPROBE", "ffprobe"),
+                   help="ffprobe, for the keyframe indices (as hs ingest)")
     return p
 
 
@@ -52,6 +71,25 @@ def run(a, pj):
                               "--start", a.start, "--end", a.end)
     if a.dry_run:
         argv.append("--dry-run")
+    # new flags only when set, so a default run's command line is what it always was
+    # (getattr: selftest builds its Namespace by hand)
+    keyframes = bool(getattr(a, "keyframes", False))
+    knee = getattr(a, "highlight_knee", None)
+    ffprobe_bin = getattr(a, "ffprobe", None) or os.environ.get("HS_FFPROBE", "ffprobe")
+    if knee is not None and not 0.0 < knee < 1.0:
+        raise events.StageError(f"--highlight-knee must be between 0 and 1, got {knee}",
+                                hint="0.85 compresses the top of the range; 0.9 is gentler")
+    if keyframes:
+        exe = find_ffprobe(ffprobe_bin)
+        if exe is None:
+            raise events.StageError(f"--keyframes needs ffprobe to find the I-frames; not found ({ffprobe_bin})",
+                                    hint="brew install ffmpeg")
+        argv += ["--keyframes", "--search-keyframes", str(getattr(a, "search_keyframes", 2)),
+                 "--min-sharp-rel", str(getattr(a, "min_sharp_rel", frame_quality.SOFT_REL)), "--ffprobe", exe]
+    elif ffprobe_bin != os.environ.get("HS_FFPROBE", "ffprobe"):
+        argv += ["--ffprobe", ffprobe_bin]
+    if knee is not None:
+        argv += ["--highlight-knee", str(knee)]
     pj.begin(STAGE, argv=sys.argv, clean=not a.dry_run)
     os.makedirs(frames_dir, exist_ok=True)
     events.start(STAGE, "select")
@@ -74,8 +112,12 @@ def run(a, pj):
     n = len(selected)
     gaps = [s["gap"] for s in selected if "gap" in s]
     med_gap = float(np.median(gaps)) if gaps else 0.0
-    n_maxgap = sum(1 for s in selected if "gap" in s and s["gap"] >= a.max_gap)
+    # a keyframe pick names what made it due; its gap includes the wait for the next I-frame
+    n_maxgap = sum(1 for s in selected if "gap" in s
+                   and (s["trigger"] == "max-gap" if "trigger" in s else s["gap"] >= a.max_gap))
     frac_maxgap = n_maxgap / max(1, len(gaps))
+    kfs = frame_quality.keyframe_summary(sel)
+    gop = kfs["gop_median"]
     events.progress(STAGE, done=sel["frames_total"], total=sel["frames_total"], detail=f"{n} frames selected",
                     step="select", force=True)
 
@@ -90,10 +132,40 @@ def run(a, pj):
     pj.metric(STAGE, "sharpness_median", round(float(np.median([s["sharpness"] for s in selected])), 1))
     pj.artifact(STAGE, sel_path, "json")
 
+    pj.metric(STAGE, "selection_mode", kfs["mode"])
+    if kfs["picks_known"]:
+        pj.metric(STAGE, "keyframes_picked", kfs["picks_keyframes"])
+    if kfs["keyframes_total"] is not None:
+        pj.metric(STAGE, "keyframes_total", kfs["keyframes_total"])
+    if gop is not None:
+        pj.metric(STAGE, "gop_median", gop)
+    if keyframes:
+        pj.metric(STAGE, "quality_fallbacks", kfs["quality_fallbacks"])
+    if knee is not None:
+        pj.metric(STAGE, "highlight_knee", knee)
+
     pj.check(STAGE, "frame_count_in_range", 30 <= n <= 120, value=f"{n} (want 30–120; rig6 65)")
-    pj.check(STAGE, "median_gap_in_range", 6 <= med_gap <= 15, value=f"{med_gap:g} (want 6–15)")
+    if keyframes and gop:
+        # every gap is a whole number of GOPs; more than two in the median means the parallax
+        # rule is routinely waiting past a keyframe it could have used — or the keyframes are sparse
+        pj.check(STAGE, "median_gap_in_range", med_gap <= 2 * gop,
+                 value=f"{med_gap:g} (keyframes: want at most 2 GOPs = {2 * gop:g}; the parallax rule alone wants 6–15)")
+    else:
+        pj.check(STAGE, "median_gap_in_range", 6 <= med_gap <= 15, value=f"{med_gap:g} (want 6–15)")
     pj.check(STAGE, "maxgap_fraction_low", frac_maxgap < 0.15,
              value=f"{100 * frac_maxgap:.1f}% of picks hit max-gap {a.max_gap} (want < 15%; high = phone stood still)")
+    if keyframes:
+        k_ok = kfs["picks_keyframes"] == n
+        pj.check(STAGE, "keyframes_used", k_ok,
+                 value=f"{kfs['picks_keyframes']} of {n} picks are I-frames ({kfs['keyframes_total']} in the clip, "
+                       f"GOP {gop if gop is None else format(gop, 'g')})"
+                       + (f"; {kfs['quality_fallbacks']} took the least bad keyframe" if kfs["quality_fallbacks"] else ""))
+    elif kfs["picks_known"]:
+        events.log(STAGE, f"[hs] {kfs['picks_keyframes']} of {n} picks happen to be I-frames "
+                          f"({kfs['keyframes_total']} in the clip); --keyframes takes only those")
+    if knee is not None:
+        pj.check(STAGE, "highlight_knee_applied", True,
+                 value=f"K={knee:g} on {0 if a.dry_run else n} frames" + (" (dry run: none written)" if a.dry_run else ""))
 
     select_dir = os.path.dirname(frames_dir)
     measured = {}
