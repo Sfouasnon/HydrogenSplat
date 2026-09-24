@@ -282,6 +282,12 @@ hs scale -p P --lidar room.ply --trust-scan            # stereo: apply the scan'
 hs scale -p P --factor 5.8 --trust-scan --note 'ring silhouette fit'   # a factor found outside the stage
 ```
 
+```
+hs scale -p P --lidar scan.ply --init silhouette --dry-run      # the subject's outline fixes the scale (needs hs masks)
+hs scale -p P --lidar scan.ply --init silhouette --init-points  # ... and write scale/lidar_init.ply
+hs train -p P --init lidar                                      # start Brush from the scan instead of the SfM points
+```
+
 Exactly one of `--board` / `--lidar` / `--factor`. The scan (Polycam / Scaniverse from an iPhone Pro, scanned
 before the shoot) is registered to rig.npz's sparse points **solve → scan**: the solve's points
 are a subset of what the scan saw, so every one has a surface under it and the scan's extra
@@ -407,6 +413,110 @@ fit Circles then aligns to 55 % within 91 mm, RMS 92 mm — and ICP still slides
 with the ring absent from the sparse cloud, so the number to apply is the silhouette's, by
 `--factor`. The lesson for the H1: its baseline gives a trustworthy scale only within a metre
 or so (rig6's bust at 0.3 m: 60 px of disparity); anything further needs the scan or a board.
+That fit is now in the stage: `--init silhouette`, below.
+
+**`--init silhouette`: the scale from the subject's outline (2026-09-23).** For a scene whose
+sparse cloud does not hold the subject (glossy, uniform, thin), `hs/silhouette.py`:
+
+1. **The scan's subject**: the scan's ground plane (`lidar.ground_plane` along its up), the points
+   more than `--subject-above-mm` (150) above it, and the largest 26-connected cluster of them on a
+   100 mm voxel grid (`scipy.ndimage.label`). A plinth or a rolling lawn joins the subject at the
+   first cut — Circles at 150 mm was a 6.2 × 5.7 m "subject" of lawn humps and plinth, and the fit
+   on it gave 6.45 at IoU 0.37 — so the cut rises (1, 1.5, 2, 2.5, 3, 4, 5, 6 × the flag) while the
+   cluster's footprint (occupied voxel columns seen from above) keeps shrinking, and stops at the
+   first cut whose next one keeps ≥ 85 % of it: what is left stands up rather than lies on the
+   ground (Circles: 2154, 1492, 307, 219, 217 columns at 150–450 mm → cut 375 mm, the ring, 132,917
+   points, 3.0 × 2.1 × 0.6 m). Never past half the cluster's height; a box stops at the first cut.
+   The subject must be the largest thing standing in the scan: indoors the walls are, and win.
+2. **The masks**: `train/dataset/masks/{eye}/capNNN.png` (`--eye`, default L) of the views with an
+   image and a mask, outlier cameras skipped (hs solve's rule, > 10× the median distance from the
+   median centre), evenly spaced down to `--silhouette-views` (24); fewer than 6 is refused with a
+   hint to run `hs masks`. Read at 1/4 resolution, nearest.
+3. **The fit** (the ring fit of 2026-09-23, cleaned up): gravity locked — the scan's up onto
+   coverage's `up_world` — so yaw, log-scale and translation; the scan subject's centroid starts on
+   the solve's subject guess (`subject_mm`, the median sparse point, recomputed from the current
+   rig). Cost 1 − mean IoU of the projected points (6,000, a seeded voxel subsample; rasterised at
+   1/4, dilated 2 px) against the masks. A coarse grid over yaw (4°) × 12 log-spaced scales — 0.5–10
+   on a nominally metric solve (stereo, or scaled already), 0.25–4 × an apparent-size prior on an
+   unscaled one (mask box against the subject's size at the camera distance) — then Nelder–Mead,
+   then Nelder–Mead again over the views with IoU ≥ 0.3. `--silhouette-tilt` frees two small tilts;
+   off, because on Circles a free tilt overfitted the masks and put the cameras through the lawn.
+4. **ICP, the scale locked**: the reported scale is the silhouettes'. By default
+   (`--silhouette-icp vertical`, `lidar.icp_vertical`) ICP moves only height and the two tilts —
+   what a floor or lawn observes — point-to-plane, over the solve points within 10 × the inlier
+   distance of the scan (the far ones matched nothing and their exact kd-tree queries were 2 s of
+   every iteration). `se3` is the rigid ICP. `--icp-iters 0` keeps the silhouettes' pose.
+5. **Verdict**: `lidar_aligned` is the silhouette check plus ICP's in-scan inlier fraction and the
+   overlap floor (the trimmed RMS is reported, not judged — on a lawn it is grass; the global search
+   is not run). `lidar_silhouette_fits`: mean IoU ≥ `--min-iou` (0.35) over ≥ 6 views, at the final
+   pose. `lidar_ground_agrees_with_silhouettes` (needs_human): ICP kept ≥ 90 % of the fit's IoU and
+   tilted it ≤ 3° — when not, the solve's floor and the subject's outline disagree (a bent solve, a
+   drifted scan) and the overlays are the thing to look at. `lidar_geometry_constrains` is not
+   emitted (the scale is not the geometry's). Metrics: `silhouette_scale`, `silhouette_yaw_deg`,
+   `silhouette_iou_mean` (final) / `_fit`, `silhouette_views_used` / `_offered`,
+   `scan_subject_points`, `scan_subject_extent_mm`, `scan_subject_cut_mm`,
+   `silhouette_camera_height_mm` and `silhouette_walk_radius_mm` (p5, median, p95 over the
+   non-outlier cameras, above the scan's ground / from the subject's axis). The report's `init` has
+   the per-view IoU (first pass and final), the grid, the prior, the subject's cut levels, and
+   `icp_moved` (tilt, and the cameras' mean move along the up); `silhouette` has the IoU after ICP
+   and the heights at both poses. **`scale/silhouette_overlay_capNNN.jpg`** for 3 evenly spaced
+   views used: the photograph, the mask's outline (magenta), the subject at the fit's pose
+   (yellow) and at the final one (cyan) — the human check.
+
+**Circles** (`hs scale --lidar scan.ply --dry-run --init silhouette --init-points`, 19 masked views —
+stand-in red-threshold masks, which miss the ring's pale sunlit faces — 2-core container, 80 s):
+scale **5.802** (the ring fit's 5.81), yaw 83.1°, IoU 0.446 over 13 views at the fit (cap000 and
+cap180–cap275, the stretch next to the unregistered captures, dropped under 0.3), grid best 3.36
+at 80° before Nelder–Mead. Vertical ICP, 19 iterations: 57.9 % of the solve's points on the scan
+within 91 mm (lidar_aligned ok), but it tilted the solve 8.1° and moved the cameras −284 mm to put
+the SfM lawn on the scanned one, and the silhouettes' IoU fell to 0.366 —
+`lidar_ground_agrees_with_silhouettes` asks for a look. The overlays show the ring on the ring at
+the fit's pose and higher in the frame after ICP (cap140: IoU 0.39 → 0.16; cap410 0.49 → 0.56, where
+the fit's pose sat low on the plinth); the scan's glossy ring is a fuzzy cloud with a halo of
+strays, which caps the IoU as much as the stand-in masks do. Every subject tried (the
+cluster, the red points only, both) puts the cameras 1.73–1.77 m above the scan's ground at the
+silhouettes' pose against 1.51 m after the lawn: the conflict is in the solve, not the subject.
+Cameras at the final pose: 0.78 / 1.51 / 2.14 m above the ground (p5 / median / p95), 2.1 / 4.4 /
+5.6 m from the ring's axis. The rigid `se3` ICP did no better (IoU 0.36, 48.5 % in-scan inliers —
+not aligned — 100 iterations in 4 minutes); keeping the silhouettes' pose (`--icp-iters 0`) keeps
+IoU 0.446 with 27 % of the lawn on the scan (not aligned). Refitting yaw, scale and position after
+each lawn ICP was tried and dropped: with the height the lawn's, the silhouettes pay for it in
+scale (6.44).
+
+**Synthetic** (`tests/lidar_synth.YardScene`: an 8 × 8 m lawn, the subject a box with a ball and a
+1.2 m column against it — box and ball alone are nearly the same silhouette turned half round,
+IoU 0.85 there against 0.82 at the truth — a post as a distractor, a solve of the lawn only with
+5 mm noise, 24 cameras at 1.5 m on a 3 m orbit, masks the subject's projected points closed): five
+scenes, solve 5×, 2×, 2.7× too small and 2.3× too big, stereo and mono: scale within 0.6 %,
+rotation within 0.7°, every camera within 47 mm, IoU 0.83–0.84, camera height 1.50 m; 12 s each.
+
+**`--init-points`** (any `--init`): after an alignment the run stands behind (dry run or applied),
+**`scale/lidar_init.ply`** — the scan as Brush initial splats (`hs/initsplats.py`), in exactly
+Brush's export layout (`x y z scale_0..2 opacity rot_0..3 f_dc_0..2 f_rest_0..44`, float, binary
+little-endian, comments `Exported from Brush` and `SH degree: 3` plus one saying who wrote it) and
+in the training set's units: the report's `scan_mm_to_solve` / 1000 (COLMAP metres = rig.npz mm /
+1000; after the scale when applied, the current units on a dry run). The scan voxel-subsampled to
+`--init-points-max` (400,000), coloured from the scan (f_dc = (c/255 − 0.5)/0.28209479),
+opacity logit(`--init-opacity`, 0.3), one isotropic scale = log(mean distance to the 3 nearest
+neighbours) clamped to 0.002–0.1, rot (1, 0, 0, 0), f_rest 0; plus the solve's own sparse points
+(denoised) further than 10 × the inlier distance from the scan, so the trees and the far lawn keep
+their usual start — with the training set's COLMAP colours when `train/dataset/sparse` reads, else
+mid-grey. Recorded with the file's md5 and the rig.npz md5 it was written for, in
+`manifest.scale` (applied) or `stages.scale.lidar_check` (not); metrics `init_points_scan`,
+`init_points_sparse`, `init_ply`. Circles: 400,000 + 199,825 splats, 142 MB.
+
+**`hs train --init lidar`** stages that file as `init.ply` in the folder Brush trains on, the way
+`--resume-from` stages a checkpoint: validated before train/exports is cleared (the newest record
+whose file md5 is unchanged and whose rig.npz is the current one — a re-solve or a scale applied
+since moved the frame under it, and is refused with the reason), md5-checked after the copy,
+removed after the run; `--resume-from` with it is refused. `init` ("sparse", "lidar", "resume"),
+`init_ply`, `init_ply_md5` and `init_splats` go in the train metrics, `init` and `init_md5` in
+`dataset_fingerprint`, which `hs archive` copies whole. What it does to a model is untested here
+(no GPU): the file is Brush's own layout, and the start is where the scan says the scene is.
+
+**Dependency**: scipy (≥ 1.10) joins the engine's for `ndimage.label` (3-D connected components)
+and `optimize.minimize` (Nelder–Mead); only `--init silhouette` imports it, and says to reinstall
+the engine when it is missing.
 
 **Limits.** ICP is point-to-point: it converges slowly along a room's weak scale direction (60
 iterations from 1 % off; `--icp-iters` 100). The scale's accuracy on a real capture will be

@@ -47,7 +47,15 @@ SfM points run far past the phone's 5 m LiDAR range, so only points near the cam
 registered, ICP's trim follows the measured overlap, and the tolerances grow with the scene
 (2 % of the camera-subject distance). `--factor F` applies a factor found some other way (a
 tape, the ring-silhouette fit) through the same path.
-Checks: lidar_aligned, lidar_scale_agrees (stereo), lidar_covers_captures, lidar_up_agrees.
+`--init silhouette` (hs/silhouette.py) is for a subject the sparse cloud does not hold (glossy,
+uniform, thin — the Circles ring): the scan's subject (its largest cluster above the ground) is
+fitted to the `hs masks` silhouettes through the solve's cameras, gravity locked, and that fit is
+the scale; ICP afterwards moves only height and tilt (`lidar.icp_vertical`; `--silhouette-icp
+se3` for a rigid one). `--init-points` writes scale/lidar_init.ply, the scan as Brush initial
+splats in the training set's units, for `hs train --init lidar`.
+Checks: lidar_aligned, lidar_scale_agrees (stereo), lidar_covers_captures, lidar_up_agrees;
+with --init silhouette lidar_silhouette_fits and lidar_ground_agrees_with_silhouettes instead of
+lidar_geometry_constrains.
 Written: scale/lidar_report.json and scale/lidar_aligned.ply (the scan in the solve frame, mm,
 for the viewer). A measurement that is not applied (stereo without --trust-scan, --dry-run, or
 an alignment that failed) leaves the stage's status alone and records under
@@ -90,6 +98,13 @@ LIDAR_OVERLAP_FACTOR = 10.0  # a solve point within this x --inlier-mm of the sc
 LIDAR_MIN_TRIM = 0.15        # ICP keeps at least this share of the solve's points, however small the overlap
 LIDAR_MIN_OVERLAP_POINTS = 2000   # lidar_aligned: the scan must contain at least this many of ICP's solve points...
 LIDAR_MIN_OVERLAP = 0.05          # ...and this share of them
+SIL_MIN_VIEWS = 6                 # --init silhouette: fewer masked views than this is refused / fails the check
+SIL_FIT_POINTS = 6000             # the scan subject's subsample for the fit
+SIL_OVERLAYS = 3                  # scale/silhouette_overlay_capNNN.jpg: evenly spaced through the views used
+SIL_AGREE_IOU = 0.9               # lidar_ground_agrees_with_silhouettes: ICP keeps this share of the fit's IoU...
+SIL_AGREE_TILT_DEG = 3.0          # ...and tilts the silhouettes' pose by no more than this
+INIT_PLY = "lidar_init.ply"       # --init-points, under scale/
+INIT_SCALE_M = (0.002, 0.1)       # its splats' isotropic scale, clamped (training-set units: metres)
 
 
 def add_parser(sub):
@@ -97,7 +112,8 @@ def add_parser(sub):
                                      "or from a LiDAR scan of the scene (--lidar)")
     add_board_args(p, required=False)
     p.add_argument("--eye", choices=("L", "R", "both"), default="L",
-                   help="which views to detect in (a mono or array rig has only L)")
+                   help="which views to detect in, or (--init silhouette) to fit to the masks of (a mono or "
+                        "array rig has only L)")
     p.add_argument("--min-views", type=int, default=3, help="triangulate a corner seen in at least this many views")
     p.add_argument("--dry-run", action="store_true", help="measure and report, write nothing")
     g = p.add_argument_group("LiDAR scan (instead of --board)")
@@ -117,8 +133,33 @@ def add_parser(sub):
     g.add_argument("--pairs", default=None, metavar="'SX,SY,SZ=PX,PY,PZ;...'",
                    help=">= 3 matching points: scan coordinates (scan units) = solve coordinates (rig.npz mm) "
                         "— the initial alignment instead of the automatic search")
-    g.add_argument("--init", choices=("auto", "pairs"), default=None,
-                   help="initial alignment: auto (global registration; the default) or pairs (--pairs)")
+    g.add_argument("--init", choices=("auto", "pairs", "silhouette"), default=None,
+                   help="initial alignment: auto (global registration; the default), pairs (--pairs), or "
+                        "silhouette (the scan's subject fitted to the `hs masks` silhouettes, gravity locked; "
+                        "for a subject the sparse cloud does not contain — glossy, uniform, thin — its scale is "
+                        "the silhouettes', ICP then only moves it rigidly)")
+    g.add_argument("--subject-above-mm", type=float, default=150.0,
+                   help="--init silhouette: the scan's subject is its largest cluster standing more than this "
+                        "above the scan's ground (raised past a plinth or a rolling lawn; see hs/silhouette.py)")
+    g.add_argument("--silhouette-views", type=int, default=24,
+                   help="--init silhouette: at most this many masked views, evenly spaced through the captures "
+                        "(of --eye)")
+    g.add_argument("--silhouette-tilt", action="store_true",
+                   help="--init silhouette: also fit two small tilts (off: gravity is locked to the mean camera "
+                        "up; on Circles a free tilt overfitted the masks and put the cameras through the lawn)")
+    g.add_argument("--silhouette-icp", choices=("vertical", "se3"), default="vertical",
+                   help="--init silhouette: what ICP may move after the fit, the scale locked either way. vertical "
+                        "(default): height and tilt only, what a floor or lawn observes; se3: also yaw and "
+                        "horizontal position (slid along the Circles lawn)")
+    g.add_argument("--min-iou", type=float, default=0.35,
+                   help="lidar_silhouette_fits: mean IoU of the projected subject and the masks over the views used")
+    g.add_argument("--init-points", action="store_true",
+                   help="after a successful alignment, write scale/lidar_init.ply: the scan (and the solve's "
+                        "sparse points beyond it) as Brush initial splats in the training set's units, for "
+                        "`hs train --init lidar`")
+    g.add_argument("--init-points-max", type=int, default=400000,
+                   help="--init-points: the scan is voxel-subsampled to at most this many splats")
+    g.add_argument("--init-opacity", type=float, default=0.3, help="--init-points: every splat's initial opacity")
     g.add_argument("--apply", action="store_true",
                    help="apply the scan's scale (the default on a mono/array project unless --dry-run; "
                         "refused on a stereo project)")
@@ -492,7 +533,99 @@ def _fit_record(r):
             "rms_mm_per_iteration": [round(x, 4) for x in r["rms_history"]]}
 
 
-def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
+def _good_cameras(C):
+    """hs solve's outlier rule: a camera centre further than 10x the median distance from the
+    median centre is placed wrong (Circles: 12 cameras km away). -> boolean mask."""
+    C = np.asarray(C, np.float64)
+    d = np.linalg.norm(C - np.median(C, 0), axis=1)
+    return d <= 10 * np.median(d) + 1e-9
+
+
+def silhouette_views(pj, G, names, L, eye, max_views):
+    """The masked views --init silhouette fits to: views of `eye` ('L', 'R' or 'both') with both a
+    training image and a mask (train/dataset/masks/{eye}/capNNN.png), outlier cameras skipped,
+    evenly spaced through the capture order down to `max_views`. -> (list of (view index, name,
+    image path, mask path), {"with_mask", "outliers_skipped", "offered"})."""
+    eyes = {"L", "R"} if eye == "both" else {eye}
+    good = _good_cameras(G["C"])
+    rows, skipped = [], 0
+    for v, n in enumerate(names):
+        e = n[-1] if n.endswith(("_L", "_R")) else "L"
+        if e not in eyes:
+            continue
+        stem = rig.capture_name(n)
+        _eye, img = _view_image(pj, n)
+        mk = os.path.join(pj.dataset_dir, "masks", e, stem + ".png")
+        if img is None or not os.path.exists(mk):
+            continue
+        if not good[v]:
+            skipped += 1
+            continue
+        rows.append((v, n, img, mk))
+    n_all = len(rows)
+    if max_views and len(rows) > max_views:
+        pick = np.unique(np.round(np.linspace(0, len(rows) - 1, max_views)).astype(int))
+        rows = [rows[i] for i in pick]
+    return rows, {"with_mask": n_all + skipped, "outliers_skipped": skipped, "offered": len(rows)}
+
+
+def _silhouette_init(pj, G, names, scan, a, stereo, rows):
+    """The silhouette fit (hs/silhouette.py) as the initial transform. -> (T0 solve -> scan,
+    init report, state for the verdict and the overlays)."""
+    import cv2
+    try:
+        import scipy  # noqa: F401  (ndimage.label, optimize.minimize)
+    except ImportError:
+        raise events.StageError("--init silhouette needs scipy, which this environment does not have",
+                                hint="re-install the engine: .venv/bin/pip install -e engine")
+    from .. import silhouette as sil
+    events.start(STAGE, "lidar_subject")
+    up_scan = lidarlib.SCAN_UP[a.scan_up]
+    try:
+        subj = sil.scan_subject(scan.points, up_scan, above_mm=a.subject_above_mm, n_fit=SIL_FIT_POINTS, seed=a.seed)
+    except ValueError as e:
+        raise events.StageError(f"--init silhouette: cannot find the subject in the scan: {e}",
+                                hint="check --scan-up; lower --subject-above-mm; the scan must hold the subject "
+                                     "standing on its ground")
+    K, R, t = (G[k].astype(np.float64) for k in ("K", "R", "t"))
+    wh = G["wh"] if "wh" in G.files and len(G["wh"]) == len(names) else np.tile([int(G["w"]), int(G["h"])], (len(names), 1))
+    views = []
+    for v, n, _img, mk in rows:
+        m = cv2.imread(mk, cv2.IMREAD_GRAYSCALE)
+        if m is None:
+            continue
+        vw = sil.View(rig.capture_name(n) if n.endswith("_L") else n, K[v], R[v], t[v], wh[v], m)
+        vw.index, vw.image = v, _img
+        views.append(vw)
+    if len(views) < SIL_MIN_VIEWS:
+        raise events.StageError(f"--init silhouette: only {len(views)} readable masks (want >= {SIL_MIN_VIEWS})",
+                                hint=f"hs masks -p {pj.root} first")
+    cov = coverage.compute(pj.rig_npz)
+    # the subject guess: hs solve's subject_mm (the median sparse point), recomputed from the rig
+    # as it is now so a scale applied since does not leave it in the old units
+    g_sub = np.asarray(cov["subject_mm"], np.float64) if len(G["pts"]) else \
+        G["C"][_good_cameras(G["C"])].astype(np.float64).mean(0)
+    ss = [c for c in pj.stage("solve").get("checks", []) if c.get("name") == "scene_scaled"]
+    metric_units = stereo or bool(ss and ss[-1].get("ok"))
+    events.start(STAGE, "lidar_silhouette")
+    r = sil.fit(subj["fit"], views, up_scan, cov["up_world"], g_sub, metric=metric_units, tilt=a.silhouette_tilt,
+                progress=lambda d, n, step: events.progress(STAGE, d, n, step="lidar_silhouette", detail=step))
+    T0 = (r["s"], r["R"], r["t"])
+    rep = {"method": "silhouette", "scale_solve_to_scan": r["s"], "yaw_deg": round(r["yaw_deg"], 3),
+           "tilt_deg": r["tilt_deg"], "tilt_free": bool(a.silhouette_tilt),
+           "iou_mean": round(r["iou_mean"], 4), "iou": r["iou"], "iou_first_pass": r["iou_first_pass"],
+           "views_used": r["views_used"], "views_offered": len(views), "grid": r["grid"],
+           "scale_prior": r["prior"], "units_nominally_mm": metric_units,
+           "subject_guess_solve": [round(float(x), 3) for x in g_sub],
+           "subject_distance_solve_units": round(r["subject_distance"], 3),
+           "evaluations": r["evaluations"], "passes": r["passes"],
+           "scan_subject": {k: subj[k] for k in ("cut_mm", "levels", "centroid_mm", "extent_mm", "height_mm",
+                                                  "voxel_mm", "clusters", "largest_clusters_points", "above_mm")},
+           "scan_subject_points": int(len(subj["points"])), "scan_subject_fit_points": int(len(subj["fit"]))}
+    return T0, rep, {"views": views, "fit": r, "subject": subj}
+
+
+def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo, sil_rows=None):
     """Register the scan to rig.npz's sparse points and measure everything the report holds.
     Pure measurement: nothing in the project is written. -> dict."""
     pts_all = G["pts"].astype(np.float64)
@@ -541,7 +674,11 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
            "solve_icp": int(len(icp_i)), "scan_icp_spacing_mm": round(lidarlib.spacing(dense, nn, seed=seed), 3)}
 
     glob = None
-    if init == "auto":
+    sil = None
+    if init == "silhouette":
+        T0, init_rep, sil = _silhouette_init(pj, G, names, scan, a, stereo, sil_rows)
+        bounds = None
+    elif init == "auto":
         reg_scan = lidarlib.subsample(X, LIDAR_REG_POINTS, seed=seed)
         reg_solve = lidarlib.subsample(pts, LIDAR_REG_POINTS, method="random", seed=seed)
         sub.update(scan_register=int(len(reg_scan)), solve_register=int(len(reg_solve)))
@@ -589,8 +726,33 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
     trim = float(np.clip(0.9 * overlap0, LIDAR_MIN_TRIM, 0.7))
     # a global search that found nothing has decided the verdict: a few iterations fill the report
     iters = a.icp_iters if glob is None or glob["aligned"] else min(10, a.icp_iters)
-    fit = lidarlib.icp(Ps, None, T0, max_iter=iters, trim=trim, with_scale=with_scale, index=nn,
-                       inlier_dist=inlier_mm, scale_bounds=bounds, keep_within=inlier_mm, callback=cb)
+    if sil is not None:
+        # the silhouettes fixed the scale; ICP never touches it (a free scale slides with the subject
+        # absent from the sparse cloud: Circles 4.6-5.4 against the silhouette's 5.8). The floor or
+        # lawn fixes height and tilt, the subject position and yaw: `vertical` (default) moves only
+        # the first three, point-to-plane over the solve points on the scan; `se3` is the stage's
+        # ICP with the scale locked (on Circles it slid along the lawn: IoU 0.45 -> 0.36).
+        s0 = float(T0[0])
+        if getattr(a, "silhouette_icp", "vertical") == "se3":
+            fit = lidarlib.icp(s0 * Ps, None, (1.0, T0[1], T0[2]), max_iter=iters, trim=trim, with_scale=False,
+                               index=nn, inlier_dist=inlier_mm, keep_within=inlier_mm, callback=cb)
+            fit["s"] = s0
+        else:
+            fit = lidarlib.icp_vertical(Ps, T0, lidarlib.SCAN_UP[a.scan_up], nn, max_iter=iters, trim=0.7,
+                                        keep_within=inlier_mm, near=overlap_mm, inlier_dist=inlier_mm,
+                                        callback=cb, dst=dense)
+        # what ICP did to the silhouettes' pose, for the report: the ground and the silhouettes can
+        # disagree (Circles: the lawn tilts the solve 8 deg and lowers the cameras ~0.28 m against them)
+        up_sc = lidarlib.SCAN_UP[a.scan_up]
+        T_icp = (fit["s"], fit["R"], fit["t"])
+        init_rep["icp_moved"] = {
+            "tilt_deg": round(lidarlib.angle_deg(np.asarray(T_icp[1]).T @ up_sc, np.asarray(T0[1]).T @ up_sc), 3),
+            "lift_mm": round(float(((lidarlib.apply(T_icp, Cg) - lidarlib.apply(T0, Cg)) @ up_sc).mean()), 1),
+            "note": "the ICP's change to the silhouette pose: tilt of the solve's up, and the mean move of the "
+                    "(non-outlier) cameras along the scan's up, mm"}
+    else:
+        fit = lidarlib.icp(Ps, None, T0, max_iter=iters, trim=trim, with_scale=with_scale, index=nn,
+                           inlier_dist=inlier_mm, scale_bounds=bounds, keep_within=inlier_mm, callback=cb)
     sim = fit
     s = float(sim["s"])                    # solve -> scan scale: what turns solve units into mm
     R, t = fit["R"], fit["t"]              # the reported alignment, Sim(3) on every source
@@ -616,7 +778,38 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
         reasons.append(f"{100 * inl_in:.0f}% of the solve's points on the scan are within {inlier_mm:g} mm "
                        f"of it after ICP (want >= {100 * a.min_inlier:.0f}%; {100 * overlap:.0f}% of the "
                        f"solve is on the scan at all)")
-    if sim["rms"] > max_rms_mm:
+    sil_check = sil_agree = None
+    if sil is not None:
+        # the silhouettes at the pose the scale is reported with (after ICP moved it), over the
+        # views the fit kept; the trimmed RMS is reported, not judged: on a lawn it is grass
+        from .. import silhouette as silib
+        views = sil["views"]
+        X_now = lidarlib.apply(lidarlib.invert(T), sil["subject"]["fit"])
+        io_now = silib.ious_at(views, X_now)
+        used = sil["fit"]["views_used"]
+        iou_now = float(np.mean([io_now[n] for n in used])) if used else 0.0
+        sil_ok = iou_now >= a.min_iou and len(used) >= SIL_MIN_VIEWS
+        sil["iou_final"], sil["iou_final_mean"], sil["X_final"] = io_now, iou_now, X_now
+        sil["X_fit"] = lidarlib.apply(lidarlib.invert(T0), sil["subject"]["fit"])
+        sil_check = {"name": "lidar_silhouette_fits", "ok": sil_ok,
+                     "value": (f"mean IoU {iou_now:.3f} over {len(used)} of {len(views)} views (want >= {a.min_iou:g} "
+                               f"over >= {SIL_MIN_VIEWS}); {sil['fit']['iou_mean']:.3f} at the fit, before ICP; "
+                               f"scale {T[0]:.4f}")}
+        if not sil_ok:
+            reasons.append(f"the scan's subject does not fit the masks: {sil_check['value']}")
+        # the ground and the silhouettes each fix part of the pose; when the ICP has to move the
+        # silhouettes' pose far to put the solve's floor on the scan's, they disagree — a solve bent
+        # or a scan drifted — and a person should look at the overlays (not a failure: the scale is
+        # the silhouettes' either way)
+        mv = init_rep.get("icp_moved") or {}
+        keep = iou_now / max(sil["fit"]["iou_mean"], 1e-9)
+        agree = keep >= SIL_AGREE_IOU and mv.get("tilt_deg", 0.0) <= SIL_AGREE_TILT_DEG
+        sil_agree = {"name": "lidar_ground_agrees_with_silhouettes", "ok": agree, "needs_human": not agree,
+                     "value": (f"ICP on the ground kept {100 * keep:.0f}% of the silhouettes' IoU (want >= "
+                               f"{100 * SIL_AGREE_IOU:.0f}%), tilted the solve {mv.get('tilt_deg', 0.0):.1f} deg (want <= "
+                               f"{SIL_AGREE_TILT_DEG:g}) and moved the cameras {mv.get('lift_mm', 0.0):+.0f} mm along the up; "
+                               "see scale/silhouette_overlay_*.jpg (yellow: the silhouettes' pose, cyan: the final)")}
+    elif sim["rms"] > max_rms_mm:
         reasons.append(f"trimmed RMS {sim['rms']:.1f} mm after ICP (want <= {max_rms_mm:g})")
     aligned = not reasons
 
@@ -636,6 +829,8 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
     if con["scale_sensitivity"] < a.min_scale_sensitivity:
         weak.append(f"the overlap does not fix the scale (sensitivity {con['scale_sensitivity']:.3f} < "
                     f"{a.min_scale_sensitivity:g}): e.g. floor and walls alone fit at any scale about their corner")
+    if sil is not None:
+        weak = []          # the scale and the horizontal pose are the silhouettes' (lidar_silhouette_fits)
     constrained = not weak
 
     # ---- frames: scan mm -> the solve as it is now, and as it will be once scaled
@@ -701,17 +896,56 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
         metrics.update({"scale_ratio": round(s, 6), "implied_baseline_mm": implied})
     else:
         metrics["scale_factor"] = round(s, 8)
+    sil_rep = None
+    if sil is not None:
+        fr, subj = sil["fit"], sil["subject"]
+        # where the cameras stood, over the ones hs solve did not throw kilometres away: height
+        # above the scan's ground and distance from the subject's vertical axis
+        up_sc = lidarlib.SCAN_UP[a.scan_up]
+        CLg = CL_scan[_good_cameras(C[L])]
+        hv = (CLg - np.asarray(subj["ground"]["point_mm"])) @ np.asarray(subj["ground"]["normal"])
+        dv = CLg - np.asarray(subj["centroid_mm"])
+        rv = np.linalg.norm(dv - np.outer(dv @ up_sc, up_sc), axis=1)
+        rng3 = lambda x: [round(float(v), 1) for v in np.percentile(x, [5, 50, 95])]      # p5, median, p95
+        metrics.update({
+            "silhouette_scale": round(float(fr["s"]), 6), "silhouette_yaw_deg": round(fr["yaw_deg"], 3),
+            "silhouette_iou_mean": round(sil["iou_final_mean"], 4), "silhouette_iou_fit": round(fr["iou_mean"], 4),
+            "silhouette_views_used": len(fr["views_used"]), "silhouette_views_offered": len(sil["views"]),
+            "scan_subject_points": int(len(subj["points"])), "scan_subject_extent_mm": subj["extent_mm"],
+            "scan_subject_cut_mm": subj["cut_mm"], "silhouette_icp": getattr(a, "silhouette_icp", "vertical"),
+            "silhouette_camera_height_mm": rng3(hv), "silhouette_walk_radius_mm": rng3(rv)})
+        sil_rep = {"iou_after_icp": sil["iou_final"], "iou_after_icp_mean": round(sil["iou_final_mean"], 4),
+                   "camera_height_mm": {"p5": rng3(hv)[0], "median": rng3(hv)[1], "p95": rng3(hv)[2],
+                                        "min": round(float(hv.min()), 1), "max": round(float(hv.max()), 1),
+                                        "cameras": int(len(CLg)), "note": "above the scan subject's ground plane, "
+                                                                            "outlier cameras left out"},
+                   "walk_radius_mm": {"p5": rng3(rv)[0], "median": rng3(rv)[1], "p95": rng3(rv)[2],
+                                      "min": round(float(rv.min()), 1), "max": round(float(rv.max()), 1),
+                                      "note": "horizontal distance from the scan subject's centroid"},
+                   "camera_height_mm_at_fit": rng3((lidarlib.apply(T0, C[L])[_good_cameras(C[L])]
+                                                    - np.asarray(subj["ground"]["point_mm"]))
+                                                   @ np.asarray(subj["ground"]["normal"])),
+                   "icp_moved": init_rep.get("icp_moved"),
+                   "dropped_views": sorted(set(fr["iou"]) - set(fr["views_used"]))}
 
+    if sil is None:
+        judged = f"trimmed RMS {sim['rms']:.2f} mm (want >= {100 * a.min_inlier:.0f}% and <= {max_rms_mm:g} mm)"
+    else:
+        judged = (f"trimmed RMS {sim['rms']:.2f} mm, not judged (want >= {100 * a.min_inlier:.0f}%, and the "
+                  f"silhouettes: lidar_silhouette_fits)")
     checks = [{"name": "lidar_aligned", "ok": aligned,
                "value": (f"{100 * sim['inlier_fraction_in_scan']:.1f}% of the {n_in} solve points on the scan "
-                         f"({100 * overlap:.0f}% of {len(Ps)}) within {inlier_mm:g} mm, trimmed RMS "
-                         f"{sim['rms']:.2f} mm (want >= {100 * a.min_inlier:.0f}% and <= {max_rms_mm:g} mm)"
+                         f"({100 * overlap:.0f}% of {len(Ps)}) within {inlier_mm:g} mm, " + judged
                          + ("" if aligned else "; " + "; ".join(reasons)))}]
-    checks.append({"name": "lidar_geometry_constrains", "ok": constrained, "needs_human": not constrained,
-                   "value": (f"scale sensitivity {con['scale_sensitivity']:.3f} (want >= {a.min_scale_sensitivity:g}), "
-                             f"smallest pose eigenvalue {con['pose_min_eig']:.4f} (want >= {LIDAR_MIN_POSE_EIG:g}) "
-                             f"over {con['n']} points on the scan")
-                            + ("" if constrained else "; " + "; ".join(weak))})
+    if sil_check is not None:
+        checks.append(sil_check)
+        checks.append(sil_agree)
+    else:
+        checks.append({"name": "lidar_geometry_constrains", "ok": constrained, "needs_human": not constrained,
+                       "value": (f"scale sensitivity {con['scale_sensitivity']:.3f} (want >= {a.min_scale_sensitivity:g}), "
+                                 f"smallest pose eigenvalue {con['pose_min_eig']:.4f} (want >= {LIDAR_MIN_POSE_EIG:g}) "
+                                 f"over {con['n']} points on the scan")
+                                + ("" if constrained else "; " + "; ".join(weak))})
     if stereo:
         ok = abs(s - 1.0) <= LIDAR_SCALE_TOL
         checks.append({"name": "lidar_scale_agrees", "ok": ok, "needs_human": not ok,
@@ -732,7 +966,9 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
         "note": "hs scale --lidar: a LiDAR scan registered to the solve's sparse points (solve -> scan, trimmed "
                 "ICP); lengths in mm unless a key says otherwise",
         "scan": {k: v for k, v in meta.items()},
-        "stereo": stereo, "mode": "sim3", "scan_up": a.scan_up, "scan_up_source": a.scan_up_source,
+        "stereo": stereo,
+        "mode": "sim3" if sil is None else f"silhouette scale, {getattr(a, 'silhouette_icp', 'vertical')} ICP",
+        "scan_up": a.scan_up, "scan_up_source": a.scan_up_source,
         "scan_up_detection": a.scan_up_detection,
         "thresholds": {"min_inlier": a.min_inlier, "max_rms_mm": max_rms_mm, "inlier_mm": inlier_mm,
                        "max_rms_mm_flag": a.max_rms_mm, "inlier_mm_flag": a.inlier_mm, "scene_distance_mm": round(scene_mm, 1),
@@ -749,8 +985,10 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo):
         "ground_plane": ground,
         "coverage": {"captures": rows, "failing": bad},
     }
+    if sil_rep is not None:
+        report["silhouette"] = sil_rep
     return {"report": report, "metrics": metrics, "checks": checks, "aligned": aligned, "reasons": reasons,
-            "constrained": constrained, "weak": weak,
+            "constrained": constrained, "weak": weak, "sil": sil, "inlier_mm": inlier_mm,
             "scale": s, "to_current": to_current, "to_metric": to_metric, "stereo": stereo}
 
 
@@ -779,6 +1017,90 @@ def _write_lidar_outputs(pj, m, scan, a, to_frame, frame_note):
                               scan.colors[vi] if scan.colors is not None else None,
                               comments=[f"hs scale --lidar: {os.path.basename(a.lidar)} in the solve frame, {frame_note}"])
     return rp, ply
+
+
+def _sparse_for_init(pj, G):
+    """The solve's sparse points in rig units with their colours: the training set's own model
+    when it can be read (COLMAP colours), else rig.npz's points in mid-grey. -> (xyz, rgb or None, source)."""
+    sp = os.path.join(pj.dataset_dir, "sparse")
+    if os.path.isdir(sp) and any(f.startswith("points3D") for f in os.listdir(sp)):
+        try:
+            import pycolmap
+            rec = pycolmap.Reconstruction(sp)
+            pts = list(rec.points3D.values())
+            if pts:
+                xyz = np.array([p.xyz for p in pts], np.float64) * 1000.0     # COLMAP metres -> rig units
+                rgb = np.array([p.color for p in pts], np.uint8)
+                return xyz, rgb, "train/dataset/sparse"
+        except Exception as e:                              # a model pycolmap cannot read: fall back
+            events.log(STAGE, f"[hs] init points: cannot read train/dataset/sparse ({e}); using rig.npz's points")
+    return G["pts"].astype(np.float64), None, "rig.npz (no colours)"
+
+
+def write_init_points(pj, m, scan, a, G):
+    """scale/lidar_init.ply (hs/initsplats.py): the scan, voxel-subsampled to --init-points-max, in
+    the frame of the report's transform (scan_mm_to_solve: the current units on a dry run, mm once
+    applied) divided by 1000 — the training set's COLMAP units — plus the solve's sparse points
+    further than LIDAR_OVERLAP_FACTOR x the inlier distance from the scan. -> record dict."""
+    from .. import initsplats
+    from ..project import md5_file
+    events.start(STAGE, "lidar_init_points")
+    M = np.asarray(m["report"]["transform"]["scan_mm_to_solve"], np.float64)
+    sR, tM = M[:3, :3], M[:3, 3]
+    vi = lidarlib.subsample(scan.points, max(1, int(a.init_points_max)), seed=a.seed)
+    Xs = scan.points[vi]
+    Ys = (Xs @ sR.T + tM) / 1000.0
+    rows_scan = initsplats.splats(Ys, scan.colors[vi] if scan.colors is not None else None,
+                                  opacity=a.init_opacity, scale=initsplats.knn_scale(Ys, 3, *INIT_SCALE_M))
+    # the solve's sparse points the scan does not reach (the trees, the far lawn): the usual init there
+    xyz, rgb, src = _sparse_for_init(pj, G)
+    keep = lidarlib.denoise(xyz) if len(xyz) > 10 else np.ones(len(xyz), bool)
+    xyz, rgb = xyz[keep], (rgb[keep] if rgb is not None else None)
+    far_mm = LIDAR_OVERLAP_FACTOR * float(m["inlier_mm"])
+    if len(xyz):
+        X_in_scan = (xyz - tM) @ np.linalg.inv(sR).T            # rig units -> scan mm
+        d, _ = lidarlib.NN(Xs).query(X_in_scan)
+        out = d > far_mm
+    else:
+        out = np.zeros(0, bool)
+    xyz, rgb = xyz[out], (rgb[out] if rgb is not None else None)
+    rows_sparse = initsplats.splats(xyz / 1000.0, rgb, opacity=a.init_opacity,
+                                    scale=initsplats.knn_scale(xyz / 1000.0, 3, *INIT_SCALE_M)) \
+        if len(xyz) else np.zeros(0, initsplats.DTYPE)
+    path = os.path.join(pj.stage_dir(STAGE), INIT_PLY)
+    initsplats.write(path, np.concatenate([rows_scan, rows_sparse]),
+                     comments=[f"written by hs scale --lidar {os.path.basename(a.lidar)} --init-points "
+                               f"(Brush's export layout): {len(rows_scan)} scan + {len(rows_sparse)} sparse, "
+                               f"training-set units (COLMAP metres)"])
+    rec = {"init_ply": pj.rel(path), "init_ply_md5": md5_file(path), "init_rig_md5": md5_file(pj.rig_npz),
+           "init_points_scan": int(len(rows_scan)), "init_points_sparse": int(len(rows_sparse)),
+           "init_sparse_source": src, "init_sparse_far_mm": round(far_mm, 1), "at": now_iso()}
+    return path, rec
+
+
+def write_silhouette_overlays(pj, m, n=SIL_OVERLAYS):
+    """scale/silhouette_overlay_<view>.jpg for `n` views the fit used, evenly spaced: the photograph,
+    the scan's subject projected at the reported pose (cyan) over the silhouette fit's own pose
+    (yellow), the mask's outline (magenta)."""
+    from .. import silhouette as silib
+    sil = m.get("sil")
+    if not sil:
+        return []
+    d = pj.stage_dir(STAGE)
+    for f in os.listdir(d) if os.path.isdir(d) else ():
+        if f.startswith("silhouette_overlay_") and f.endswith(".jpg"):
+            os.remove(os.path.join(d, f))              # a previous run's views must not linger
+    by = {v.name: v for v in sil["views"]}
+    used = [x for x in sil["fit"]["views_used"] if x in by]
+    pick = [used[i] for i in np.unique(np.round(np.linspace(0, len(used) - 1, min(n, len(used)))).astype(int))] if used else []
+    out = []
+    for name in pick:
+        vw = by[name]
+        p = os.path.join(d, f"silhouette_overlay_{name}.jpg")
+        if silib.write_overlay(p, vw.image, vw, sil["X_final"], iou=sil["iou_final"].get(name),
+                               X_before=sil.get("X_fit"), iou_before=sil["fit"]["iou"].get(name)):
+            out.append(p)
+    return out
 
 
 def run_lidar(a, pj):
@@ -810,6 +1132,18 @@ def run_lidar(a, pj):
         except ValueError as e:
             raise events.StageError(str(e), hint="--pairs 'sx,sy,sz=px,py,pz;...': scan coordinates in the scan's "
                                                  "units = solve coordinates in rig.npz mm, three or more")
+    sil_rows = None
+    if init == "silhouette":
+        if a.pairs:
+            raise events.StageError("--init silhouette and --pairs are two initial alignments: give one",
+                                    hint="drop --pairs, or --init pairs")
+        sil_rows, sil_counts = silhouette_views(pj, G, names, L, a.eye, a.silhouette_views)
+        if len(sil_rows) < SIL_MIN_VIEWS:
+            raise events.StageError(
+                f"--init silhouette needs >= {SIL_MIN_VIEWS} views with a subject mask; found {len(sil_rows)} "
+                f"({sil_counts['with_mask']} masked views of eye {a.eye}, {sil_counts['outliers_skipped']} of them "
+                "outlier cameras)",
+                hint=f"hs masks -p {pj.root} first (train/dataset/masks/{{L,R}}/capNNN.png)")
     pj.acquire(STAGE)               # measure under the lock: a concurrent solve would rewrite rig.npz
     events.start(STAGE, "lidar_load")
     try:
@@ -829,8 +1163,11 @@ def run_lidar(a, pj):
                                     hint="pass --scan-up y (ARKit / Polycam) or --scan-up z (Scaniverse PLY, "
                                          "Blender-style exports); scale/lidar_report.json is not written")
         a.scan_up, a.scan_up_source = axis, "detected"
-    m = measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo)
+    m = measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo, sil_rows=sil_rows)
     metrics, checks = m["metrics"], m["checks"]
+    if sil_rows is not None:
+        m["report"]["init"]["views"] = sil_counts
+    want_init = bool(getattr(a, "init_points", False))
 
     if not (apply and m["aligned"] and m["constrained"]):
         # measured, not applied: stereo, --dry-run, or an alignment that failed or fixes no scale
@@ -841,16 +1178,35 @@ def run_lidar(a, pj):
             to_frame, note = m["to_current"], "the current (unscaled) solve units: nothing was applied"
         m["report"]["applied"] = False
         rp, ply = _write_lidar_outputs(pj, m, scan, a, to_frame, note)
+        overlays = write_silhouette_overlays(pj, m)
+        init_rec = None
+        # init points only from an alignment this run stands behind (an applied run that fails on
+        # the geometry exits 1 below, and writes none either)
+        if want_init and m["aligned"] and not apply:
+            init_path, init_rec = write_init_points(pj, m, scan, a, G)
+            for k in ("init_points_scan", "init_points_sparse"):
+                metrics[k] = init_rec[k]
+            metrics["init_ply"] = init_rec["init_ply"]
+        elif want_init:
+            events.log(STAGE, "[hs] --init-points: not written, the alignment did not succeed")
         for k, v in metrics.items():
             events.metric(STAGE, k, v)
         for c in checks:
             events.check(STAGE, c["name"], c["ok"], value=c["value"], needs_human=c.get("needs_human", False))
         events.artifact(STAGE, pj.rel(rp), "json")
         events.artifact(STAGE, pj.rel(ply), "ply")
+        for p in overlays:
+            events.artifact(STAGE, pj.rel(p), "jpg")
+        if init_rec:
+            events.artifact(STAGE, init_rec["init_ply"], "ply")
         pj.stage(STAGE)["lidar_check"] = {
             "at": now_iso(), "argv": list(sys.argv), "scan": os.path.abspath(a.lidar), "applied": False,
             "aligned": m["aligned"], "metrics": metrics, "report": pj.rel(rp), "aligned_ply": pj.rel(ply),
             "checks": [{k: c[k] for k in ("name", "ok", "value", "needs_human") if k in c} for c in checks]}
+        if overlays:
+            pj.stage(STAGE)["lidar_check"]["overlays"] = [pj.rel(p) for p in overlays]
+        if init_rec:
+            pj.stage(STAGE)["lidar_check"].update(init_rec)
         pj.save()
         pj.release()
         if not m["aligned"]:
@@ -881,10 +1237,22 @@ def run_lidar(a, pj):
     rp, ply = _write_lidar_outputs(pj, m, scan, a, m["to_metric"], "mm, after the scale was applied")
     pj.artifact(STAGE, rp, "json")
     pj.artifact(STAGE, ply, "ply")
+    for p in write_silhouette_overlays(pj, m):
+        pj.artifact(STAGE, p, "jpg")
+    init_rec = None
+    if want_init:
+        # after the apply: rig.npz and the training set are mm (metres) now, as is the transform
+        init_path, init_rec = write_init_points(pj, m, scan, a, G)
+        for k in ("init_points_scan", "init_points_sparse", "init_ply"):
+            pj.metric(STAGE, k, init_rec[k])
+        pj.artifact(STAGE, init_path, "ply")
     rep = m["report"]
     pj.m["scale"] = {"source": "lidar", "scan": os.path.abspath(a.lidar), "scale_factor": s, "scale_to_m": to_m,
                      "up_world": rep["up"]["up_world"],
                      "ground_normal_world": (rep["ground_plane"] or {}).get("normal_solve"),
                      "scan_mm_to_solve": rep["transform"]["scan_mm_to_solve"],
                      "at": now_iso(), "argv": list(sys.argv)}
+    if init_rec:
+        pj.m["scale"].update({k: init_rec[k] for k in ("init_ply", "init_ply_md5", "init_rig_md5",
+                                                        "init_points_scan", "init_points_sparse")})
     pj.finish(STAGE, ok=True)

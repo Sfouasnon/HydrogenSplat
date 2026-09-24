@@ -25,6 +25,11 @@ print(f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ')} INFO  brush_cli] Compute backend:
 _imgs = [f for r, _d, fs in os.walk(os.path.join(args[0], "images"), followlinks=True)
          for f in fs if f.lower().endswith((".jpg", ".jpeg", ".png"))] if args and os.path.isdir(args[0]) else []
 print(f"[.. INFO  brush_cli] Loaded dataset with {len(_imgs) or 132} training, 0 eval views"); sys.stdout.flush()
+# the initial splats, as brush picks them (init.ply wins): say which, so a test can see what was staged
+_init = os.path.join(args[0], "init.ply") if args else ""
+if _init and os.path.exists(_init):
+    import hashlib
+    print(f"[.. INFO  brush_cli] fake: init.ply md5 {hashlib.md5(open(_init, 'rb').read()).hexdigest()}"); sys.stdout.flush()
 os.makedirs(exp, exist_ok=True)
 digits = len(str(total))
 props = ["x","y","z","nx","ny","nz"] + [f"f_dc_{i}" for i in range(3)] + [f"f_rest_{i}" for i in range(45)] + ["opacity","scale_0","scale_1","scale_2","rot_0","rot_1","rot_2","rot_3"]

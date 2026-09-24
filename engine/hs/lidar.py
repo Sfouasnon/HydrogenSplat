@@ -685,6 +685,89 @@ def icp(src, dst, init=None, max_iter=100, trim=0.7, with_scale=True, tol=1e-5, 
     return out
 
 
+def _rotvec(w):
+    th = float(np.linalg.norm(w))
+    if th < 1e-15:
+        return np.eye(3)
+    k = w / th
+    Kx = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+    return np.eye(3) + np.sin(th) * Kx + (1 - np.cos(th)) * Kx @ Kx
+
+
+def icp_vertical(src, init, up, index, max_iter=100, trim=0.7, keep_within=None, tol=1e-5, near=None,
+                 inlier_dist=None, callback=None, k_normals=16, dst=None):
+    """Trimmed point-to-plane ICP that moves only what a ground observes: the height along `up`
+    (dst frame) and the two tilts about horizontal axes. Scale, yaw about `up` and the horizontal
+    position stay at `init`'s.
+
+    For `hs scale --init silhouette`: the silhouettes fixed scale, yaw and position; the solve's
+    sparse points are a lawn or a floor (and trees), which observe height and tilt, and nothing
+    else — a free SE(3) ICP has the other three to slide along. `near`: only src points within this
+    distance of dst at `init` take part (the far ones never match anything, and their exact kd-tree
+    queries were 2 s of every Circles iteration). Each iteration: nearest dst point, the best
+    `trim` (plus any within keep_within), the dst's PCA normal there, and a Gauss-Newton step on
+    n.(y - d) over (tilt1, tilt2, height) about the kept points' centroid.
+
+    -> the same dict as `icp`: distances over every src point at the result, "rms" trimmed over
+    the `near` points, "points_used"."""
+    src = np.asarray(src, np.float64)
+    if dst is None:
+        dst = index.data.astype(np.float64) + index.origin
+    s, R, t = init
+    s, R, t = float(s), np.asarray(R, np.float64), np.asarray(t, np.float64)
+    u = np.asarray(up, np.float64) / np.linalg.norm(up)
+    e1 = np.cross(u, [1.0, 0, 0])
+    if np.linalg.norm(e1) < 1e-6:
+        e1 = np.cross(u, [0, 1.0, 0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(u, e1)
+    use = src
+    if near is not None:
+        d0, _ = index.query(s * src @ R.T + t)
+        if (d0 <= near).sum() >= 10:
+            use = src[d0 <= near]
+    keep_n = max(3, int(np.ceil(trim * len(use))))
+    ref = _Ref(index, dst)
+    lo_c, hi_c = use.min(axis=0), use.max(axis=0)
+    corners = np.array([[x, y, z] for x in (lo_c[0], hi_c[0]) for y in (lo_c[1], hi_c[1]) for z in (lo_c[2], hi_c[2])])
+    size = float(np.linalg.norm(hi_c - lo_c)) or 1.0
+    hist, converged, it = [], False, 0
+    for it in range(1, max_iter + 1):
+        Y = s * use @ R.T + t
+        d, j = index.query(Y)
+        rms = float(np.sqrt(np.mean(d[_kept(d, keep_n, None)] ** 2)))
+        hist.append(rms)
+        if callback is not None:
+            callback(it, max_iter, rms)
+        keep = _kept(d, keep_n, keep_within)
+        Yk, Dk = Y[keep], ref.points(j[keep])
+        nk, _ = estimate_normals(Dk, k_normals, ref=dst, index=index)
+        c = Yk.mean(axis=0)
+        p = Yk - c
+        J = np.stack([(np.cross(e1, p) * nk).sum(1), (np.cross(e2, p) * nk).sum(1), nk @ u], 1)
+        r = ((Yk - Dk) * nk).sum(1)
+        try:
+            x = -np.linalg.lstsq(J, r, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            break
+        Rw = _rotvec(x[0] * e1 + x[1] * e2)
+        R2 = Rw @ R
+        t2 = Rw @ (t - c) + c + x[2] * u
+        move = np.abs(s * corners @ R2.T + t2 - (s * corners @ R.T + t)).max()
+        R, t = R2, t2
+        if move <= tol * s * size:
+            converged = True
+            break
+    d, _ = index.query(s * src @ R.T + t)
+    du, _ = index.query(s * use @ R.T + t) if use is not src else (d, None)
+    out = {"s": s, "R": R, "t": t, "rms": float(np.sqrt(np.mean(du[_kept(du, keep_n, None)] ** 2))), "rms_history": hist,
+           "iterations": it, "converged": converged, "median": float(np.median(d)), "distances": d,
+           "points_used": int(len(use))}
+    if inlier_dist is not None:
+        out["inlier_fraction"] = float(np.mean(d <= inlier_dist))
+    return out
+
+
 class _Ref:
     """dst coordinates by index: from the array when there is one, else the NN's own copy."""
 

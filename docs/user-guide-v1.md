@@ -180,6 +180,21 @@ hs scale -p P --lidar lidar/scan.ply --dry-run
 hs scale -p P --lidar lidar/scan.ply
 ```
 
+**When the scan cannot lock onto the solve** — a glossy, plain or thin subject on a lawn or a
+floor, like the Circles sculpture — build the masks first (Masks, below) and match the scan to
+the subject's outline in the photographs instead: its scale then comes from the silhouettes, and
+the ground only settles the height and tilt. The subject has to be the largest thing standing in
+the scan (true outdoors; indoors the walls win). Look at `scale/silhouette_overlay_capNNN.jpg`
+before trusting it: the scan's subject should sit on the photographed one (cyan; yellow is where
+the outline alone put it). On Circles this gave the 5.8 found by hand. If
+`lidar_ground_agrees_with_silhouettes` asks for a look, the lawn and the outline disagree about
+the height; the scale is the outline's either way.
+
+```
+hs scale -p P --lidar lidar/scan.ply --init silhouette --dry-run
+hs scale -p P --lidar lidar/scan.ply --init silhouette --trust-scan
+```
+
 **Hydrogen One projects and scale.** The H1's two lenses are 10.6 mm apart, so the solve calls
 itself metric and `hs scale` normally refuses to touch it. That trust only holds close up: at
 30 cm the two eyes see a bust 60 pixels apart, at 4 m a sculpture 5 pixels apart, and the solve
@@ -290,6 +305,22 @@ hs train -p P --exclude @holdout
 
 ```
 hs views -p P --captures holdout
+```
+
+**Start from the LiDAR scan.** Brush normally starts from the solve's sparse points, which on
+a glossy or plain subject are mostly the ground and the trees. With a scan matched to the solve
+(Scale box), add `--init-points` to the scale command and train with `--init lidar`: the first
+splats are then the scan's points, coloured, where the scan says the scene is, with the sparse
+points kept beyond the scan's reach. It is refused if the solve or its scale changed since the
+file was written (run the scale command again), and cannot be combined with resuming. Whether it
+trains a better model is not yet measured.
+
+```
+hs scale -p P --lidar lidar/scan.ply --init silhouette --dry-run --init-points
+```
+
+```
+hs train -p P --init lidar
 ```
 
 A train started in Terminal is followed from `logs/train.log`: "Training in another window

@@ -25,6 +25,13 @@ apps/brush-cli/src/lib.rs) — the "still open" items of strategy §9:
   staged as init.ply *before* train/exports is cleared, and when it lives in train/exports
   (the natural place) that folder keeps every export up to the checkpoint's iteration and
   drops only the later ones — a resume must never delete the file it resumes from.
+* ``--init lidar`` stages ``scale/lidar_init.ply`` (``hs scale --lidar SCAN --init-points``: the
+  LiDAR scan as splats in the training set's metres, plus the sparse points past its reach) as
+  ``init.ply`` the same way: validated before the clear (the file's md5 and the rig.npz it was
+  written for, from the record in ``manifest.scale`` or ``stages.scale.lidar_check``), md5-checked
+  after the copy, removed after the run. It and ``--resume-from`` both name the initial splats, so
+  they are refused together. ``init`` ("sparse", "lidar" or "resume") and the file's md5 go into
+  the metrics and ``dataset_fingerprint``, which ``hs archive`` copies.
 * Lineage: before brush starts, the dataset it will train on is fingerprinted (rig.npz md5,
   digest of the images and masks) into the train metrics as ``dataset_fingerprint``.
   ``hs render`` compares the rig.npz md5 against the current solve, so a model that
@@ -97,6 +104,10 @@ def add_parser(sub):
                         "Always passed explicitly when the binary supports it, so the manifest records it")
     p.add_argument("--export-every", type=int, default=2500)
     p.add_argument("--resume-from", default=None, help="an export_NNNNN.ply to continue from (experimental)")
+    p.add_argument("--init", choices=("sparse", "lidar"), default="sparse",
+                   help="the initial splats. sparse (default): Brush's own start, the solve's sparse points. "
+                        "lidar: scale/lidar_init.ply, the LiDAR scan in the training set's frame "
+                        "(`hs scale --lidar SCAN --init-points`); not with --resume-from")
     p.add_argument("--start-iter", type=int, default=None, help="with --resume-from; default: parsed from its name")
     p.add_argument("--no-caffeinate", action="store_true",
                    help="do not hold the Mac awake (also HS_NO_CAFFEINATE=1)")
@@ -248,8 +259,42 @@ def build_view(dataset, view, exclude, use_masks):
     return counts
 
 
+def lidar_init_ply(pj):
+    """The scan init `hs scale --init-points` recorded, verified: (absolute path, md5, record).
+    Records live in manifest.scale (an applied scale) and stages.scale.lidar_check (a measurement
+    that was not applied); the newest whose file is unchanged and whose rig.npz is the current one
+    wins. A re-solve or a scale applied since the file was written moved the frame under it."""
+    from ..project import md5_file
+    recs = [r for r in ((pj.m.get("scale") or {}), (pj.stage("scale").get("lidar_check") or {})) if r.get("init_ply")]
+    if not recs:
+        raise events.StageError("--init lidar: no LiDAR init points recorded for this project",
+                                hint=f"hs scale -p {pj.root} --lidar SCAN --init-points (with --dry-run to leave "
+                                     "the scale alone)")
+    rig_md5 = md5_file(pj.rig_npz) if os.path.exists(pj.rig_npz) else None
+    why = []
+    for r in sorted(recs, key=lambda r: r.get("at") or "", reverse=True):
+        p = pj.path(r["init_ply"]) if not os.path.isabs(r["init_ply"]) else r["init_ply"]
+        if not os.path.isfile(p):
+            why.append(f"{r['init_ply']} is missing")
+            continue
+        md5 = md5_file(p)
+        if md5 != r.get("init_ply_md5"):
+            why.append(f"{r['init_ply']} changed since hs scale wrote it")
+            continue
+        if r.get("init_rig_md5") != rig_md5:
+            why.append(f"{r['init_ply']} was written for another rig.npz (re-solved or scaled since)")
+            continue
+        return p, md5, r
+    raise events.StageError("--init lidar: " + "; ".join(why),
+                            hint=f"re-run hs scale -p {pj.root} --lidar SCAN --init-points on the solve as it is now")
+
+
 def run(a, pj):
     pj.require(STAGE)
+    init_mode = getattr(a, "init", None) or "sparse"
+    if init_mode == "lidar" and a.resume_from:
+        raise events.StageError("--init lidar and --resume-from both name the initial splats: give one",
+                                hint="--resume-from continues a model; --init lidar starts a new one from the scan")
     brush = runner.which(a.brush)
     if not brush:
         raise events.StageError(f"brush binary not found at {a.brush}",
@@ -306,6 +351,11 @@ def run(a, pj):
         m = RE_EXPORT.search(os.path.basename(src))
         start_iter = a.start_iter if a.start_iter is not None else (int(m.group(1)) if m else 0)
         src_md5 = md5_file(src)
+    # --init lidar: the scan's splats (hs scale --init-points), checked against the current rig
+    # before anything is cleared, staged as init.ply exactly as a resume checkpoint is
+    init_src, init_md5 = None, None
+    if init_mode == "lidar":
+        init_src, init_md5, _rec = lidar_init_ply(pj)
 
     # train/ holds the dataset written by solve; wipe only exports + our own files
     pj.begin(STAGE, argv=sys.argv, clean=False)
@@ -338,6 +388,17 @@ def run(a, pj):
         shutil.copy2(src, init_ply)   # staged before the clear, so the source may live in exports
         if md5_file(init_ply) != src_md5:
             raise events.StageError(f"copy of --resume-from does not match its source: {src}")
+    elif init_src:
+        shutil.copy2(init_src, init_ply)
+        if md5_file(init_ply) != init_md5:
+            os.remove(init_ply)
+            raise events.StageError(f"copy of the LiDAR init does not match its source: {init_src}")
+    init_used = "resume" if src else init_mode
+    pj.metric(STAGE, "init", init_used)
+    if init_src:
+        pj.metric(STAGE, "init_ply", pj.rel(init_src))
+        pj.metric(STAGE, "init_ply_md5", init_md5)
+        pj.metric(STAGE, "init_splats", ply_vertex_count(init_src))
     resuming_from_exports = bool(src) and os.path.dirname(src) == os.path.abspath(exports)
     if os.path.isdir(exports):
         if resuming_from_exports:
@@ -365,7 +426,10 @@ def run(a, pj):
           "masks": {"digest": msk_d, "count": msk_n} if msk_n else None,
           "exposure": pj.status("exposure"), "masks_stage": pj.status("masks"),
           "excluded_views": sorted(exclude), "masks_used": use_masks and bool(msk_n),
-          "layer": layer, "alpha_mode": effective_alpha, "invert_masks": invert_masks}
+          "layer": layer, "alpha_mode": effective_alpha, "invert_masks": invert_masks,
+          "init": init_used}
+    if init_src:
+        fp["init_md5"] = init_md5
     pj.metric(STAGE, "dataset_fingerprint", fp)
 
     argv = [brush, brush_root,

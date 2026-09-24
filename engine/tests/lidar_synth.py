@@ -186,6 +186,110 @@ class Scene:
         return names
 
 
+def yard(density=1500, seed=0):
+    """An outdoor scene as `hs scale --init silhouette` meets it (Circles in miniature), metres, +Y
+    up: an 8 x 8 m lawn, and on it the subject — the box of `room` with the ball pressed against
+    one side and a 1.2 m column against another, one connected thing (box and ball alone are
+    nearly the same silhouette turned half round: the fit found IoU 0.85 there against 0.82 at the
+    truth) — plus a thin 0.8 m post 2.6 m away (a distractor, smaller than the subject).
+    -> (points, colours, labels: 0 lawn, 1 box, 2 ball, 3 post, 4 column)."""
+    rng = np.random.default_rng(seed)
+    parts = [_rect(rng, np.array([-4.0, 0, -4.0]), np.array([8.0, 0, 0]), np.array([0, 0, 8.0]), density)]
+    Rb = rot([0, 1, 0], 30.0)
+    ex, ey, ez = Rb @ [0.6, 0, 0], np.array([0, 0.5, 0]), Rb @ [0, 0, 0.45]
+    o = -ex / 2 - ez / 2
+    parts.append(np.vstack([_rect(rng, o + ey, ex, ez, 4 * density),
+                            _rect(rng, o, ex, ey, 4 * density), _rect(rng, o + ez, ex, ey, 4 * density),
+                            _rect(rng, o, ez, ey, 4 * density), _rect(rng, o + ex, ez, ey, 4 * density)]))
+    n = int(4 * np.pi * 0.09 * 4 * density)
+    d = rng.normal(size=(n, 3))
+    d /= np.linalg.norm(d, axis=1, keepdims=True)
+    side = Rb @ np.array([0.3 + 0.28, 0, 0])                 # just touching the box's +x face
+    ball = np.array([side[0], 0.3, side[2]]) + 0.3 * d
+    parts.append(ball[ball[:, 1] > 0.01])
+    n = int(2 * np.pi * 0.08 * 0.8 * 4 * density)
+    th = rng.random(n) * 2 * np.pi
+    parts.append(np.stack([-1.8 + 0.08 * np.cos(th), rng.random(n) * 0.8, 1.9 + 0.08 * np.sin(th)], 1))
+    n = int(2 * np.pi * 0.12 * 1.2 * 4 * density)
+    th = rng.random(n) * 2 * np.pi
+    cc = Rb @ np.array([0, 0, -(0.225 + 0.11)])               # against the box's -z face
+    parts.append(np.stack([cc[0] + 0.12 * np.cos(th), rng.random(n) * 1.2, cc[2] + 0.12 * np.sin(th)], 1))
+    cols = [(70, 120, 50), (180, 60, 40), (40, 90, 180), (200, 200, 200), (200, 170, 40)]
+    P = np.vstack(parts)
+    lab = np.concatenate([np.full(len(p), i) for i, p in enumerate(parts)])
+    C = np.array(cols, float)[lab] + rng.normal(0, 6, (len(P), 3))
+    return P, np.clip(C, 0, 255).astype(np.uint8), lab
+
+
+class YardScene(Scene):
+    """`yard` and a solve of it that holds the lawn but not the subject (glossy, as the Circles
+    ring was): n_solve lawn points within 4.5 m of the subject, noise_mm per axis, in a random
+    Sim(3) frame `solve = k R X_mm + t`. Cameras on a full orbit of radius_mm at cam_height_m,
+    looking at the subject's middle; `write_masks` renders the subject's silhouette in each."""
+
+    def __init__(self, k=0.2, seed=3, n_solve=8000, noise_mm=5.0, n_cams=24, radius_mm=3000.0,
+                 cam_height_m=1.5, density=1500):
+        rng = np.random.default_rng(seed)
+        self.scan_m, self.colors, self.labels = yard(density, seed=seed)
+        X = self.scan_m * 1000.0
+        lawn = np.flatnonzero((self.labels == 0) & (np.linalg.norm(X[:, [0, 2]], axis=1) <= 4500))
+        pick = rng.choice(lawn, min(n_solve, len(lawn)), replace=False)
+        Xs = X[pick] + rng.normal(0, noise_mm, (len(pick), 3))
+        self.k = float(k)
+        self.Rg = random_rotation(rng)
+        self.tg = rng.uniform(-2000, 2000, 3)
+        self.pts_true_mm = Xs
+        self.pts = self.to_solve(Xs)
+        target = np.array([0.1, 0.3, 0.0]) * 1000
+        self.C_true, self.Rc_true = [], []
+        for az in np.linspace(0, 360, n_cams, endpoint=False):
+            a = np.radians(az)
+            C = np.array([radius_mm * np.cos(a), 1000.0 * cam_height_m, radius_mm * np.sin(a)])
+            fwd = (target - C) / np.linalg.norm(target - C)
+            right = np.cross(fwd, [0, 1.0, 0])
+            right = right / np.linalg.norm(right)
+            down = np.cross(fwd, right)
+            self.C_true.append(C)
+            self.Rc_true.append(np.stack([right, down, fwd]))
+        self.C_true, self.Rc_true = np.array(self.C_true), np.array(self.Rc_true)
+        self.K = np.array([[1000.0, 0, 960], [0, 1000.0, 540], [0, 0, 1]])
+        self.size = (1920, 1080)
+        self.cut_mm = None
+
+    def subject_mm(self):
+        return self.scan_m[np.isin(self.labels, (1, 2, 4))] * 1000.0
+
+    def write_masks(self, dataset, eye="L", names=None, images=True):
+        """masks/{eye}/capNNN.png: the subject's points projected through each true camera, dilated
+        and closed into a solid silhouette (white = subject); images/{eye}/capNNN.jpg beside them
+        (the lawn green, the silhouette red: enough for the overlays)."""
+        import cv2
+        X = self.subject_mm()
+        w, h = self.size
+        out = []
+        for i, (C, R) in enumerate(zip(self.C_true, self.Rc_true)):
+            name = names[i] if names else f"cap{i:03d}"
+            xc = (X - C) @ R.T
+            uv = xc @ self.K.T
+            u, v = uv[:, 0] / uv[:, 2], uv[:, 1] / uv[:, 2]
+            ok = (xc[:, 2] > 0) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+            m = np.zeros((h, w), np.uint8)
+            m[v[ok].astype(int), u[ok].astype(int)] = 255
+            m = cv2.dilate(m, np.ones((5, 5), np.uint8))
+            m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+            for top, img in (("masks", m), ("images", None)):
+                d = os.path.join(dataset, top, eye)
+                os.makedirs(d, exist_ok=True)
+                if top == "masks":
+                    cv2.imwrite(os.path.join(d, name + ".png"), img)
+                elif images:
+                    photo = np.full((h, w, 3), (60, 130, 70), np.uint8)
+                    photo[m > 0] = (50, 60, 190)
+                    cv2.imwrite(os.path.join(d, name + ".jpg"), photo, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            out.append(name)
+        return out
+
+
 def write_ply(path, P, rgb=None, binary=True, faces=None, normals=None, comments=(), extra_elements=()):
     """A scanner-style PLY: vertex x y z (float) [nx ny nz] [red green blue (uchar)] and optional
     triangle faces (list uchar int vertex_indices)."""
