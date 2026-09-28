@@ -44,6 +44,17 @@ distance — 109 mm on coins, where hand-picked masks used 100), and the margin 
 are fractions of it. So an unscaled mono solve gets the same masks a metric one would. An explicit
 --radius (metres) still overrides, for scaled scenes where a measured size is known.
 
+Glossy subjects (--exclude-highlights). A specular glint moves over the surface as the camera
+moves, so no single surface colour explains it; 3DGS answers with veil — semi-transparent splats
+inside or behind the surface whose view-dependence fakes the moving highlight — and the surface
+goes hollow (3DGS_4DGS_Challenging_Materials_Guide.docx). Cutting the glints out of the mask makes
+those pixels unsupervised (Brush's masked alpha), so the surface takes its colour from the views
+where that spot is not lit. What is lost: the glints themselves, beyond what SH degree 3 recovers
+from their edges. The threshold is on the darkest channel, so it takes neutral glints and not
+bright colour; 240 is chosen for HLG picks from select_frames --hdr, where the diffuse whites sit
+at 217-237 and the glints at 240-255 (IMG_2525, 2026-09-28). On SDR footage whose whites clip, the
+paint itself can pass it: read highlights_share_of_subject before training.
+
 Writes train/dataset/masks/{L,R}/capNNN.png next to images/{L,R}/capNNN.jpg, plus a preview
 sheet. Marks train stale: the dataset changed.
 """
@@ -62,6 +73,8 @@ FRAME_FILL = 0.7          # subject radius, as a share of the frame half-width a
 MARGIN_FRAC = 0.05        # outward dilation, as a share of the radius (coins: 6 mm on 100)
 SELECT_FRAC = 0.5         # vision: share of an instance that must lie inside the geometric mask
 FEATHER_PX = 1.0          # vision: anti-aliased edge; the research report's "hard alpha + 1-2 px AA"
+HIGHLIGHT_CODE = 240     # --exclude-highlights: an HLG pick's E' >= 0.94 (select_frames --hdr); the glints on IMG_2525
+HIGHLIGHT_GROW_FRAC = 0.002
 POINT_FRAC = 0.02         # --from-points disc footprint, as a share of the radius (coins: 2 mm on 100)
 
 
@@ -93,6 +106,12 @@ def add_parser(sub):
     p.add_argument("--max-points", type=int, default=60000,
                    help="draw at most this many splats per view (a seeded sample); silhouettes close the gaps")
     p.add_argument("--from-points", action="store_true", help="use the sparse SfM points instead of a .ply")
+    p.add_argument("--exclude-highlights", type=int, nargs="?", const=HIGHLIGHT_CODE, default=None, metavar="CODE",
+                   help="also cut specular glints out of the subject: pixels whose darkest channel is >= CODE "
+                        f"(0-255, default {HIGHLIGHT_CODE}) in the dataset photograph, grown by --highlight-grow-px. For "
+                        "the subject layer; the background layer would read the holes, inverted, as background")
+    p.add_argument("--highlight-grow-px", type=int, default=None,
+                   help="--exclude-highlights: dilate each glint by this many px (default 0.2%% of the width)")
     p.add_argument("--point-mm", type=float, default=None,
                    help="--from-points: world footprint drawn per SfM point; default: 2%% of the radius")
     return p
@@ -282,6 +301,10 @@ def run(a, pj):
     events.start(STAGE, "project")
     mdir = os.path.join(pj.dataset_dir, "masks")
     cover, previews, empty, unseen = [], [], [], []
+    hl_share, hl_views = [], []
+    hl_code = getattr(a, "exclude_highlights", None)
+    if hl_code is not None and not 0 < hl_code <= 255:
+        raise events.StageError(f"--exclude-highlights {hl_code}: a code value, 1-255")
     prior_cover, n_inst, n_sel, fell_back = [], [], [], []
     for v, name in enumerate(names):
         eye = name[-1]
@@ -334,6 +357,20 @@ def run(a, pj):
             n_sel.append(ns)
             if why:
                 fell_back.append((name, why))
+        if hl_code is not None:
+            photo = cv2.imread(img)
+            hot = (photo.min(axis=2) >= hl_code).astype(np.uint8)
+            if hot.shape != m.shape:
+                hot = cv2.resize(hot, (m.shape[1], m.shape[0]), interpolation=cv2.INTER_NEAREST)
+            grow = a.highlight_grow_px if a.highlight_grow_px is not None else int(round(HIGHLIGHT_GROW_FRAC * w))
+            if grow > 0 and hot.any():
+                hot = cv2.dilate(hot, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1)))
+            inside = m >= 128
+            n_in = int(inside.sum())
+            cut = int((inside & (hot > 0)).sum())
+            hl_share.append(cut / n_in if n_in else 0.0)
+            hl_views.append(name)
+            m = np.where(hot > 0, 0, m).astype(np.uint8)
         frac = float((m >= 128).mean())
         cover.append(frac)
         if frac < 0.01:
@@ -379,6 +416,20 @@ def run(a, pj):
                         + (f" (e.g. {fell_back[0][0]}: {fell_back[0][1]})" if fell_back else "")
                         + f"; subject {100 * np.median(cover):.1f}% of frame vs region "
                           f"{100 * np.median(prior_cover):.1f}%"))
+    pj.metric(STAGE, "exclude_highlights", hl_code)
+    if hl_code is not None and hl_share:
+        hs_ = np.array(hl_share)
+        grow_used = a.highlight_grow_px if a.highlight_grow_px is not None else "0.2% of width"
+        pj.metric(STAGE, "highlight_grow_px", grow_used)
+        pj.metric(STAGE, "highlights_share_of_subject_median", round(float(np.median(hs_)), 5))
+        pj.metric(STAGE, "highlights_share_of_subject_max", round(float(hs_.max()), 5))
+        worst = [hl_views[i] for i in np.argsort(-hs_)[:5]]
+        pj.check(STAGE, "highlights_are_glints_not_paint", bool(np.median(hs_) <= 0.05 and hs_.max() <= 0.25),
+                 needs_human=True,
+                 value=(f"glints cut from {100 * np.median(hs_):.2f}% of the subject (median), up to "
+                        f"{100 * hs_.max():.1f}% ({', '.join(worst[:3])}); darkest channel >= {hl_code}"
+                        + ("" if np.median(hs_) <= 0.05 and hs_.max() <= 0.25 else
+                           " — that is surface, not glints: raise the code, or the whites clip in these frames")))
     pj.metric(STAGE, "views_subject_not_in_front", len(unseen))
     if unseen:
         pj.metric(STAGE, "views_subject_not_in_front_names", unseen[:40])

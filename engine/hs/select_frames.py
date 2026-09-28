@@ -37,7 +37,7 @@ Usage:
         [--residual 1.5] [--min-gap 6] [--max-gap 90] [--search 4] [--max-clip 0.02]
         [--work-width 480] [--start 0] [--end -1] [--dry-run] [--mono]
         [--keyframes [--search-keyframes 2] [--min-sharp-rel 0.6]] [--highlight-knee 0.85]
-        [--ffprobe ffprobe]
+        [--ffprobe ffprobe] [--ffmpeg ffmpeg] [--hdr auto|hlg|off]
 
 --mono: the clip is one ordinary camera, not a 2x1 pair — an iPhone orbit, say. Nothing about
 the selection changes, because none of it was ever stereo: the residual is fitted between two
@@ -46,6 +46,16 @@ only ever a way to get one view out of a side-by-side frame. In mono the whole f
 view, and the picks are written as selNNN-FFFFF.jpg, a name `hs ingest --frames` accepts as a view name
 (letters, digits and '-' only). Scale is the thing a mono clip loses,
 not selection: see monocolmap.py --scale / --scale-pair.
+
+--hdr (auto by default): an HLG clip — iPhone "HDR Video", HEVC Main10 BT.2020 HLG, often with a
+Dolby Vision profile 8.4 record — is decoded by ffmpeg at 16 bits with its matrix and range spelled
+out, and each pick is written through ONE fixed curve: HLG's own SDR compatibility (the signal shown
+as it is) with the gamut brought from BT.2020 to BT.709 in scene-linear light. OpenCV has no HDR path
+(IMG_2525, 2026-09-28: 64% of pixels at 255 through the Cowork VM's OpenCV, 0.02-0.6% through this).
+The Dolby Vision RPU is ignored on purpose: it re-tones every shot, and a highlight must be the same
+brightness in every view. The HLG top end is kept: glints on glossy paint sit at 240-255 in the
+written frames, the diffuse whites below (hs masks --exclude-highlights reads that band). PQ clips
+are refused under auto. selection.json says which decoder ran ("decoder").
 
 --keyframes: only H.264 I-frames are candidates. The Hydrogen One records Baseline H.264 at
 ~12 Mbit/s with a GOP of 30: one I-frame, then 29 P-frames each coded as a change from the one
@@ -219,6 +229,186 @@ def keyframe_info(types):
             "gop_median": gop_median(kf), "probe_frames": len(types)}
 
 
+# ---- HDR (HLG) decode
+
+# BT.2100 HLG OETF constants
+HLG_A, HLG_B, HLG_C = 0.17883277, 0.28466892, 0.55991073
+# BT.2087: linear BT.2020 RGB -> linear BT.709 RGB (same D65 white, so a neutral stays neutral)
+M_2020_TO_709 = np.array([[1.6605, -0.5876, -0.0728],
+                          [-0.1246, 1.1329, -0.0083],
+                          [-0.0182, -0.1006, 1.1187]])
+HDR_TRANSFERS = {"arib-std-b67": "hlg", "smpte2084": "pq"}
+
+
+def hlg_inv_oetf(ep):
+    """HLG signal E' (0..1) -> scene linear E (0..1)."""
+    ep = np.asarray(ep, dtype=np.float64)
+    return np.where(ep <= 0.5, ep * ep / 3.0, (np.exp((np.maximum(ep, 0.5) - HLG_C) / HLG_A) + HLG_B) / 12.0)
+
+
+def hlg_oetf(e):
+    """Scene linear E (0..1) -> HLG signal E' (0..1)."""
+    e = np.clip(np.asarray(e, dtype=np.float64), 0.0, 1.0)
+    return np.where(e <= 1.0 / 12.0, np.sqrt(3.0 * e),
+                    HLG_A * np.log(np.maximum(12.0 * e - HLG_B, 1e-12)) + HLG_C)
+
+
+# 16-bit HLG code -> scene linear, and sqrt(scene linear) at 16 bits -> 8-bit HLG code: two tables
+# for every pixel (the sqrt spacing keeps the steep bottom of the OETF exact to the 8-bit code)
+_HLG_LIN16 = None
+_HLG_OUT8 = None
+
+
+def _hlg_tables():
+    global _HLG_LIN16, _HLG_OUT8
+    if _HLG_LIN16 is None:
+        _HLG_LIN16 = hlg_inv_oetf(np.arange(65536) / 65535.0).astype(np.float32)
+        q = np.arange(65536) / 65535.0
+        _HLG_OUT8 = np.clip(np.round(hlg_oetf(q * q) * 255.0), 0, 255).astype(np.uint8)
+    return _HLG_LIN16, _HLG_OUT8
+
+
+def hlg_rgb16_to_bgr8(rgb16):
+    """A decoded HLG frame (H x W x 3 uint16 RGB, full range, BT.2020 primaries) -> 8-bit BGR.
+
+    The curve is HLG's own SDR compatibility (ITU-R BT.2390): the HLG signal is shown as it is,
+    which is what an SDR display does with it and why the iPhone's HLG looks right on one. The
+    only change is the gamut — BT.2020 -> BT.709 in scene-linear light, out-of-gamut clipped —
+    so the colours are not washed out. It is ONE fixed curve on every frame: no per-frame or
+    per-shot tone mapping (Dolby Vision's RPU, which Photos and Compressor apply on an SDR
+    export, would give the same highlight a different brightness in every view). The HLG top
+    end is kept, not clipped: on IMG_2525 the diffuse whites sit at E' 0.85-0.93 and only the
+    specular glints (ceiling cans on the paint, the shelf edge) reach E' >= 0.94, i.e. >= 240."""
+    lin16, out8 = _hlg_tables()
+    lin = lin16[rgb16].reshape(-1, 3)                          # scene linear, BT.2020
+    lin = lin @ M_2020_TO_709.T.astype(np.float32)
+    np.clip(lin, 0.0, 1.0, out=lin)
+    np.sqrt(lin, out=lin)
+    idx = (lin * 65535.0 + 0.5).astype(np.uint16)
+    rgb8 = out8[idx].reshape(rgb16.shape)
+    return np.ascontiguousarray(rgb8[:, :, ::-1])
+
+
+def probe_argv(exe, clip):
+    return [exe, "-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json", clip]
+
+
+def parse_probe(text):
+    """ffprobe -show_streams -of json (first video stream) -> what the decode needs, or None.
+
+    width/height are as DISPLAYED: ffmpeg autorotates, so a stream stored 3840x2160 with a
+    +-90 degree display matrix (every portrait iPhone clip) comes out 2160x3840."""
+    try:
+        s = json.loads(text)["streams"][0]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return None
+    rot = None
+    for sd in s.get("side_data_list") or []:
+        if "rotation" in sd:
+            rot = float(sd["rotation"])
+    if rot is None and "rotate" in (s.get("tags") or {}):
+        rot = -float(s["tags"]["rotate"])        # the legacy tag counts clockwise, the matrix counter
+    rot = rot or 0.0
+    w, h = int(s.get("width") or 0), int(s.get("height") or 0)
+    if round(abs(rot)) % 180 == 90:
+        w, h = h, w
+
+    def rate(r):
+        try:
+            n, d = (float(x) for x in str(r).split("/"))
+            return n / d if d else None
+        except ValueError:
+            return None
+
+    nb = s.get("nb_frames")
+    return {"codec": s.get("codec_name"), "pix_fmt": s.get("pix_fmt"), "width": w, "height": h,
+            "rotation": rot, "transfer": s.get("color_transfer"), "primaries": s.get("color_primaries"),
+            "matrix": s.get("color_space"), "range": s.get("color_range"),
+            "fps": rate(s.get("avg_frame_rate")) or rate(s.get("r_frame_rate")),
+            "nb_frames": int(nb) if str(nb or "").isdigit() else None}
+
+
+def hdr_kind(probe):
+    """'hlg' / 'pq' from the stream's transfer characteristic, else None (SDR or unknown)."""
+    return HDR_TRANSFERS.get((probe or {}).get("transfer") or "")
+
+
+class FFmpegFrames:
+    """cv2.VideoCapture's read(), from ffmpeg: full-range 16-bit RGB (rgb48le), autorotated.
+
+    OpenCV has no HDR path: it hands a 10-bit HLG clip to swscale as if it were 8-bit BT.709, and
+    what comes out depends on the build (in the Cowork VM's OpenCV 64% of IMG_2525's pixels read
+    255). ffmpeg is told the matrix and range outright, so the numbers are the same on every
+    machine, and the colour is done here (hlg_rgb16_to_bgr8), not by a filter a build may lack."""
+
+    def __init__(self, ffmpeg, clip, probe):
+        self.w, self.h = probe["width"], probe["height"]
+        matrix = "bt2020" if str(probe.get("matrix") or "").startswith("bt2020") else "bt709"
+        rng = "pc" if probe.get("range") in ("pc", "jpeg", "full") else "tv"
+        self.vf = (f"scale=in_color_matrix={matrix}:in_range={rng}:out_range=pc"
+                   f":flags=accurate_rnd+full_chroma_int,format=rgb48le")
+        self.argv = [ffmpeg, "-v", "error", "-nostdin", "-i", clip, "-map", "0:v:0", "-an",
+                     "-vf", self.vf, "-f", "rawvideo", "-pix_fmt", "rgb48le", "-"]
+        self.n = self.w * self.h * 6
+        self.p = subprocess.Popen(self.argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.partial = 0
+        self.eof = False
+
+    def isOpened(self):
+        return self.p.poll() is None or self.p.returncode == 0
+
+    def read(self):
+        buf = bytearray(self.n)
+        view = memoryview(buf)
+        got = 0
+        while got < self.n:
+            k = self.p.stdout.readinto(view[got:])
+            if not k:
+                break
+            got += k
+        if got < self.n:
+            self.partial = got
+            self.eof = True
+            return False, None
+        return True, np.frombuffer(buf, "<u2").reshape(self.h, self.w, 3)
+
+    def release(self):
+        if not self.eof:
+            # stopped early (--end): nothing more is wanted, so stop ffmpeg rather than let it
+            # block on a full pipe or report our closed pipe as its error
+            self.p.kill()
+            self.p.wait()
+            self.p.stdout.close()
+            self.p.stderr.close()
+            return
+        self.p.stdout.close()
+        err = self.p.stderr.read() or b""
+        self.p.stderr.close()
+        self.p.wait()
+        if self.partial:
+            raise SystemExit(f"ffmpeg ended mid-frame ({self.partial} of {self.n} bytes): the decoded size is not "
+                             f"{self.w}x{self.h} as ffprobe said (after rotation); {err.decode(errors='replace')[-300:]}")
+        if self.p.returncode != 0:
+            raise SystemExit(f"ffmpeg failed decoding (exit {self.p.returncode}): "
+                             f"{err.decode(errors='replace').strip()[-300:]}")
+
+
+def gray8(frame):
+    """Grey 8-bit of either frame kind: BGR uint8 (OpenCV decode) or RGB uint16 (HDR decode).
+
+    The HDR grey is of the HLG signal before the gamut change — the selector's measurements are
+    of the source, as they are before the knee — and >= 250 there is the same E' >= 0.98 the
+    written frame shows as >= 250 for a neutral."""
+    if frame.dtype == np.uint16:
+        return cv2.convertScaleAbs(cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY), alpha=1.0 / 257.0)
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+
+def bgr8(frame):
+    """The 8-bit BGR picture written for a pick."""
+    return hlg_rgb16_to_bgr8(frame) if frame.dtype == np.uint16 else frame
+
+
 # ---- highlight knee
 
 def srgb_to_linear(x):
@@ -276,7 +466,13 @@ def main():
     ap.add_argument("--highlight-knee", type=float, default=None, metavar="K",
                     help="soft knee at linear K (0 < K < 1) on every written frame; off by default")
     ap.add_argument("--ffprobe", default=os.environ.get("HS_FFPROBE", "ffprobe"),
-                    help="ffprobe, for the keyframe indices")
+                    help="ffprobe, for the keyframe indices and the HDR check")
+    ap.add_argument("--ffmpeg", default=os.environ.get("HS_FFMPEG", "ffmpeg"),
+                    help="ffmpeg, for the HDR decode")
+    ap.add_argument("--hdr", choices=("auto", "hlg", "off"), default="auto",
+                    help="auto (default): an HLG clip (iPhone HDR video) is decoded by ffmpeg at 16 bits and "
+                         "written through HLG's own SDR-compatible curve with the gamut brought to BT.709; "
+                         "off: OpenCV's decode, as before")
     a = ap.parse_args()
     if a.highlight_knee is not None and not 0.0 < a.highlight_knee < 1.0:
         ap.error(f"--highlight-knee must be between 0 and 1 (exclusive), got {a.highlight_knee}")
@@ -291,7 +487,7 @@ def main():
         return f"sel{k:03d}-{fi:05d}.jpg" if a.mono else f"VID_{k:03d}_{fi:04d}_2x1.jpg"
 
     def write(k, fi, img):
-        cv2.imwrite(os.path.join(a.out, pick_name(k, fi)), apply_knee(img, lut), [cv2.IMWRITE_JPEG_QUALITY, 97])
+        cv2.imwrite(os.path.join(a.out, pick_name(k, fi)), apply_knee(bgr8(img), lut), [cv2.IMWRITE_JPEG_QUALITY, 97])
 
     # keyframe indices: before decoding in --keyframes mode (they decide the candidates); otherwise
     # alongside the decode, best effort, only to say which picks happened to be keyframes
@@ -321,14 +517,45 @@ def main():
         except OSError:
             probe = None
 
-    cap = cv2.VideoCapture(a.clip)
-    if not cap.isOpened():
-        sys.exit(f"cannot open {a.clip}")
-    n_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); Hh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # HDR: what the stream says it is decides the decoder
+    vprobe = None
+    if ffprobe is not None:
+        r = subprocess.run(probe_argv(ffprobe, a.clip), capture_output=True, text=True)
+        vprobe = parse_probe(r.stdout) if r.returncode == 0 else None
+    kind = hdr_kind(vprobe)
+    decoder = {"path": "opencv"}
+    if a.hdr == "hlg" and vprobe is None:
+        sys.exit(f"--hdr hlg needs ffprobe to size the decode, and {a.ffprobe!r} is not there or could not read the clip")
+    if kind == "pq" and a.hdr == "auto":
+        sys.exit(f"{a.clip} is PQ (HDR10 / Dolby Vision without an HLG base layer); only HLG is decoded here. "
+                 f"Pass --hdr off to take OpenCV's decode anyway (expect wrong tones), or re-shoot as HLG "
+                 f"(iPhone: Settings > Camera > Record Video > HDR Video)")
+    use_hdr = a.hdr == "hlg" or (a.hdr == "auto" and kind == "hlg")
+    if kind == "hlg" and a.hdr == "off":
+        print("warning: this clip is HLG (HDR) and --hdr off hands it to OpenCV, which has no HDR decode")
+    if use_hdr:
+        ffmpeg = shutil.which(os.path.expanduser(a.ffmpeg))
+        if ffmpeg is None:
+            sys.exit(f"{a.clip} is HLG (HDR) and ffmpeg ({a.ffmpeg!r}) is not there to decode it "
+                     f"(install ffmpeg: brew install ffmpeg; or pass --ffmpeg /path/to/ffmpeg, or --hdr off)")
+        cap = FFmpegFrames(ffmpeg, a.clip, vprobe)
+        n_total = vprobe["nb_frames"] or -1
+        fps = vprobe["fps"] or 0.0
+        W, Hh = vprobe["width"], vprobe["height"]
+        decoder = {"path": "ffmpeg", "hdr": "hlg", "transfer": vprobe["transfer"], "primaries": vprobe["primaries"],
+                   "matrix": vprobe["matrix"], "range": vprobe["range"] or "tv", "rotation": vprobe["rotation"],
+                   "size": [W, Hh], "curve": "HLG signal as SDR (BT.2390 compatibility), BT.2020->BT.709 in scene linear",
+                   "vf": cap.vf}
+    else:
+        cap = cv2.VideoCapture(a.clip)
+        if not cap.isOpened():
+            sys.exit(f"cannot open {a.clip}")
+        n_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); Hh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"{a.clip}: {n_total} frames at {fps:.2f} fps, {W}x{Hh}"
-          + (" (mono)" if a.mono else f" (2x1 -> {W//2}x{Hh} per eye)"))
+          + (" (mono)" if a.mono else f" (2x1 -> {W//2}x{Hh} per eye)")
+          + (f", HLG HDR decoded by ffmpeg at 16 bits (rotation {vprobe['rotation']:g})" if use_hdr else ""))
     os.makedirs(a.out, exist_ok=True)
 
     selected = []          # dicts: sel, frame, residual, sharpness, clip
@@ -387,7 +614,7 @@ def main():
         picked_focus.extend([pick["focus"]] if pick["focus"] is not None else [])
         if not a.dry_run:
             write(k, pick["frame"], pick["img"])
-        pg = cv2.cvtColor(view(pick["img"]), cv2.COLOR_BGR2GRAY)
+        pg = gray8(view(pick["img"]))
         psmall = prep(pg, a.work_width)
         ref = (psmall, features(psmall)); last_sel = pick["frame"]
         pending = []; crossing_at = None
@@ -407,7 +634,7 @@ def main():
             continue
         if a.end >= 0 and fi > a.end:
             break
-        gl = cv2.cvtColor(view(frame), cv2.COLOR_BGR2GRAY)
+        gl = gray8(view(frame))
         small = prep(gl, a.work_width)
         # every frame read, not only the picks: the picks are judged against their neighbours
         trace["frame"].append(fi)
@@ -484,7 +711,7 @@ def main():
                                  "candidates": [[p[0], round(p[3], 2), round(p[4], 5)] for p in pending]})
                 if not a.dry_run:
                     write(k, pfi, pframe)
-                pg = cv2.cvtColor(view(pframe), cv2.COLOR_BGR2GRAY)
+                pg = gray8(view(pframe))
                 psmall = prep(pg, a.work_width)
                 ref = (psmall, features(psmall)); last_sel = pfi
                 pending = []; crossing_at = None
@@ -523,7 +750,7 @@ def main():
               + (f", GOP {kf_info['gop_median']:g})" if kf_info["gop_median"] else ")"))
     params = dict(vars(a), mode="keyframes" if a.keyframes else "parallax")
     json.dump({"clip": os.path.abspath(a.clip), "fps": fps, "frames_total": fi + 1, "mono": bool(a.mono),
-               "params": params, "keyframes": kf_info, "selected": selected, "trace": trace},
+               "decoder": decoder, "params": params, "keyframes": kf_info, "selected": selected, "trace": trace},
               open(os.path.join(a.out, "selection.json"), "w"), indent=1)
     print(f"wrote {os.path.join(a.out, 'selection.json')}" + ("" if a.dry_run else f" and {len(selected)} frames")
           + (f" (highlight knee K={a.highlight_knee:g})" if lut is not None and not a.dry_run else ""))

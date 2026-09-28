@@ -49,6 +49,12 @@ public struct MaskSettings: Equatable, Sendable {
     /// and table caught by the radius.
     public var keepLargest = true
     public var previewViews = 6
+    /// Glossy subjects: cut the specular glints (darkest channel >= `highlightCode`) out of the
+    /// subject mask, so the moving highlights are not supervised and the surface is not veiled to
+    /// fake them. For the subject layer; the background layer would read the holes as background.
+    public var excludeHighlights = false
+    /// 240 = HLG E' 0.94 on frames picked with select_frames --hdr (iPhone HDR video).
+    public var highlightCode = 240
 
     public init() {}
 
@@ -62,6 +68,7 @@ public struct MaskSettings: Equatable, Sendable {
         if method == .vision { a += ["--feather-px", MaskSettings.num(featherPx)] }
         if source == .points { a.append("--from-points") }
         if !keepLargest { a.append("--no-keep-largest") }
+        if excludeHighlights { a += ["--exclude-highlights", String(highlightCode)] }
         return a
     }
 

@@ -84,6 +84,11 @@ The selector was never stereo — it walks one view, so `select_frames.py --mono
 frame instead of cropping the left eye. Verified against the stereo path on a cropped H1 clip:
 7 of 8 picks identical, the eighth one frame off from a re-encode tie-break.
 
+**HDR.** iPhone "HDR Video" (on by default) records HLG. `select_frames.py` detects it and decodes
+through ffmpeg with one fixed curve (engine README, "HDR clips"). Keep it on for glossy subjects:
+the HLG top end holds the specular glints that an SDR recording clips. Do not convert the clip to
+SDR in Photos or Compressor first — they re-tone every shot from the Dolby Vision metadata.
+
 **Frame rate.** `--min-gap` / `--max-gap` are frame counts calibrated at 30 fps. At 60 fps
 double them (`--min-gap 12 --max-gap 180`) or the floor halves in real time.
 

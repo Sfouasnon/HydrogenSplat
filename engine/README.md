@@ -72,6 +72,7 @@ hs scale   -p P --lidar SCAN.ply [--units m|mm|cm] [--scan-up auto|y|z] [--pairs
 hs scale   -p P --factor F [--note '…'] [--trust-scan]                 apply a scale factor you already have (solve units x F = mm)
 hs exposure -p P [--reference median|auto|capNNN|board|checker] [--reference-view V] [--mode rgb|luma] [--restore] [--dry-run]   match every view to one reference (board/checker: a shared target, fine on an array)
 hs masks   -p P [--radius 0.10] [--margin-mm 5] [--min-opacity 0.2]   per-view subject silhouettes for Brush's mask channel
+           [--exclude-highlights [240] --highlight-grow-px N]          glossy subjects: cut the specular glints out of the subject mask
 hs train   -p P [--brush PATH]                                        brush → train/exports/export_NNNNN.ply   (Mac only)
 hs move    -p P --preset sweep|boom|custom [--keys ...] [--name N]    move/N.json + move/N_aim_check.jpg
 hs move    -p P --script shot.hsmove [--name N]                      compile a cue sheet against the captured hull (movescript.py)
@@ -138,6 +139,25 @@ model was trained on. It is not exposure matching (`hs exposure`) and not a look
 it cannot bring back what the sensor clipped. The selector's measurements (trace, per-pick clip
 and sharpness) are of the source before the knee — the knee changes no pick — while the report's
 right-eye columns are measured on the written frames, so `clip_R` reads near zero with a knee.
+
+**HDR clips (`select_frames.py --hdr auto|hlg|off`, 2026-09-28).** iPhone "HDR Video" is HEVC
+Main10, BT.2020, HLG (often with a Dolby Vision 8.4 record). OpenCV has no HDR path: it hands the
+10-bit stream to swscale as 8-bit BT.709, and what comes out depends on the build — on IMG_2525
+the Cowork VM's OpenCV put 64 % of pixels at 255. Under `auto` (the default) ffprobe's
+`color_transfer` decides: an HLG clip is decoded by ffmpeg to 16-bit RGB with the matrix and range
+spelled out (`scale=in_color_matrix=bt2020:in_range=tv:out_range=pc,format=rgb48le`, autorotated
+like OpenCV), and each pick is written through one fixed curve — HLG's own SDR compatibility
+(BT.2390: the signal shown as it is) with the gamut taken BT.2020 → BT.709 in scene-linear light
+(BT.2087 matrix), out-of-gamut clipped; two 64k tables, ≤ 1 code from the float reference, ~0.3 s
+per 4K pick. No per-frame tone mapping: the Dolby Vision RPU (what Photos or Compressor apply on
+an SDR export) re-tones every shot, and a highlight has to be the same brightness in every view.
+The top end is kept, not clipped: on IMG_2525 the diffuse whites sit at E′ 0.85–0.93 (217–237)
+and only the glints reach ≥ 0.94 (≥ 240) — which is what `hs masks --exclude-highlights` reads.
+The selector measures the HLG signal's grey (before the gamut change); `selection.json` records
+the decoder (`decoder.path` ffmpeg|opencv, transfer, rotation, size, curve, vf). PQ is refused
+under `auto`; `--hdr off` takes OpenCV's decode with a warning. `--highlight-knee` is
+unnecessary on HLG picks (the curve already rolls off) and stacks if given. Throughput is ffmpeg's
+4K HEVC decode: ~3 frames/s on the 4-core Cowork VM, faster on the Mac.
 `highlight_knee_applied` in the checks says K and how many frames.
 
 selection.json gains `keyframes` (`frames`, `total`, `gop_median`, `probe_frames`, `source`; null
@@ -981,6 +1001,18 @@ Matching an array's exposure properly means using a shared neutral target: `--re
 or `checker` (2026-09-21, above) do that and are not refused.
 
 ### `hs masks`
+
+**`--exclude-highlights [CODE]` (glossy subjects, 2026-09-28).** A glint slides over the surface
+as the camera moves, so no surface colour explains it and 3DGS fakes it with veil — semi-
+transparent splats in or behind the surface — and the surface goes hollow. The flag cuts pixels
+whose darkest channel is ≥ CODE (default 240; dilated by `--highlight-grow-px`, default 0.2 % of
+the width) out of the subject mask; under Brush's masked alpha they are unsupervised, so the
+surface takes its colour from the views where that spot is not lit. What is lost is the glints
+themselves beyond what SH recovers from their rims. 240 is set for HLG picks from `--hdr` (glints
+240–255, diffuse whites 217–237); on SDR footage whose whites clip the paint passes it too, which
+is what `highlights_are_glints_not_paint` (median ≤ 5 %, max ≤ 25 % of the subject cut;
+`highlights_share_of_subject_median/max`) catches. Subject layer only: the background layer
+reads the holes inverted, as background. App: Masks → Detail → Glints.
 
 `3DGS_4DGS_Challenging_Materials_Guide.docx` §1: "duplicate or ghosted objects through glass →
 straight-ray model fits incompatible refracted correspondences → mask glass and retrain

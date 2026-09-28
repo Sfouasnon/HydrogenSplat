@@ -157,6 +157,15 @@ struct MasksView: View {
                         }
                         .frame(width: 160)
                     }
+                    Handle(title: "Glints", help: "For glossy subjects: cut the specular highlights out of the subject mask, so training does not fill the surface with veil to fake a highlight that moves as the camera does. The surface takes its colour from the views where that spot is not lit; the glints themselves are mostly lost. Read highlights_share_of_subject afterwards — above a few percent it is cutting paint, not glints. Train the subject layer with it, not the background layer.") {
+                        Toggle("Exclude specular highlights", isOn: settings.excludeHighlights)
+                        if settings.wrappedValue.excludeHighlights {
+                            Stepper(value: settings.highlightCode, in: 200...254, step: 2) {
+                                Text("≥ \(settings.wrappedValue.highlightCode)").monospacedDigit()
+                            }
+                            .frame(width: 130)
+                        }
+                    }
                     Handle(title: "One object", help: "Keep only the largest connected silhouette. Turn it off when the subject really is in separate pieces.") {
                         Toggle("Keep the largest piece only", isOn: settings.keepLargest)
                     }

@@ -109,6 +109,52 @@ class MisplacedCamera(unittest.TestCase):
             self.assertEqual(st["metrics"]["views"], N_CAM - 1)
 
 
+class ExcludeHighlights(unittest.TestCase):
+    """--exclude-highlights: neutral glints inside the subject are cut out, colour and paint are not."""
+
+    def paint(self, pj, base, glint=True):
+        import cv2
+        d = os.path.join(pj.dataset_dir, "images", "L")
+        for f in os.listdir(d):
+            im = np.full((H, W, 3), base, np.uint8)
+            if glint:
+                cv2.circle(im, (W // 2, H // 2), 4, (252, 252, 252), -1)        # a neutral glint at the centre
+                im[H // 2 - 3:H // 2 + 3, W // 2 + 20:W // 2 + 26] = (0, 0, 255)  # bright red: not a glint
+            cv2.imwrite(os.path.join(d, f), im, [cv2.IMWRITE_JPEG_QUALITY, 97])
+
+    def test_glints_cut_colour_and_paint_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            pj, ply = build(d, 1)
+            self.paint(pj, 225)
+            masks.run(args(ply, exclude_highlights=240, highlight_grow_px=2), pj)
+            for f, m in load_masks(pj).items():
+                self.assertFalse(m[H // 2 - 3:H // 2 + 4, W // 2 - 3:W // 2 + 4].any(), f"{f}: glint left in")
+                self.assertTrue(m[H // 2, W // 2 + 23], f"{f}: the red patch was cut")
+                self.assertTrue(m[H // 2 + 15, W // 2], f"{f}: paint beside the glint was cut")
+            st = pj.stage("masks")
+            self.assertEqual(st["metrics"]["exclude_highlights"], 240)
+            self.assertLess(st["metrics"]["highlights_share_of_subject_median"], 0.05)
+            c = {x["name"]: x for x in st["checks"]}
+            self.assertTrue(c["highlights_are_glints_not_paint"]["ok"])
+
+    def test_paint_over_the_line_fails_the_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            pj, ply = build(d, 1)
+            self.paint(pj, 245, glint=False)                  # SDR whites that clip: the paint passes 240
+            masks.run(args(ply, exclude_highlights=240, highlight_grow_px=0), pj)
+            c = {x["name"]: x for x in pj.stage("masks")["checks"]}
+            self.assertFalse(c["highlights_are_glints_not_paint"]["ok"])
+            self.assertIn("that is surface", c["highlights_are_glints_not_paint"]["value"])
+
+    def test_off_by_default(self):
+        with tempfile.TemporaryDirectory() as d:
+            pj, ply = build(d, 1)
+            self.paint(pj, 225)
+            masks.run(args(ply), pj)
+            self.assertTrue(all(m[H // 2, W // 2] for m in load_masks(pj).values()))
+            self.assertIsNone(pj.stage("masks")["metrics"]["exclude_highlights"])
+
+
 class ScaleFree(unittest.TestCase):
     def setUp(self):
         self.t1, self.t13 = tempfile.TemporaryDirectory(), tempfile.TemporaryDirectory()

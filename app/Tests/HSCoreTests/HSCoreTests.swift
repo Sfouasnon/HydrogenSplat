@@ -286,6 +286,9 @@ final class TrainingTests: XCTestCase {
         let g = m.arguments(project: "/p")
         XCTAssertEqual(Array(g[3...4]), ["--method", "geometry"])
         XCTAssertFalse(g.contains("--feather-px"))           // a Vision-only setting
+        XCTAssertFalse(g.contains("--exclude-highlights"))   // off by default
+        m.excludeHighlights = true
+        XCTAssertEqual(m.arguments(project: "/p").suffix(2), ["--exclude-highlights", "240"])
     }
 
     func testSelectArgumentsMatchTheStage() {
