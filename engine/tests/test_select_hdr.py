@@ -50,7 +50,9 @@ def make_hlg_clip(path, n=40, size=(320, 180), patch_signal=0.97, rotate=None):
     tex = [cv2.GaussianBlur(rng.integers(0, 256, (bh, w + int(s * n) + 8)).astype(np.float32), (0, 0), 1.5)
            for s in speeds]
     argv = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb48le", "-s", f"{w}x{h}",
-            "-r", "30", "-i", "-", "-vf", "scale=out_color_matrix=bt2020:out_range=tv,format=yuv422p10le",
+            "-r", "30", "-i", "-", "-vf", "scale=out_color_matrix=bt2020:out_range=tv,format=yuv422p10le,"
+            # newer ffmpeg (7.1+) takes the colour tags from the frames, not only from -color_trc & co.
+            "setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv",
             "-c:v", "prores_ks", "-profile:v", "3", "-colorspace", "bt2020nc", "-color_primaries", "bt2020",
             "-color_trc", "arib-std-b67", "-color_range", "tv"]
     final, path = path, (path + ".tmp.mov" if rotate is not None else path)
@@ -74,6 +76,8 @@ def make_hlg_clip(path, n=40, size=(320, 180), patch_signal=0.97, rotate=None):
                else ["-i", path, "-metadata:s:v:0", f"rotate={rotate}"])
         subprocess.run(["ffmpeg", "-v", "error", "-y"] + rot + ["-c", "copy", final], check=True)
         os.remove(path)
+    pr = sf.parse_probe(subprocess.run(sf.probe_argv("ffprobe", final), capture_output=True, text=True).stdout)
+    assert pr and pr["transfer"] == "arib-std-b67", f"the test clip is not tagged HLG: {pr}"
 
 
 def run(clip, out, *extra):
