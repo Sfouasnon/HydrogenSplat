@@ -85,6 +85,30 @@ def load_masks(pj):
     return {f: cv2.imread(os.path.join(d, f), cv2.IMREAD_GRAYSCALE) > 127 for f in sorted(os.listdir(d))}
 
 
+class MisplacedCamera(unittest.TestCase):
+    def test_a_camera_with_the_subject_behind_it_gets_an_empty_mask_not_a_crash(self):
+        # CirclesSculpture 2026-09-27: 12 cameras the solve placed kilometres away had no subject
+        # point in front of them; the margin's median depth was NaN and the stage died
+        with tempfile.TemporaryDirectory() as d:
+            pj, ply = build(d, 1)
+            G = dict(np.load(pj.rig_npz, allow_pickle=True))
+            R0 = np.asarray(G["R"][0])
+            G["R"][0] = np.diag([-1.0, 1.0, -1.0]) @ R0          # turn camera 0 round: the sphere is behind it
+            G["t"][0] = np.diag([-1.0, 1.0, -1.0]) @ np.asarray(G["t"][0])
+            np.savez(pj.rig_npz, **G)
+            masks.run(args(ply), pj)
+            m = load_masks(pj)
+            self.assertFalse(m["cap000.png"].any())
+            self.assertTrue(all(v.any() for k, v in m.items() if k != "cap000.png"))
+            st = pj.stage("masks")
+            self.assertEqual(st["metrics"]["views_subject_not_in_front"], 1)
+            self.assertEqual(st["metrics"]["views_subject_not_in_front_names"], ["cap000_L"])
+            c = {x["name"]: x for x in st["checks"]}
+            self.assertFalse(c["subject_in_front_of_every_camera"]["ok"])
+            self.assertTrue(c["every_view_has_a_silhouette"]["ok"])      # the unseen view is not "nearly empty"
+            self.assertEqual(st["metrics"]["views"], N_CAM - 1)
+
+
 class ScaleFree(unittest.TestCase):
     def setUp(self):
         self.t1, self.t13 = tempfile.TemporaryDirectory(), tempfile.TemporaryDirectory()

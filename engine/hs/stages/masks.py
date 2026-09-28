@@ -281,7 +281,7 @@ def run(a, pj):
 
     events.start(STAGE, "project")
     mdir = os.path.join(pj.dataset_dir, "masks")
-    cover, previews, empty = [], [], []
+    cover, previews, empty, unseen = [], [], [], []
     prior_cover, n_inst, n_sel, fell_back = [], [], [], []
     for v, name in enumerate(names):
         eye = name[-1]
@@ -297,6 +297,16 @@ def run(a, pj):
         uv = uv[:, :2] / uv[:, 2:3]
         zz = z[ok]
         fx = K[v][0, 0]
+        if len(zz) == 0:
+            # not one subject point in front of this camera: a pose the solve threw away from the
+            # rest (CirclesSculpture's 12 cameras placed kilometres off) or a view facing away.
+            # An empty mask, counted on its own — not a crash, and not one of the "nearly empty"
+            # views, which are views of the subject that lost their silhouette.
+            unseen.append(name)
+            os.makedirs(os.path.join(mdir, eye), exist_ok=True)
+            cv2.imwrite(os.path.join(mdir, eye, cap + ".png"), np.zeros((h, w), np.uint8))
+            events.progress(STAGE, v + 1, len(names), step="project")
+            continue
         rad = np.clip(fx * S[ok] * 1000.0 / zz, 1.5, 40.0)   # the splat's own footprint, in px
         m = np.zeros((h, w), np.uint8)
         for (u, vv), rr in zip(uv, rad):
@@ -343,6 +353,8 @@ def run(a, pj):
         events.progress(STAGE, v + 1, len(names), step="project")
 
     cover = np.array(cover)
+    if not len(cover):
+        raise events.StageError("no view has the subject in front of it", hint="check the solve (hs solve's checks)")
     pj.metric(STAGE, "views", int(len(cover)))
     pj.metric(STAGE, "coverage_median", round(float(np.median(cover)), 4))
     pj.metric(STAGE, "coverage_min", round(float(cover.min()), 4))
@@ -367,6 +379,14 @@ def run(a, pj):
                         + (f" (e.g. {fell_back[0][0]}: {fell_back[0][1]})" if fell_back else "")
                         + f"; subject {100 * np.median(cover):.1f}% of frame vs region "
                           f"{100 * np.median(prior_cover):.1f}%"))
+    pj.metric(STAGE, "views_subject_not_in_front", len(unseen))
+    if unseen:
+        pj.metric(STAGE, "views_subject_not_in_front_names", unseen[:40])
+    pj.check(STAGE, "subject_in_front_of_every_camera", not unseen, needs_human=bool(unseen),
+             value=("every camera has the subject in front of it" if not unseen else
+                    f"{len(unseen)} view(s) have no subject point in front of the camera, written as empty masks: "
+                    f"{', '.join(unseen[:8])}{' ...' if len(unseen) > 8 else ''} — misplaced poses (hs solve's "
+                    "no_outlier_camera_positions) or views facing away; leave them out of train"))
     pj.check(STAGE, "every_view_has_a_silhouette", not empty,
              value="all views covered" if not empty else f"{len(empty)} views nearly empty: {empty[:5]}")
     pj.check(STAGE, "coverage_sane", bool(0.02 <= np.median(cover) <= 0.75),
