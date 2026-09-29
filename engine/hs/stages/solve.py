@@ -62,6 +62,9 @@ def add_parser(sub):
                         "own best joint fit for this rig is 11.71 mm against the 10.595 it ships")
     p.add_argument("--no-float-rig", action="store_true", help="NOT recommended: keep sensor_from_rig fixed")
     p.add_argument("--reuse-matches", action="store_true", help="keep an existing database.db (skip features/matching)")
+    p.add_argument("--rematch", action="store_true",
+                   help="array/mono: keep database.db's features, run the matcher again (only new pairs), e.g. "
+                        "--matcher exhaustive after a sequential solve lost a stretch")
     p.add_argument("--allow-partial", action="store_true",
                    help="export the registered captures when some did not register (the check fails and needs a "
                         "human; the unregistered captures are listed; the coverage will have a hole)")
@@ -98,6 +101,10 @@ def add_parser(sub):
     g.add_argument("--focal-px", type=float, default=None,
                    help="focal length prior in pixels = lens mm / sensor width mm x image width")
     g.add_argument("--fix-intrinsics", action="store_true", help="keep --focal-px; do not refine focal/distortion")
+    g.add_argument("--intrinsics", choices=("refine", "fixed", "staged"), default=None,
+                   help="staged: hold the camera at --focal-px while mapping, refine it once at the end "
+                        "(use when the solve registers only a handful of images and the focal/distortion "
+                        "it prints are absurd)")
     g.add_argument("--board", default=None, metavar="SX,SY,SQUARE_MM,MARKER_MM[,DICT]",
                    help="after the solve, run `hs scale --board` with this ChArUco board (on a Hydrogen "
                         "clip: `hs scale --dry-run`, which measures the baseline instead)")
@@ -592,11 +599,12 @@ def run_array(a, pj):
         raise events.StageError("no frames", hint="hs ingest --frames DIR / --r3d DIR --take NNN")
     work = pj.stage_dir(STAGE)
     keep_db = None
-    if a.reuse_matches and os.path.exists(os.path.join(work, "database.db")):
+    rematch = getattr(a, "rematch", False)
+    if (a.reuse_matches or rematch) and os.path.exists(os.path.join(work, "database.db")):
         keep_db = os.path.join(pj.root, "database.db.keep")
         shutil.move(os.path.join(work, "database.db"), keep_db)
     pj.begin(STAGE, argv=sys.argv)
-    reused = bool(keep_db)
+    reused = bool(keep_db) and not rematch
     if keep_db:
         shutil.move(keep_db, os.path.join(work, "database.db"))
     if os.path.isdir(pj.dataset_dir):
@@ -621,6 +629,10 @@ def run_array(a, pj):
         argv += ["--focal-px", a.focal_px]
     if a.fix_intrinsics:
         argv.append("--fix-intrinsics")
+    elif getattr(a, "intrinsics", None):
+        argv += ["--intrinsics", a.intrinsics]
+    if rematch and keep_db:
+        argv.append("--rematch")
     if a.scale_pair:
         argv += ["--scale-pair", a.scale_pair]
     elif a.scale:

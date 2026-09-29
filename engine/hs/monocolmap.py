@@ -108,24 +108,29 @@ def cmd_sfm(a):
         dbh.close()
         print(f"  features per image: min {min(nk)}, median {int(np.median(nk))}, max {max(nk)}")
         print(f"timing: features {time.monotonic() - t0:.1f} s")
-        t0 = time.monotonic()
-        matcher, caps = a.matcher, None
-        if matcher != "exhaustive":     # exhaustive reads nothing new: the run is as it always was
-            caps = [c["capture"] for c in json.load(open(os.path.join(work, "captures.json")))["captures"]]
-            matcher = _pairs().resolve_matcher(matcher, len(caps))
-        if matcher == "exhaustive":
-            print(f"exhaustive matching {n_img} images ({n_img * (n_img - 1) // 2} pairs)...")
-            pycolmap.match_exhaustive(db)
-        else:
-            # capture order is prep's: sorted file names, i.e. frame order for a mono clip
-            _pairs().match_sequential(db, work, caps, ("L",), a)
-        print(f"timing: matching {time.monotonic() - t0:.1f} s")
+        match(db, work, n_img, a)
+    elif a.rematch:
+        print(f"reusing features in {db}; matching again with --matcher {a.matcher} "
+              f"(pairs already matched are kept, not redone)")
+        match(db, work, n_img, a)
     else:
         print(f"reusing features/matches in {db}")
+    mode = "fixed" if a.fix_intrinsics else (a.intrinsics or "refine")
+    if mode == "staged" and not a.focal_px:
+        sys.exit("--intrinsics staged maps with the camera held at a prior: give --focal-px "
+                 "(an iPhone main camera in 4K video is ~0.87 x the long side, e.g. 3340 for 3840)")
+    if a.focal_px:
+        # the prior goes into the database camera too, so a reused database (--reuse-matches) takes it:
+        # extraction is the only other place it is set
+        set_camera_prior(db, a.focal_px)
 
     o = pycolmap.IncrementalPipelineOptions()
-    o.ba_refine_focal_length = not a.fix_intrinsics
-    o.ba_refine_extra_params = not a.fix_intrinsics
+    refine = mode == "refine"
+    o.ba_refine_focal_length = refine
+    o.ba_refine_extra_params = refine
+    if not refine:
+        o.mapper.abs_pose_refine_focal_length = False
+        o.mapper.abs_pose_refine_extra_params = False
     o.ba_refine_principal_point = a.refine_principal_point
     o.mapper.init_min_tri_angle = a.init_min_tri_angle
     o.mapper.filter_min_tri_angle = a.min_tri_angle
@@ -133,7 +138,7 @@ def cmd_sfm(a):
     o.min_model_size = 3
     o.multiple_models = False
     print(f"mapping (one shared camera; focal/distortion "
-          f"{'fixed' if a.fix_intrinsics else 'refined'}, principal point "
+          f"{ {'refine': 'refined', 'fixed': 'fixed', 'staged': 'held at the prior, refined after'}[mode] }, principal point "
           f"{'refined' if a.refine_principal_point else 'fixed at centre'})...")
     t0 = time.monotonic()
     recs = pycolmap.incremental_mapping(db, imgs, sparse, options=o)
@@ -141,6 +146,8 @@ def cmd_sfm(a):
     if not recs:
         sys.exit("mapping produced no reconstruction")
     best = max(recs.values(), key=lambda r: r.num_reg_images())
+    if mode == "staged":
+        refine_intrinsics(best, a.refine_principal_point)
 
     scale, how = 1.0, None
     if a.scale_pair:
@@ -168,6 +175,68 @@ def cmd_sfm(a):
     best.write(out)
     best.export_PLY(os.path.join(out, "points3D.ply"))
     print(f"wrote {out}")
+
+
+def match(db, work, n_img, a):
+    """The matcher over db's features. COLMAP skips pairs the database already holds, so running it
+    on a reused database (--rematch) only adds the new pairs: exhaustive after sequential costs the
+    pairs sequential did not try."""
+    t0 = time.monotonic()
+    matcher, caps = a.matcher, None
+    if matcher != "exhaustive":     # exhaustive reads nothing new: the run is as it always was
+        caps = [c["capture"] for c in json.load(open(os.path.join(work, "captures.json")))["captures"]]
+        matcher = _pairs().resolve_matcher(matcher, len(caps))
+    if matcher == "exhaustive":
+        print(f"exhaustive matching {n_img} images ({n_img * (n_img - 1) // 2} pairs)...")
+        pycolmap.match_exhaustive(db)
+    else:
+        # capture order is prep's: sorted file names, i.e. frame order for a mono clip
+        _pairs().match_sequential(db, work, caps, ("L",), a)
+    print(f"timing: matching {time.monotonic() - t0:.1f} s")
+
+
+def set_camera_prior(db, focal_px):
+    """Every camera in the database: fx = fy = focal_px, principal point at the centre, no
+    distortion, has_prior_focal_length. Returns the number of cameras changed."""
+    dbh = pycolmap.Database.open(db)
+    n = 0
+    try:
+        for cam in dbh.read_all_cameras():
+            params = np.zeros(len(cam.params))
+            params[0] = focal_px
+            if cam.model.name in ("OPENCV", "PINHOLE", "FULL_OPENCV", "OPENCV_FISHEYE"):
+                params[1], params[2], params[3] = focal_px, cam.width / 2, cam.height / 2
+            else:                               # SIMPLE_* / RADIAL: f, cx, cy, ...
+                params[1], params[2] = cam.width / 2, cam.height / 2
+            cam.params = params
+            cam.has_prior_focal_length = True
+            dbh.update_camera(cam)
+            n += 1
+    finally:
+        dbh.close()
+    print(f"camera prior: f {focal_px:g} px, principal point at the centre, no distortion ({n} camera)")
+    return n
+
+
+def refine_intrinsics(rec, refine_pp=False):
+    """--intrinsics staged, second half: one global bundle adjustment over the whole reconstruction
+    with focal and distortion free. Refining them from the first pair is what broke IMG_2525
+    (2026-09-28): two views, eight free intrinsics, fx 2796 / fy 3737 / k2 -1.68, and no third image
+    would register. With every registered image in the problem they are well constrained."""
+    cam = list(rec.cameras.values())[0]
+    before = np.array(cam.params, float)
+    o = pycolmap.BundleAdjustmentOptions()
+    o.refine_focal_length = True
+    o.refine_extra_params = True
+    o.refine_principal_point = refine_pp
+    pycolmap.bundle_adjustment(rec, o)
+    after = np.array(list(rec.cameras.values())[0].params, float)
+    print(f"  staged: intrinsics refined after mapping over {rec.num_reg_images()} images: "
+          f"fx {before[0]:.1f} -> {after[0]:.1f}, fy {before[1]:.1f} -> {after[1]:.1f}, "
+          f"dist {np.round(after[4:], 4).tolist()}")
+    if after[1] and abs(after[0] / after[1] - 1) > 0.02:
+        print(f"  warning: fx/fy = {after[0] / after[1]:.3f} after refinement (square pixels expected)")
+    return before, after
 
 
 def report(rec, work, scale):
@@ -297,6 +366,10 @@ def main():
     p.add_argument("--focal-px", type=float, default=None,
                    help="focal length prior in pixels (lens mm / sensor width mm x image width)")
     p.add_argument("--fix-intrinsics", action="store_true", help="keep the prior; do not refine focal/distortion")
+    p.add_argument("--intrinsics", choices=("refine", "fixed", "staged"), default=None,
+                   help="refine (default): focal/distortion refined in every bundle adjustment from the first "
+                        "pair on; fixed: = --fix-intrinsics; staged: held at --focal-px while mapping, then "
+                        "refined once over all registered images (the fix for a first pair that wrecks them)")
     p.add_argument("--refine-principal-point", action="store_true",
                    help="NOT recommended on small arrays: the 12-view 2026-04-03 solve collapsed with it")
     p.add_argument("--scale-pair", default=None, metavar="CAM1,CAM2,MM",
@@ -305,6 +378,8 @@ def main():
     p.add_argument("--init-min-tri-angle", type=float, default=8.0)
     p.add_argument("--min-tri-angle", type=float, default=0.8)
     p.add_argument("--fresh", action="store_true", help="rebuild features and matches")
+    p.add_argument("--rematch", action="store_true",
+                   help="keep the database's features but run --matcher again (only pairs not yet matched)")
     add_matcher_args(p)
     p.set_defaults(fn=cmd_sfm)
 

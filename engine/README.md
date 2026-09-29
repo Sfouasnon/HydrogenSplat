@@ -563,6 +563,21 @@ median one), through the same LUT, backup and `--restore`. A view without the ta
 per-view gains and `white_rms_before/after` (relative RMS of the white's luma across views).
 Synthetic test: five views with per-channel gains 0.80–1.20, JPEG q95: worst recovered gain 0.4 % off (bound 1 %), white spread 7.8 % → 0.13 % RMS.
 
+**Mono solve on a phone clip: `--intrinsics staged`, `--rematch` (2026-09-28).** IMG_2525 (iPhone 17
+Pro Max, 4K HLG portrait, 267 picks) registered **2 of 267**: the default refines OPENCV's eight
+intrinsics in every bundle adjustment from the first pair on, and on two views they ran away (fx 2796,
+fy 3737, k2 −1.68); no third image would register. `hs solve --intrinsics staged --focal-px F` holds
+the camera at F while mapping (bundle adjustment and absolute pose alike) and refines focal and
+distortion once, over every registered image, at the end. The prior is also written into the database
+camera, so it takes on a reused database. On the same matches: **216 of 267**, fx 3168 / fy 3134 from
+F = 3340, 3092 / 3066 from F = 3150 — the focal is weakly constrained on an orbit (±2.5 %), so give a
+sane prior (iPhone main camera, 4K video: ~0.82–0.87 × the long side with stabilisation). The 51 lost
+were three stretches the sequential pairs never linked (close-ups of plain paint, and the high passes
+over the dome at the end). `--rematch` keeps the database's features and runs the matcher again —
+COLMAP skips pairs it already holds — so `--rematch --matcher exhaustive` after a sequential solve
+costs only the new pairs: **254 of 267**, fx 3097 / fy 3084, mean reprojection 1.10 px, no camera
+further than 1.3× the median from the centre (49 min on the 4-core container; the Mac is faster).
+
 **`source.kind = "mono"`**. `hs ingest --frames DIR` now says which of two things the frames are:
 `array` (per-camera subfolders with one frame each, an R3D take, or a flat folder of camera-named
 frames as before) or `mono` (one camera: `select_frames.py --mono` picks, a selection.json that
