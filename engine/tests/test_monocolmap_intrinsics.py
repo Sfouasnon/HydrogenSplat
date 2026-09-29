@@ -54,5 +54,17 @@ class Cli(unittest.TestCase):
             self.assertIn("--focal-px", r.stderr)
 
 
+class RunnerArgv(unittest.TestCase):
+    def test_numbers_in_argv_are_passed_as_strings(self):
+        # hs solve --focal-px 3150 (a float from argparse) crashed the log line: 2026-09-28
+        from hs import runner
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "x.log")
+            r = runner.run([sys.executable, "-c", "import sys; print(sys.argv[1:])", "--focal-px", 3150.0, 2],
+                           "test", log_path=log)
+            self.assertIn("'3150.0', '2'", r.text())
+            self.assertIn("--focal-px 3150.0 2", open(log).read())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -58,6 +58,8 @@ def run(argv, stage, log_path=None, on_line=None, cwd=None, env=None, tick=None,
 
     Raises StageError on non-zero exit when check=True, with the last lines as the hint.
     """
+    # numbers from argparse (--focal-px 3150.0, --scale) go in as they are; the child sees strings
+    argv = [a if isinstance(a, str) else str(a) for a in argv]
     res = ChildResult()
     res.started = time.monotonic()
     log_f = None
