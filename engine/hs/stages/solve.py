@@ -459,20 +459,12 @@ def _run_stereo(a, pj):
 
     if not all_reg:
         missing = sorted(set(c["capture"] for c in caps) - set(r["name"].split("/")[1].split(".")[0] for r in per["images"]))
-        pj.metric(STAGE, "unregistered_captures", missing)
-        runs = _runs(missing)
-        if not getattr(a, "allow_partial", False):
-            pj.finish(STAGE, ok=False, error="partial registration")
-            raise events.StageError(
-                f"only {rep['num_frames']} of {len(caps)} frames registered — the chain broke "
-                f"(unregistered: {runs})",
-                hint="a block in the middle of the clip is a passage COLMAP could not see (sky, a blown "
-                     "wall, motion blur): `hs solve --export-only --allow-partial` trains on the rest and "
-                     "leaves a hole in the coverage; a block at the end: `hs select --end N`; a chain of "
-                     "single misses: `hs select --max-gap 45`. Then read solve/per_image.json.")
-        pj.check(STAGE, "partial_solve_accepted", False, needs_human=True,
-                 value=f"{rep['num_frames']}/{len(caps)} registered, exporting without {len(missing)} "
-                       f"captures ({runs}); the coverage has a hole there")
+        _partial_gate(a, pj, rep["num_frames"], len(caps), missing,
+                      "only {got} of {total} frames registered — the chain broke",
+                      "a block in the middle of the clip is a passage COLMAP could not see (sky, a blown "
+                      "wall, motion blur): `hs solve --export-only --allow-partial` trains on the rest and "
+                      "leaves a hole in the coverage; a block at the end: `hs select --end N`; a chain of "
+                      "single misses: `hs select --max-gap 45`. Then read solve/per_image.json.")
 
     # ---- export
     events.start(STAGE, "export")
@@ -523,11 +515,28 @@ def _run_stereo(a, pj):
     _append_timing(pj, parser, len(caps), n_img, ex.elapsed, reused)
 
 
+def _partial_gate(a, pj, got, total, missing, message, hint):
+    """Some captures did not register. Without --allow-partial the stage fails; with it the solve
+    goes on to export the registered ones and a failing needs-human check names what is missing."""
+    pj.metric(STAGE, "unregistered_captures", missing)
+    runs = _runs(missing)
+    if not getattr(a, "allow_partial", False):
+        pj.finish(STAGE, ok=False, error="partial registration")
+        raise events.StageError(message.format(got=got, total=total) + f" (unregistered: {runs})", hint=hint)
+    pj.check(STAGE, "partial_solve_accepted", False, needs_human=True,
+             value=f"{got}/{total} registered, exporting without {len(missing)} captures ({runs}); "
+                   f"the coverage has a hole there")
+
+
 def _runs(names):
     """'cap245–255, cap257–269, cap294–318' from a list of capture names, for a message."""
     import re
     nums = []
     for n in names:
+        m = re.match(r"^(\D*)(\d+)-\d+$", str(n))     # mono picks: sel149-01347 (pick, source frame)
+        if m:
+            nums.append((int(m.group(2)), m.group(1)))
+            continue
         m = re.search(r"(\d+)$", str(n))
         if m:
             nums.append((int(m.group(1)), str(n)[:m.start()]))
@@ -684,13 +693,13 @@ def run_array(a, pj):
     pj.artifact(STAGE, per_path, "json")
     _per_image_checks(pj, per)
     if not all_reg:
-        pj.finish(STAGE, ok=False, error="partial registration")
         got = set(os.path.splitext(os.path.basename(r["name"]))[0] for r in per["images"])
         missing = sorted(set(c["capture"] for c in caps) - got)
-        raise events.StageError(f"only {rep['num_frames']} of {len(caps)} cameras registered "
-                                f"(unregistered: {', '.join(missing)})",
-                                hint="look at solve/per_image.json; a camera that sees too little of what the "
-                                     "others see cannot be placed. Do not train on a partial solve.")
+        _partial_gate(a, pj, rep["num_frames"], len(caps), missing,
+                      "only {got} of {total} cameras registered",
+                      "look at solve/per_image.json; a camera that sees too little of what the others see "
+                      "cannot be placed. `hs solve --reuse-matches --allow-partial` (with the same solve "
+                      "flags) re-maps from the kept database and exports the rest; the coverage has a hole there.")
 
     events.start(STAGE, "export")
     ex = runner.run(runner.python_argv("monocolmap.py", "export", os.path.join(work, "sparse", "rig"),

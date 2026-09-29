@@ -576,7 +576,11 @@ were three stretches the sequential pairs never linked (close-ups of plain paint
 over the dome at the end). `--rematch` keeps the database's features and runs the matcher again —
 COLMAP skips pairs it already holds — so `--rematch --matcher exhaustive` after a sequential solve
 costs only the new pairs: **254 of 267**, fx 3097 / fy 3084, mean reprojection 1.10 px, no camera
-further than 1.3× the median from the centre (49 min on the 4-core container; the Mac is faster).
+further than 1.3× the median from the centre (49 min on the 4-core container; the Mac is faster). On the Mac the
+same flags placed 243/267 (mean 1.10 px, fx 3099 / fy 3084). `--allow-partial` now works on the array/mono
+route too: `hs solve -p P --reuse-matches --intrinsics staged --focal-px 3150 --allow-partial` re-maps from
+the kept database (no extraction, no matching), exports the registered frames to `train/dataset`, and
+fails the needs-human check `partial_solve_accepted` naming the missing picks as runs (`sel149–156, …`).
 
 **`source.kind = "mono"`**. `hs ingest --frames DIR` now says which of two things the frames are:
 `array` (per-camera subfolders with one frame each, an R3D take, or a flat folder of camera-named

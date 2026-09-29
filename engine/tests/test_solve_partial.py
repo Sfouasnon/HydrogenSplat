@@ -30,6 +30,43 @@ class Runs(unittest.TestCase):
     def test_runs_on_names_without_numbers(self):
         self.assertEqual(solve._runs(["GA", "GB"]), "GA, GB")
 
+    def test_runs_on_mono_picks_use_the_pick_number(self):
+        names = ["sel149-01347", "sel150-01360", "sel151-01371", "sel182-01650", "sel233-02101", "sel234-02110"]
+        self.assertEqual(solve._runs(names), "sel149–151, sel182, sel233–234")
+
+
+class Pj(Recorder):
+    def __init__(self):
+        super().__init__()
+        self.finished = None
+
+    def finish(self, stage, ok=True, error=None, **_):
+        self.finished = (ok, error)
+
+
+class PartialGate(unittest.TestCase):
+    missing = ["sel149-01347", "sel150-01360"]
+
+    def test_without_the_flag_the_stage_fails(self):
+        import argparse
+        from hs import events
+        pj = Pj()
+        with self.assertRaises(events.StageError) as e:
+            solve._partial_gate(argparse.Namespace(allow_partial=False), pj, 243, 267, self.missing,
+                                "only {got} of {total} cameras registered", "hint")
+        self.assertIn("only 243 of 267 cameras registered (unregistered: sel149–150)", str(e.exception))
+        self.assertEqual(pj.finished, (False, "partial registration"))
+
+    def test_with_the_flag_it_goes_on_and_needs_a_human(self):
+        import argparse
+        pj = Pj()
+        solve._partial_gate(argparse.Namespace(allow_partial=True), pj, 243, 267, self.missing, "x", "hint")
+        self.assertIsNone(pj.finished)
+        self.assertEqual(pj.metrics["unregistered_captures"], self.missing)
+        name, ok, value, human = pj.checks[0]
+        self.assertEqual((name, ok, human), ("partial_solve_accepted", False, True))
+        self.assertIn("243/267", value)
+
 
 class PerImage(unittest.TestCase):
     def test_none_mean_does_not_crash_and_is_reported(self):
