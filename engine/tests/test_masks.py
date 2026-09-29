@@ -255,6 +255,33 @@ class Vision(unittest.TestCase):
         self.assertEqual(met["vision_fell_back"], 0)
         self.assertLess(met["coverage_median"], met["prior_coverage_median"], "the object is tighter than the region")
 
+    def test_a_glossy_subject_is_kept_when_it_covers_its_fragmentary_prior(self):
+        """IMG_2525: the SfM points sat on the faceplate only, so the prior is a fragment of the
+        helmet and the helmet is mostly outside it. It covers the prior, so it is the subject; a
+        block beside it that covers none of the prior is not. --contain-frac 0 restores the old rule."""
+        import argparse
+        import cv2
+        d = self.t.name
+        big = np.zeros((H, W), np.uint8)
+        cv2.circle(big, (W // 2, H // 2), 100, 255, -1)            # the helmet
+        clutter = np.zeros((H, W), np.uint8)
+        clutter[0:60, 0:80] = 255                                   # a box beside it
+        cv2.imwrite(os.path.join(d, "1.png"), big)
+        cv2.imwrite(os.path.join(d, "2.png"), clutter)
+        prior = np.zeros((H, W), np.uint8)
+        cv2.circle(prior, (W // 2 + 30, H // 2 + 20), 40, 255, -1)  # the faceplate: ~16% of the helmet
+        seg = {"dir": d, "instances": 2}
+        a = argparse.Namespace(select_frac=0.5, contain_frac=0.6, grow_px=0, feather_px=0)
+        m, n, k, why = masks.vision_mask(seg, prior, a)
+        self.assertIsNone(why)
+        self.assertEqual((n, k), (2, 1))
+        self.assertGreater(((m > 0) & (big > 0)).sum() / (big > 0).sum(), 0.99)
+        self.assertFalse(m[0:60, 0:80].any())
+        a.contain_frac = 0
+        m, n, k, why = masks.vision_mask(seg, prior, a)
+        self.assertEqual(k, 0)
+        self.assertEqual(why, "nothing inside the geometric mask")
+
     def test_the_edge_is_hard_with_an_anti_aliased_rim(self):
         import cv2
         masks.run(args(self.ply, method="vision", feather_px=1.0), self.pj)

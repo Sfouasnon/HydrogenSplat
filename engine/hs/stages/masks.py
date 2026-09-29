@@ -72,6 +72,8 @@ STAGE = "masks"
 FRAME_FILL = 0.7          # subject radius, as a share of the frame half-width at the median camera distance
 MARGIN_FRAC = 0.05        # outward dilation, as a share of the radius (coins: 6 mm on 100)
 SELECT_FRAC = 0.5         # vision: share of an instance that must lie inside the geometric mask
+CONTAIN_FRAC = 0.6        # vision: or share of the geometric mask the instance must cover (a glossy subject)
+CONTAIN_MAX_AREA = 0.8    # vision: ... and the instance must be under this share of the frame
 FEATHER_PX = 1.0          # vision: anti-aliased edge; the research report's "hard alpha + 1-2 px AA"
 HIGHLIGHT_CODE = 240     # --exclude-highlights: an HLG pick's E' >= 0.94 (select_frames --hdr); the glints on IMG_2525
 HIGHLIGHT_GROW_FRAC = 0.002
@@ -85,6 +87,10 @@ def add_parser(sub):
                         "subject; geometry: the projected silhouette alone")
     p.add_argument("--select-frac", type=float, default=SELECT_FRAC,
                    help="vision: keep an instance when at least this share of it lies inside the geometric mask")
+    p.add_argument("--contain-frac", type=float, default=CONTAIN_FRAC,
+                   help="vision: also keep an instance that covers at least this share of the geometric mask "
+                        "(and is under 80%% of the frame): a glossy or plain subject whose SfM points sit only on "
+                        "its textured part, so the geometric mask is a fragment of it; 0 or above 1 disables")
     p.add_argument("--feather-px", type=float, default=FEATHER_PX,
                    help="vision: Gaussian sigma of the anti-aliased edge (0 = hard binary)")
     p.add_argument("--grow-px", type=int, default=0,
@@ -136,7 +142,10 @@ def vision_mask(seg, prior, a):
     """Pick the subject out of Vision's instances. -> (mask uint8, instances, selected, why_fell_back).
 
     `prior` is the geometric silhouette. Each instance's hard area (soft >= 0.5) is tested against
-    it; instances mostly inside are the subject, the rest (a box beside it, a hand) are dropped.
+    it; instances mostly inside are the subject, the rest (a box beside it, a hand) are dropped. An
+    instance that instead covers most of the prior is the subject too: on a glossy subject the SfM
+    points (and so the prior) sit only on its textured part — the Stormtrooper's faceplate, not the
+    white dome — and the whole helmet is then mostly *outside* its own prior.
     The union of the chosen soft masks is thresholded to a hard edge, its holes filled, optionally
     grown, and feathered by a Gaussian of --feather-px: an opaque subject gets a hard alpha with an
     anti-aliased rim, not a wide soft matte."""
@@ -145,6 +154,8 @@ def vision_mask(seg, prior, a):
     if "error" in seg:
         return prior, 0, 0, "vision error: " + str(seg["error"])[:80]
     pri = prior > 0
+    pri_area = int(pri.sum())
+    contain = getattr(a, "contain_frac", CONTAIN_FRAC)
     chosen = []
     for k in range(1, int(seg.get("instances", 0)) + 1):
         sm = cv2.imread(os.path.join(seg["dir"], f"{k}.png"), cv2.IMREAD_GRAYSCALE)
@@ -154,7 +165,13 @@ def vision_mask(seg, prior, a):
             sm = cv2.resize(sm, (w, h), interpolation=cv2.INTER_LINEAR)
         hard = sm >= 128
         area = int(hard.sum())
-        if area and (hard & pri).sum() / area >= a.select_frac:
+        if not area:
+            continue
+        inter = int((hard & pri).sum())
+        inside = inter / area >= a.select_frac
+        covers = (0 < contain <= 1 and pri_area > 0 and inter / pri_area >= contain
+                  and area < CONTAIN_MAX_AREA * h * w)
+        if inside or covers:
             chosen.append(sm)
     n = int(seg.get("instances", 0))
     if not chosen:
