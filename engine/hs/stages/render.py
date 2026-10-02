@@ -2,6 +2,8 @@
 
     brush-path-render <ply> --path <move.json> -o <frames> --width 2400
     ffmpeg … <name>_1920.mp4 (H.264 crf 17, faststart) and a centred 4:5 crop <name>_1080x1350.mp4
+    (the crop fits the frame's short side to the 4:5 box, so an upright frame loses top and bottom
+    where a 16:9 one loses its sides)
 
 Guards, learned the hard way on rig6 (HANDOFF §4): the .ply is MD5'd against the train
 stage's recorded final export, and the move file must be newer than the rig.npz it was built
@@ -152,8 +154,8 @@ def run(a, pj):
     pj.metric(STAGE, "mp4_1920", pj.rel(out16))
     if not a.no_crop:
         out45 = pj.path("render", f"{name}_1080x1350.mp4")
-        # scale so the height is 1350, then crop the centre 1080 wide -> exact 4:5, no stretch
-        _ffmpeg(ffmpeg, fps, pattern, "scale=-2:1350,crop=1080:1350", a.crf, out45, pj, len(pngs), "encode_4x5")
+        fw, fh = png_size(os.path.join(out_dir, pngs[0]))
+        _ffmpeg(ffmpeg, fps, pattern, crop_4x5_filter(fw, fh), a.crf, out45, pj, len(pngs), "encode_4x5")
         pj.artifact(STAGE, out45, "video")
         pj.metric(STAGE, "mp4_1080x1350", pj.rel(out45))
     if getattr(a, "stability", False):
@@ -271,6 +273,28 @@ def _move_fps(move):
         return float(json.load(open(move)).get("fps", 30.0))
     except Exception:
         return 30.0
+
+
+def png_size(path):
+    """(width, height) from a PNG's IHDR."""
+    with open(path, "rb") as f:
+        head = f.read(24)
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        raise events.StageError(f"{os.path.basename(path)} is not a PNG")
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def crop_4x5_filter(w, h):
+    """ffmpeg -vf for the centred 1080 x 1350 crop of a w x h frame: scale until the frame covers
+    the 4:5 box, then cut what hangs over — no stretch, whichever way the frame lies.
+
+    A frame wider than 4:5 (the Hydrogen's 16:9) is fitted by height and loses its sides. A
+    taller one (an iPhone clip shot upright, 2400 x 4276) is fitted by width and loses top and
+    bottom; fitting it by height made it 758 px wide, and the 1080 crop then failed with
+    "Invalid too big or non positive size" (Stormtrooper push-in, 2026-10-02)."""
+    if w * 1350 >= h * 1080:
+        return "scale=-2:1350,crop=1080:1350"
+    return "scale=1080:-2,crop=1080:1350"
 
 
 def _ffmpeg(ffmpeg, fps, pattern, vf, crf, out, pj, n, step):
