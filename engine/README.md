@@ -306,6 +306,7 @@ hs scale -p P --factor 5.8 --trust-scan --note 'ring silhouette fit'   # a facto
 hs scale -p P --lidar scan.ply --init silhouette --dry-run      # the subject's outline fixes the scale (needs hs masks)
 hs scale -p P --lidar scan.ply --init silhouette --init-points  # ... and write scale/lidar_init.ply
 hs train -p P --init lidar                                      # start Brush from the scan instead of the SfM points
+hs train -p P --layer subject --alpha-mode transparent --init lidar --depth-weight 0.2   # ... and hold the model to the scan's depth
 ```
 
 Exactly one of `--board` / `--lidar` / `--factor`. The scan (Polycam / Scaniverse from an iPhone Pro, scanned
@@ -541,6 +542,53 @@ removed after the run; `--resume-from` with it is refused. `init` ("sparse", "li
 `init_ply`, `init_ply_md5` and `init_splats` go in the train metrics, `init` and `init_md5` in
 `dataset_fingerprint`, which `hs archive` copies whole. What it does to a model is untested here
 (no GPU): the file is Brush's own layout, and the start is where the scan says the scene is.
+
+**`hs train --depth-weight W`** (hs/depthmaps.py; Brush fork branch `depth-loss`) uses the same
+record as a depth reference. The scan rows of `scale/lidar_init.ply` (the first `init_points_scan`;
+the sparse rows after them are no measurement) are rendered into every training view as that
+camera sees them and written as 16-bit PNGs, `train/depth/<eye>/<view>.png`, `--depth-res` (512) px
+on the long edge, one count = `unit_mm` (0.1 mm while the scene fits 6.5 m), 0 = no measurement;
+`train/depth/depth_report.json` and `depth_sheet.jpg` (photograph | depth over photograph) beside
+them. `train/view/depths` links them where Brush looks, and Brush is given `--depth-loss-weight W
+--depth-loss-tolerance T --depth-loss-every N --depth-unit U`. Its loss is the mean, over the pixels
+that have a reference and where the model is at least half opaque, of
+`max(0, |ln(rendered depth / reference)| - T)`; the rendered depth is the blend-weighted mean
+depth of the ray, from a second render at the map's size with each splat's colour set to its
+depth, and with the photograph's own blend weights (a plain low-resolution render widens every
+splat by a fixed amount in its own pixels and shows a see-through shell as solid). `--depth-tolerance` 0.01 is 1 % of the distance (5 mm at 0.5 m), the scan's own error.
+
+What a camera sees of a scan is the hard part, because a phone scan has holes — the back of a
+helmet nobody walked behind — and through a hole a camera on the far side looks at the inside of
+the scanned shell, 100–200 mm too deep for that pixel. For a subject layer the masks answer it:
+the scan points that are inside the mask in (nearly) every view are the subject's; the masks'
+visual hull on a 128-voxel grid is solid where the scan is empty; a point is rendered into a
+view only if its line of sight is clear of that solid and its normal (PCA, signed outwards by the
+hull) faces the camera. Then a front-layer mean per pixel, gaps the size of the scan's point
+spacing filled, depth discontinuities, the border ring and specks removed, and only pixels fully
+inside the mask kept. tests/test_depthmaps.py holds it to a ball scanned from one side: every
+depth written in 20 views within 15 mm of the truth (median error 0.01–0.4 mm), where without
+the hull a rear view is wrong by the ball's width. Background and full layers use the scan's own
+front surface (and nearest-camera normals without masks) and have no such test on a real
+capture.
+
+Checks: `depth_reference_coverage` (the share of the layer's pixels the scan gives depth for,
+ok at 70 %: what it does not reach trains as before), `depth_maps_loaded` (Brush's "Depth maps
+for N of M training views" against `train/view/depths`), `depth_error_held` (Brush logs "Depth
+loss at step N: mean relative depth error E" every 500 steps, `depth_error_curve` in the
+metrics; ok when the last is within twice the tolerance — a run started from the scan begins
+on the reference, so the question is whether it stayed). `depth` in the metrics and in `dataset_fingerprint` (weight, tolerance, unit, the
+maps' digest, the scan file's md5). Stormtrooper helmet, 2026-10-01: 60,129 of 84,083 scan
+points on the subject, 208 of 217 training views with a map, 47.6 % of the mask pixels covered
+(median view 67 %, 85 views under half: the scan is the front half and misses the crown of the
+dome), 20–29 s to build. What the loss does to a real model on Metal is not measured here
+(no GPU). The weight comes from a synthetic sweep in the Brush fork (`depth_weight_sweep`: a 33 %
+opaque shell over a saturated "reflected room", 9 views, 3,000 steps, started from that
+structure): mean relative depth error 0.103 at weight 0, 0.069 at 0.02, 0.014 at 0.05, 0.008 at
+0.1, 0.0065 at 0.2, 0.0056 at 0.5, 0.0047 at 2, for 43.6 / 43.4 / 42.4 / 42.2 / 41.8 / 41.7 /
+42.2 dB on the training views — the photographs pay 1.3–1.9 dB to put the surface where it
+is, and no more for forty times the weight, because the tolerance leaves the loss nothing to
+pull on once the depth is right. 0.2 is the suggested start, four times the weight at which the
+synthetic scene came right; `depth_error_held` failing means raise it.
 
 **Dependency**: scipy (≥ 1.10) joins the engine's for `ndimage.label` (3-D connected components)
 and `optimize.minimize` (Nelder–Mead); only `--init silhouette` imports it, and says to reinstall

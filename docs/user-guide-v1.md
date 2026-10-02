@@ -323,6 +323,19 @@ hs scale -p P --lidar lidar/scan.ply --init silhouette --dry-run --init-points
 hs train -p P --init lidar
 ```
 
+**Hold the model to the scan's depth.** A glossy subject trains as a see-through shell with
+the reflected room drawn behind it, because that is what the photographs look like from every
+side. With the same scan record, `--depth-weight` makes Brush compare the depth it renders
+against the scan in every training view and pay for the difference: the shell has to become
+solid where the scan says the surface is. It only works where the scan reaches — the
+`depth_reference_coverage` check and `train/depth/depth_sheet.jpg` show how much that is —
+and needs the Brush fork's `depth-loss` branch. Start at 0.2; a reflection that is still drawn
+behind the surface wants more, a surface that has gone soft wants less.
+
+```
+hs train -p P --layer subject --alpha-mode transparent --init lidar --depth-weight 0.2
+```
+
 A train started in Terminal is followed from `logs/train.log`: "Training in another window
 (pid N)", iteration, splats, it/s, ETA, and "no progress for … — asleep or finishing?" after two
 quiet minutes. Stop it where it was started.

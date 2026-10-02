@@ -56,6 +56,20 @@ apps/brush-cli/src/lib.rs) — the "still open" items of strategy §9:
   manifest (``layer``, ``brush_config.alpha_mode``, ``brush_config.invert_masks``) and in
   ``dataset_fingerprint``, so two models trained off one dataset can always be told apart.
 
+* Depth: ``--depth-weight W`` adds Brush's depth loss (fork branch depth-loss:
+  ``--depth-loss-weight``). The reference is the LiDAR scan `hs scale --lidar SCAN --init-points`
+  registered — the scan rows of ``scale/lidar_init.ply``, validated against the current rig.npz
+  exactly as ``--init lidar`` is — rendered into every training view by hs/depthmaps.py:
+  ``train/depth/<eye>/<view>.png`` (16-bit, ``--depth-res`` px on the long edge), linked into
+  ``train/view/depths`` where Brush looks for them, with ``train/depth/depth_report.json`` and a
+  contact sheet beside them. Photometric loss alone draws a reflection as real content behind a
+  translucent surface; the scan says where the surface is. A subject layer is validated on a
+  real capture (Stormtrooper helmet, 2026-10-01); background and full layers use the simpler
+  visibility test and are not. What the scan did not reach has no reference and trains as before:
+  ``depth_reference_coverage`` says how much that is. Brush logs the mean relative depth error
+  every 500 steps; it lands in the metrics as ``depth_error_curve``, and ``depth_error_held`` asks
+  that the last one be within twice the tolerance.
+
 Keep-awake: cli.py holds ``caffeinate -d -i -m -s`` for the whole ``hs`` process (keepawake.py);
 runner.py notices sleeps anyway (lid closed, Apple menu > Sleep) and train records ``slept_s``.
 
@@ -79,6 +93,8 @@ RE_STEPS = re.compile(r"(\d+)/(\d+)\s+Steps")
 RE_SPLATS = re.compile(r"Current splat count (\d+)")
 RE_DATASET = re.compile(r"Loaded dataset with (\d+) training, (\d+) eval views")
 RE_EVAL = re.compile(r"Eval iter (\d+): PSNR ([\d.]+), ssim ([\d.]+)")
+RE_DEPTH_VIEWS = re.compile(r"Depth maps for (\d+) of (\d+) training views")
+RE_DEPTH_ERR = re.compile(r"Depth loss at step (\d+): mean relative depth error ([\d.]+)")
 RE_EXPORT = re.compile(r"export_(\d+)\.ply$")
 RE_ERR = re.compile(r"(❌|Error|error:|panicked)")
 SPLATS_PER_FRAME_REF = 170841 / 65.0          # rig6, kept as the historical reference only
@@ -90,6 +106,8 @@ SPLATS_PER_FRAME_REF = 170841 / 65.0          # rig6, kept as the historical ref
 # floaters. Recalibrate again when there are enough subjects to know what normal is.
 SPLATS_PER_FRAME_MIN, SPLATS_PER_FRAME_MAX = 500, 40000
 HEARTBEAT_S = 15.0   # re-emit progress if the trainer has printed nothing for this long
+DEPTH_COVERAGE_OK = 0.7   # depth_reference_coverage: the scan should see this share of the layer's pixels
+DEPTH_ERROR_OK = 2.0      # depth_error_held: the final mean relative depth error, in tolerances
 
 
 def add_parser(sub):
@@ -126,6 +144,19 @@ def add_parser(sub):
                         "left out of the loss, so outside the silhouette is unsupervised, not empty. "
                         "transparent: the ground truth is premultiplied and an L1 on rendered alpha "
                         "(--match-alpha-weight, default 0.1) pushes the model to be empty out there")
+    p.add_argument("--depth-weight", type=float, default=0.0,
+                   help="weight of Brush's depth loss against the registered LiDAR scan "
+                        "(hs scale --lidar SCAN --init-points); 0 (default) = off. The loss is the mean over "
+                        "the measured pixels of max(0, |ln(rendered depth / scan depth)| - tolerance)")
+    p.add_argument("--depth-tolerance", type=float, default=0.01,
+                   help="--depth-weight: relative depth error that costs nothing (0.01 = 1%% of the "
+                        "distance: 5 mm at 0.5 m), sized to the scan's own error")
+    p.add_argument("--depth-res", type=int, default=512,
+                   help="--depth-weight: long edge of the depth maps, px. Brush renders the depth pass at "
+                        "this size every step")
+    p.add_argument("--depth-every", type=int, default=1,
+                   help="--depth-weight: apply the depth loss every Nth step (the pass costs a second, "
+                        "small render)")
     return p
 
 
@@ -231,8 +262,11 @@ def parse_exclude(text, root=None):
     return out
 
 
-def build_view(dataset, view, exclude, use_masks):
-    """train/view: the dataset as Brush should see it. -> {'images': n, 'masks': n}"""
+def build_view(dataset, view, exclude, use_masks, depths=None):
+    """train/view: the dataset as Brush should see it. -> {'images': n, 'masks': n[, 'depths': n]}
+
+    `depths` is a folder of depth maps laid out like the masks (hs/depthmaps.py); its PNGs are
+    linked as ``depths/`` next to ``images/``, which is where Brush looks."""
     if os.path.islink(view):
         os.remove(view)
     elif os.path.isdir(view):
@@ -256,18 +290,31 @@ def build_view(dataset, view, exclude, use_masks):
                 os.symlink(os.path.join(root, f), os.path.join(dst_dir, f))
                 n += 1
         counts[top] = n
+    if depths and os.path.isdir(depths):
+        n = 0
+        for root, _dirs, files in os.walk(depths):
+            rel = os.path.relpath(root, depths)
+            for f in sorted(files):
+                if not f.endswith(".png") or os.path.normpath(os.path.join(rel, f[:-4])) in exclude:
+                    continue
+                dst_dir = os.path.normpath(os.path.join(view, "depths", rel))
+                os.makedirs(dst_dir, exist_ok=True)
+                os.symlink(os.path.join(root, f), os.path.join(dst_dir, f))
+                n += 1
+        counts["depths"] = n
     return counts
 
 
-def lidar_init_ply(pj):
+def lidar_init_ply(pj, what="--init lidar"):
     """The scan init `hs scale --init-points` recorded, verified: (absolute path, md5, record).
+    `what` names the option that needs it, for the messages.
     Records live in manifest.scale (an applied scale) and stages.scale.lidar_check (a measurement
     that was not applied); the newest whose file is unchanged and whose rig.npz is the current one
     wins. A re-solve or a scale applied since the file was written moved the frame under it."""
     from ..project import md5_file
     recs = [r for r in ((pj.m.get("scale") or {}), (pj.stage("scale").get("lidar_check") or {})) if r.get("init_ply")]
     if not recs:
-        raise events.StageError("--init lidar: no LiDAR init points recorded for this project",
+        raise events.StageError(f"{what}: no LiDAR init points recorded for this project",
                                 hint=f"hs scale -p {pj.root} --lidar SCAN --init-points (with --dry-run to leave "
                                      "the scale alone)")
     rig_md5 = md5_file(pj.rig_npz) if os.path.exists(pj.rig_npz) else None
@@ -285,8 +332,47 @@ def lidar_init_ply(pj):
             why.append(f"{r['init_ply']} was written for another rig.npz (re-solved or scaled since)")
             continue
         return p, md5, r
-    raise events.StageError("--init lidar: " + "; ".join(why),
+    raise events.StageError(f"{what}: " + "; ".join(why),
                             hint=f"re-run hs scale -p {pj.root} --lidar SCAN --init-points on the solve as it is now")
+
+
+def build_depth(pj, scan_ply, rec, layer, use_masks, exclude, res):
+    """train/depth: the registered scan as every training view sees it (hs/depthmaps.py).
+    -> the report (also written to train/depth/depth_report.json).
+
+    The scan is the first ``init_points_scan`` rows of scale/lidar_init.ply, which holds it in the
+    training set's units (metres = rig.npz mm / 1000); the rows after are the solve's own sparse
+    points and are no measurement of anything."""
+    import json
+
+    from .. import depthmaps, lidar as lidarlib, rig as riglib
+    out = pj.path("train", "depth")
+    if os.path.isdir(out):
+        shutil.rmtree(out)
+    os.makedirs(out)
+    try:
+        pts = lidarlib.load_scan(scan_ply, units="m").points
+    except (ValueError, OSError) as e:
+        raise events.StageError(f"--depth-weight: cannot read {pj.rel(scan_ply)}: {e}")
+    n_scan = rec.get("init_points_scan")
+    if n_scan:
+        pts = pts[:int(n_scan)]
+    G, names, _L = riglib.load(pj.rig_npz)
+    dataset = pj.dataset_dir
+    masks = os.path.join(dataset, "masks")
+    map_layer = layer if (use_masks and os.path.isdir(masks)) else "full"
+    try:
+        rep = depthmaps.build(pts, G, names, out, layer=map_layer, masks_dir=masks,
+                              images_dir=os.path.join(dataset, "images"), exclude=exclude, long_edge=int(res),
+                              progress=lambda done, total: events.progress(STAGE, done, total, step="depth"))
+    except ValueError as e:
+        raise events.StageError(f"--depth-weight: {e}",
+                                hint="scale/lidar_aligned.ply against the solve shows where the scan sits; "
+                                     "train/depth/depth_sheet.jpg is written when any view gets depth")
+    rep["source"] = pj.rel(scan_ply)
+    with open(os.path.join(out, "depth_report.json"), "w") as f:
+        json.dump(rep, f, indent=1)
+    return rep
 
 
 def run(a, pj):
@@ -299,6 +385,19 @@ def run(a, pj):
     if not brush:
         raise events.StageError(f"brush binary not found at {a.brush}",
                                 hint="build the Brush fork (cargo build --release -p brush-app) or pass --brush PATH / HS_BRUSH")
+    binfo = brush_info(brush)
+    flags = binfo.get("flags")
+    depth_w = float(getattr(a, "depth_weight", 0.0) or 0.0)
+    depth_tol = float(getattr(a, "depth_tolerance", 0.01))
+    depth_res = int(getattr(a, "depth_res", 512))
+    depth_every = int(getattr(a, "depth_every", 1))
+    if depth_w < 0 or depth_tol < 0 or depth_every < 1 or depth_res < 32:
+        raise events.StageError("--depth-weight and --depth-tolerance must be >= 0, --depth-every >= 1, "
+                                "--depth-res >= 32")
+    if depth_w and flags is not None and "--depth-loss-weight" not in flags:
+        raise events.StageError("--depth-weight needs Brush's --depth-loss-weight, and this binary has no such flag",
+                                hint="update the Brush fork to its depth-loss branch and rebuild "
+                                     "(cargo build --release)")
     dataset = pj.dataset_dir
     if not os.path.isdir(dataset) or not os.path.exists(os.path.join(dataset, "sparse")):
         raise events.StageError("no train/dataset (undistorted COLMAP set)", hint="hs solve first")
@@ -356,19 +455,30 @@ def run(a, pj):
     init_src, init_md5 = None, None
     if init_mode == "lidar":
         init_src, init_md5, _rec = lidar_init_ply(pj)
+    # --depth-weight: the same file is the depth reference, and is checked the same way
+    depth_src, depth_src_md5, depth_rec = lidar_init_ply(pj, what="--depth-weight") if depth_w else (None, None, None)
 
     # train/ holds the dataset written by solve; wipe only exports + our own files
     pj.begin(STAGE, argv=sys.argv, clean=False)
     exports = pj.exports_dir
     view = pj.path("train", "view")
     view_counts = None
-    if exclude or not use_masks:
+    depth_rep, depth_dir = None, pj.path("train", "depth")
+    if depth_w:
+        events.start(STAGE, "depth")
+        depth_rep = build_depth(pj, depth_src, depth_rec, layer, use_masks, exclude, depth_res)
+        pj.artifact(STAGE, os.path.join(depth_dir, "depth_report.json"), "json")
+        if depth_rep.get("sheet"):
+            pj.artifact(STAGE, os.path.join(depth_dir, depth_rep["sheet"]), "jpg")
+    elif os.path.isdir(depth_dir):
+        shutil.rmtree(depth_dir)      # maps of an earlier run must not pass for this one's
+    if exclude or not use_masks or depth_w:
         img_root = os.path.join(dataset, "images")
         missing = sorted(e for e in exclude if not any(
             os.path.exists(os.path.join(img_root, e + ext)) for ext in (".jpg", ".jpeg", ".png")))
         if missing:
             raise events.StageError(f"--exclude names views that are not in the dataset: {', '.join(missing)}")
-        view_counts = build_view(dataset, view, exclude, use_masks)
+        view_counts = build_view(dataset, view, exclude, use_masks, depths=depth_dir if depth_w else None)
         brush_root = view
         pj.metric(STAGE, "excluded_views", sorted(exclude))
         pj.metric(STAGE, "masks_used", use_masks and bool(view_counts.get("masks")))
@@ -430,6 +540,26 @@ def run(a, pj):
           "init": init_used}
     if init_src:
         fp["init_md5"] = init_md5
+    depth_cfg = None
+    if depth_w:
+        dep_d, dep_n = dir_digest(depth_dir, (".png",))
+        depth_unit = depth_rep["unit_mm"] / 1000.0          # dataset units (rig.npz mm / 1000) per count
+        depth_cfg = {"weight": depth_w, "tolerance": depth_tol, "every": depth_every, "res": depth_res,
+                     "unit": depth_unit, "source_md5": depth_src_md5}
+        fp["depth"] = dict(depth_cfg, digest=dep_d, count=dep_n)
+        pj.metric(STAGE, "depth", dict(
+            depth_cfg, source=pj.rel(depth_src), maps=pj.rel(depth_dir), layer=depth_rep["layer"],
+            views=depth_rep["views"], views_with_depth=depth_rep["views_with_depth"],
+            coverage=depth_rep["coverage"], coverage_percentiles=depth_rep["coverage_percentiles"],
+            views_under_half=depth_rep["views_under_half"], subject=depth_rep.get("subject"),
+            hull=depth_rep.get("hull")))
+        pc = depth_rep["coverage_percentiles"] or {}
+        of = "the subject's" if depth_rep["layer"] == "subject" else "the layer's"
+        pj.check(STAGE, "depth_reference_coverage", depth_rep["coverage"] >= DEPTH_COVERAGE_OK,
+                 value=f"the scan gives depth for {100 * depth_rep['coverage']:.1f}% of {of} pixels over "
+                       f"{depth_rep['views']} views (median view {100 * pc.get('50', 0):.0f}%, "
+                       f"{depth_rep['views_under_half']} views under half, {depth_rep['views_with_depth']} with a "
+                       f"map); the rest trains without a depth reference")
     pj.metric(STAGE, "dataset_fingerprint", fp)
 
     argv = [brush, brush_root,
@@ -439,8 +569,6 @@ def run(a, pj):
             "--export-every", str(a.export_every),
             "--export-path", exports,
             "--export-name", "export_{iter}.ply"]
-    binfo = brush_info(brush)
-    flags = binfo.get("flags")
     msf = a.min_scale_factor
     if flags is not None and "--min-scale-factor" in flags:
         msf = MIN_SCALE_DEFAULT if msf is None else msf
@@ -463,10 +591,18 @@ def run(a, pj):
             raise events.StageError("--alpha-mode given but this brush has no such flag",
                                     hint="update the Brush fork, or drop the option")
         argv += brush_flag(binfo, "--alpha-mode", alpha_mode)
+    if depth_w:
+        for flag, value in (("--depth-loss-weight", depth_w), ("--depth-loss-tolerance", depth_tol),
+                            ("--depth-loss-every", depth_every), ("--depth-unit", depth_cfg["unit"])):
+            if flag not in a.brush_args:
+                argv += [flag, f"{value:g}"]
     pj.metric(STAGE, "brush_config", {"min_scale_factor": msf, "commit": binfo.get("git_commit"),
                                       "branch": binfo.get("git_branch"), "dirty": binfo.get("git_dirty"),
                                       "layer": layer, "alpha_mode": effective_alpha,
-                                      "invert_masks": invert_masks})
+                                      "invert_masks": invert_masks,
+                                      "depth_loss_weight": depth_w,
+                                      "depth_loss_tolerance": depth_tol if depth_w else None,
+                                      "depth_loss_every": depth_every if depth_w else None})
     if a.split_at_screen_size is not None:
         argv += ["--split-at-screen-size", str(a.split_at_screen_size)]
     if start_iter:
@@ -482,7 +618,7 @@ def run(a, pj):
     total = a.total_train_iters
     st = {"iter": start_iter, "splats": None, "t0": time.monotonic(), "iter0": start_iter,
           "seen_exports": set(p for _, p in list_exports(exports)),   # retained pre-resume history
-          "growth": [], "errors": [], "last_emit": 0.0}
+          "growth": [], "errors": [], "last_emit": 0.0, "depth_err": [], "depth_views": None}
 
     def _progress(force=False):
         el = time.monotonic() - st["t0"]
@@ -516,6 +652,15 @@ def run(a, pj):
         m = RE_EVAL.search(line)
         if m:
             events.metric(STAGE, "eval_psnr", float(m.group(2)), iter=int(m.group(1)))
+            return
+        m = RE_DEPTH_VIEWS.search(line)
+        if m:
+            st["depth_views"] = int(m.group(1))
+            return
+        m = RE_DEPTH_ERR.search(line)
+        if m:
+            st["depth_err"].append((int(m.group(1)), float(m.group(2))))
+            events.metric(STAGE, "depth_rel_error", float(m.group(2)), iter=int(m.group(1)))
             return
         if RE_ERR.search(line):
             st["errors"].append(line)
@@ -573,6 +718,26 @@ def run(a, pj):
         pj.check(STAGE, "view_count_matches", got == view_counts["images"],
                  value=f"brush loaded {got} views; train/view holds {view_counts['images']} "
                        f"({len(exclude)} excluded, layer {layer}, masks {'on' if use_masks else 'off'})")
+    if depth_w:
+        want = view_counts.get("depths", 0)
+        pj.check(STAGE, "depth_maps_loaded", st["depth_views"] == want,
+                 value=f"brush found depth maps for {st['depth_views'] or 0} views; train/view/depths holds {want}")
+        curve = st["depth_err"]
+        if curve:
+            pj.metric(STAGE, "depth_error_curve", [[it, e] for it, e in curve])
+            pj.metric(STAGE, "depth_rel_error_final", curve[-1][1])
+            # not "it fell": a run started from the scan (--init lidar) begins on the reference, and
+            # the question is whether the photographs pulled it off again
+            worst = max(e for _it, e in curve)
+            pj.check(STAGE, "depth_error_held", curve[-1][1] <= DEPTH_ERROR_OK * depth_tol,
+                     value=f"mean relative depth error {curve[-1][1]:.4f} at step {curve[-1][0]} "
+                           f"(first {curve[0][1]:.4f}, worst {worst:.4f}; ok up to {DEPTH_ERROR_OK:g} x the "
+                           f"tolerance {depth_tol:g}). Times the camera distance it is a length: "
+                           f"0.02 at 0.5 m is 10 mm. Above the bound the reflections are still drawn "
+                           f"behind the surface: raise --depth-weight")
+        else:
+            pj.check(STAGE, "depth_error_reported", False,
+                     value="no 'Depth loss at step N' line seen: the depth loss did not run")
     ok_final = pj.check(STAGE, "final_export_present", bool(final),
                         value=os.path.basename(final[0]) if final else f"no export_{total:05d}.ply in train/exports")
     if final:

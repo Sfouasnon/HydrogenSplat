@@ -25,6 +25,15 @@ print(f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ')} INFO  brush_cli] Compute backend:
 _imgs = [f for r, _d, fs in os.walk(os.path.join(args[0], "images"), followlinks=True)
          for f in fs if f.lower().endswith((".jpg", ".jpeg", ".png"))] if args and os.path.isdir(args[0]) else []
 print(f"[.. INFO  brush_cli] Loaded dataset with {len(_imgs) or 132} training, 0 eval views"); sys.stdout.flush()
+# depth maps, as the depth-loss fork reports them: every PNG under depths/, then the loss' own lines
+_deps = [f for r, _d, fs in os.walk(os.path.join(args[0], "depths"), followlinks=True)
+         for f in fs if f.lower().endswith(".png")] if args and os.path.isdir(args[0]) else []
+_depth_w = float(opt("--depth-loss-weight", 0))
+if _deps:
+    print(f"[.. INFO  brush_cli] Depth maps for {len(_deps)} of {len(_imgs)} training views")
+    if _depth_w > 0:
+        print(f"[.. INFO  brush_cli] Depth loss on, weight {_depth_w} (unit {opt('--depth-unit', '0.001')})")
+sys.stdout.flush()
 # the initial splats, as brush picks them (init.ply wins): say which, so a test can see what was staged
 _init = os.path.join(args[0], "init.ply") if args else ""
 if _init and os.path.exists(_init):
@@ -46,6 +55,8 @@ for it in range(start, total + 1):
     if it % refine == 0 and it > 0 and it <= refine_stop:
         if it <= growth_stop: splats += 400
         print(f"[.. INFO  brush_cli] Refine iter {it}, {splats} splats."); sys.stdout.flush()
+    if _deps and _depth_w > 0 and (it == start + 1 or (it % 500 == 0 and it > 0)):
+        print(f"[.. INFO  brush_train::train] Depth loss at step {it}: mean relative depth error {0.08 / (1 + it / 100):.4f}")
     if it % every == 0 and it > 0:
         write_ply(os.path.join(exp, name.replace("{iter}", str(it).zfill(digits))), splats); time.sleep(0.05)
 quiet = float(os.environ.get("HS_FAKE_QUIET_TAIL", "0"))
