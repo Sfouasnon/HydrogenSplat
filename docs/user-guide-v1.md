@@ -336,6 +336,25 @@ behind the surface wants more, a surface that has gone soft wants less.
 hs train -p P --layer subject --alpha-mode transparent --init lidar --depth-weight 0.2
 ```
 
+**Make the surface thin.** The depth loss holds a ray's average depth; it does nothing about a
+surface that is smoke — weight spread over centimetres — and nothing at all where the scan has
+no data (the back of a helmet nobody walked behind). `--depth-spread-weight` charges every ray
+for how far its weight is spread in depth. It needs no scan and works on its own; with
+`--depth-weight` the scan says where the surface is and this says it has to be thin; where
+there is no scan the photographs place it. It starts counting after the first eighth of the run
+(`--depth-spread-from`), once the model has formed, and the log's "Depth spread at step N" lines
+before that are your "before". It costs sharpness in reflections — the haze *was* the
+reflection — so check the hold-outs. `engine/tools/ray_depth.py` measures the result: thickness
+in millimetres, per model, side by side.
+
+```
+hs train -p P --layer subject --alpha-mode transparent --init lidar --depth-weight 0.2 --depth-spread-weight 0.2
+```
+
+```
+python3 engine/tools/ray_depth.py Projects/P --ply Projects/P/archive/B/export_40000.ply --ply Projects/P/archive/C/export_40000.ply
+```
+
 A train started in Terminal is followed from `logs/train.log`: "Training in another window
 (pid N)", iteration, splats, it/s, ETA, and "no progress for … — asleep or finishing?" after two
 quiet minutes. Stop it where it was started.

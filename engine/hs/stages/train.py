@@ -69,6 +69,18 @@ apps/brush-cli/src/lib.rs) — the "still open" items of strategy §9:
   ``depth_reference_coverage`` says how much that is. Brush logs the mean relative depth error
   every 500 steps; it lands in the metrics as ``depth_error_curve``, and ``depth_error_held`` asks
   that the last one be within twice the tolerance.
+* Spread: ``--depth-spread-weight W`` adds Brush's depth spread term (``--depth-spread-weight``):
+  per ray, the standard deviation of depth over the blend weights as a share of the mean depth,
+  whatever exceeds ``--depth-spread-tolerance``. It comes out of the same extra render, needs no
+  scan, and applies to every view and every solid pixel — so it reaches what the scan did not
+  (run C, 2026-10-02: the depth loss halved the depth error where the scan was and left the
+  helmet's back, which it never saw, 40 mm thick). It makes a surface thin and does not say
+  where it is; with ``--depth-weight`` the scan anchors it where there is one. Brush logs the
+  mean relative spread every 500 steps (``depth_spread_curve``, ``depth_spread_held``).
+  It counts in the loss from step ``--depth-spread-from`` (an eighth of the run, at most 5000)
+  and is only measured before: a ray through a faint new surface and an opaque one behind it is
+  thinnest with the new surface gone, so from step 0 the term can stop a surface from forming.
+  The lines before that step are the model without the term (``depth_rel_spread_before``).
 
 Keep-awake: cli.py holds ``caffeinate -d -i -m -s`` for the whole ``hs`` process (keepawake.py);
 runner.py notices sleeps anyway (lid closed, Apple menu > Sleep) and train records ``slept_s``.
@@ -95,6 +107,7 @@ RE_DATASET = re.compile(r"Loaded dataset with (\d+) training, (\d+) eval views")
 RE_EVAL = re.compile(r"Eval iter (\d+): PSNR ([\d.]+), ssim ([\d.]+)")
 RE_DEPTH_VIEWS = re.compile(r"Depth maps for (\d+) of (\d+) training views")
 RE_DEPTH_ERR = re.compile(r"Depth loss at step (\d+): mean relative depth error ([\d.]+)")
+RE_DEPTH_SPREAD = re.compile(r"Depth spread at step (\d+): mean relative depth spread ([\d.]+)")
 RE_EXPORT = re.compile(r"export_(\d+)\.ply$")
 RE_ERR = re.compile(r"(❌|Error|error:|panicked)")
 SPLATS_PER_FRAME_REF = 170841 / 65.0          # rig6, kept as the historical reference only
@@ -155,8 +168,19 @@ def add_parser(sub):
                    help="--depth-weight: long edge of the depth maps, px. Brush renders the depth pass at "
                         "this size every step")
     p.add_argument("--depth-every", type=int, default=1,
-                   help="--depth-weight: apply the depth loss every Nth step (the pass costs a second, "
-                        "small render)")
+                   help="--depth-weight / --depth-spread-weight: apply them every Nth step (the pass costs a "
+                        "second, small render)")
+    p.add_argument("--depth-spread-weight", type=float, default=0.0,
+                   help="weight of Brush's depth spread term: per ray, std(depth) / mean depth over the blend "
+                        "weights, above the tolerance. Thins a smoky surface; needs no scan and reaches every "
+                        "view. 0 (default) = off")
+    p.add_argument("--depth-spread-tolerance", type=float, default=0.005,
+                   help="--depth-spread-weight: relative spread that costs nothing (0.005 = a standard "
+                        "deviation of 0.5%% of the distance: 2.5 mm at 0.5 m)")
+    p.add_argument("--depth-spread-from", type=int, default=None,
+                   help="--depth-spread-weight: first step the term counts in the loss; before it the spread "
+                        "is only measured and logged. Default: an eighth of the run, at most 5000. From step 0 "
+                        "it can keep a surface from forming")
     return p
 
 
@@ -391,9 +415,21 @@ def run(a, pj):
     depth_tol = float(getattr(a, "depth_tolerance", 0.01))
     depth_res = int(getattr(a, "depth_res", 512))
     depth_every = int(getattr(a, "depth_every", 1))
-    if depth_w < 0 or depth_tol < 0 or depth_every < 1 or depth_res < 32:
-        raise events.StageError("--depth-weight and --depth-tolerance must be >= 0, --depth-every >= 1, "
-                                "--depth-res >= 32")
+    spread_w = float(getattr(a, "depth_spread_weight", 0.0) or 0.0)
+    spread_tol = float(getattr(a, "depth_spread_tolerance", 0.005))
+    if depth_w < 0 or depth_tol < 0 or depth_every < 1 or depth_res < 32 or spread_w < 0 or spread_tol < 0:
+        raise events.StageError("--depth-weight, --depth-tolerance, --depth-spread-weight and "
+                                "--depth-spread-tolerance must be >= 0, --depth-every >= 1, --depth-res >= 32")
+    spread_from = getattr(a, "depth_spread_from", None)
+    spread_from = min(5000, a.total_train_iters // 8) if spread_from is None else int(spread_from)
+    if spread_w and not 0 <= spread_from < a.total_train_iters:
+        raise events.StageError(f"--depth-spread-from {spread_from} leaves the spread term no steps: the run "
+                                f"has {a.total_train_iters}")
+    if spread_w and flags is not None and "--depth-spread-from-iter" not in flags:
+        raise events.StageError("--depth-spread-weight needs Brush's --depth-spread-weight and "
+                                "--depth-spread-from-iter, and this binary lacks them",
+                                hint="update the Brush fork to its depth-loss branch and rebuild "
+                                     "(cargo build --release)")
     if depth_w and flags is not None and "--depth-loss-weight" not in flags:
         raise events.StageError("--depth-weight needs Brush's --depth-loss-weight, and this binary has no such flag",
                                 hint="update the Brush fork to its depth-loss branch and rebuild "
@@ -560,6 +596,12 @@ def run(a, pj):
                        f"{depth_rep['views']} views (median view {100 * pc.get('50', 0):.0f}%, "
                        f"{depth_rep['views_under_half']} views under half, {depth_rep['views_with_depth']} with a "
                        f"map); the rest trains without a depth reference")
+    spread_cfg = None
+    if spread_w:
+        spread_cfg = {"weight": spread_w, "tolerance": spread_tol, "from": spread_from, "every": depth_every,
+                      "res": depth_res}
+        fp["depth_spread"] = spread_cfg
+        pj.metric(STAGE, "depth_spread", spread_cfg)
     pj.metric(STAGE, "dataset_fingerprint", fp)
 
     argv = [brush, brush_root,
@@ -591,18 +633,30 @@ def run(a, pj):
             raise events.StageError("--alpha-mode given but this brush has no such flag",
                                     hint="update the Brush fork, or drop the option")
         argv += brush_flag(binfo, "--alpha-mode", alpha_mode)
+    depth_flags = []
     if depth_w:
-        for flag, value in (("--depth-loss-weight", depth_w), ("--depth-loss-tolerance", depth_tol),
-                            ("--depth-loss-every", depth_every), ("--depth-unit", depth_cfg["unit"])):
-            if flag not in a.brush_args:
-                argv += [flag, f"{value:g}"]
+        depth_flags += [("--depth-loss-weight", depth_w), ("--depth-loss-tolerance", depth_tol),
+                        ("--depth-unit", depth_cfg["unit"])]
+    if spread_w:
+        # views without a depth map are rendered for the spread at --depth-res, as the maps are
+        depth_flags += [("--depth-spread-weight", spread_w), ("--depth-spread-tolerance", spread_tol),
+                        ("--depth-spread-from-iter", spread_from),
+                        ("--depth-pass-res", depth_res)]
+    if depth_flags:
+        depth_flags.append(("--depth-loss-every", depth_every))
+    for flag, value in depth_flags:
+        if flag not in a.brush_args:
+            argv += [flag, f"{value:g}"]
     pj.metric(STAGE, "brush_config", {"min_scale_factor": msf, "commit": binfo.get("git_commit"),
                                       "branch": binfo.get("git_branch"), "dirty": binfo.get("git_dirty"),
                                       "layer": layer, "alpha_mode": effective_alpha,
                                       "invert_masks": invert_masks,
                                       "depth_loss_weight": depth_w,
                                       "depth_loss_tolerance": depth_tol if depth_w else None,
-                                      "depth_loss_every": depth_every if depth_w else None})
+                                      "depth_loss_every": depth_every if (depth_w or spread_w) else None,
+                                      "depth_spread_weight": spread_w,
+                                      "depth_spread_tolerance": spread_tol if spread_w else None,
+                                      "depth_spread_from": spread_from if spread_w else None})
     if a.split_at_screen_size is not None:
         argv += ["--split-at-screen-size", str(a.split_at_screen_size)]
     if start_iter:
@@ -618,7 +672,8 @@ def run(a, pj):
     total = a.total_train_iters
     st = {"iter": start_iter, "splats": None, "t0": time.monotonic(), "iter0": start_iter,
           "seen_exports": set(p for _, p in list_exports(exports)),   # retained pre-resume history
-          "growth": [], "errors": [], "last_emit": 0.0, "depth_err": [], "depth_views": None}
+          "growth": [], "errors": [], "last_emit": 0.0, "depth_err": [], "depth_views": None,
+          "depth_spread": []}
 
     def _progress(force=False):
         el = time.monotonic() - st["t0"]
@@ -661,6 +716,11 @@ def run(a, pj):
         if m:
             st["depth_err"].append((int(m.group(1)), float(m.group(2))))
             events.metric(STAGE, "depth_rel_error", float(m.group(2)), iter=int(m.group(1)))
+            return
+        m = RE_DEPTH_SPREAD.search(line)
+        if m:
+            st["depth_spread"].append((int(m.group(1)), float(m.group(2))))
+            events.metric(STAGE, "depth_rel_spread", float(m.group(2)), iter=int(m.group(1)))
             return
         if RE_ERR.search(line):
             st["errors"].append(line)
@@ -738,6 +798,34 @@ def run(a, pj):
         else:
             pj.check(STAGE, "depth_error_reported", False,
                      value="no 'Depth loss at step N' line seen: the depth loss did not run")
+    if spread_w:
+        curve = st["depth_spread"]
+        if curve:
+            pj.metric(STAGE, "depth_spread_curve", [[it, e] for it, e in curve])
+            pj.metric(STAGE, "depth_rel_spread_final", curve[-1][1])
+            # medians of a few lines, not single ones: each line is one view, and a view of the
+            # subject's edge-on side is thick whatever the model
+            def median(xs):
+                return sorted(xs)[len(xs) // 2]
+            # Brush counts the steps of this run (a resumed run starts again at 1). The lines
+            # before --depth-spread-from are the model without the term: the "before" for free.
+            head = [e for it, e in curve if 1 < it < spread_from][-5:]
+            tail = [e for it, e in curve if it >= spread_from][-5:] or [curve[-1][1]]
+            late = median(tail)
+            before = median(head) if head else None
+            if before is not None:
+                pj.metric(STAGE, "depth_rel_spread_before", before)
+            was = (f"{before:.4f} over the last {len(head)} lines before the term started at step {spread_from}"
+                   if before is not None else f"first line {curve[0][1]:.4f}")
+            pj.check(STAGE, "depth_spread_held", late <= DEPTH_ERROR_OK * spread_tol,
+                     value=f"mean relative depth spread {late:.4f} over the last {len(tail)} lines "
+                           f"({was}; last {curve[-1][1]:.4f}; ok up to {DEPTH_ERROR_OK:g} x the "
+                           f"tolerance {spread_tol:g}). Times the camera distance it is the standard deviation "
+                           f"of depth along a ray: 0.01 at 0.5 m is 5 mm, a surface about 13 mm thick. Above "
+                           f"the bound the surface is still smoky: raise --depth-spread-weight")
+        else:
+            pj.check(STAGE, "depth_spread_reported", False,
+                     value="no 'Depth spread at step N' line seen: the spread term did not run")
     ok_final = pj.check(STAGE, "final_export_present", bool(final),
                         value=os.path.basename(final[0]) if final else f"no export_{total:05d}.ply in train/exports")
     if final:

@@ -33,6 +33,10 @@ if _deps:
     print(f"[.. INFO  brush_cli] Depth maps for {len(_deps)} of {len(_imgs)} training views")
     if _depth_w > 0:
         print(f"[.. INFO  brush_cli] Depth loss on, weight {_depth_w} (unit {opt('--depth-unit', '0.001')})")
+_spread_w = float(opt("--depth-spread-weight", 0))
+_spread_from = int(opt("--depth-spread-from-iter", 0))
+if _spread_w > 0:
+    print(f"[.. INFO  brush_cli] Depth spread on, weight {_spread_w}, from step {_spread_from}")
 sys.stdout.flush()
 # the initial splats, as brush picks them (init.ply wins): say which, so a test can see what was staged
 _init = os.path.join(args[0], "init.ply") if args else ""
@@ -57,6 +61,10 @@ for it in range(start, total + 1):
         print(f"[.. INFO  brush_cli] Refine iter {it}, {splats} splats."); sys.stdout.flush()
     if _deps and _depth_w > 0 and (it == start + 1 or (it % 500 == 0 and it > 0)):
         print(f"[.. INFO  brush_train::train] Depth loss at step {it}: mean relative depth error {0.08 / (1 + it / 100):.4f}")
+    if _spread_w > 0 and (it == start + 1 or (it % 500 == 0 and it > 0)):
+        # thick until the term starts, thinning from there
+        _sp = 0.03 if it < _spread_from else 0.03 / (1 + (it - _spread_from) / 100)
+        print(f"[.. INFO  brush_train::train] Depth spread at step {it}: mean relative depth spread {_sp:.4f}")
     if it % every == 0 and it > 0:
         write_ply(os.path.join(exp, name.replace("{iter}", str(it).zfill(digits))), splats); time.sleep(0.05)
 quiet = float(os.environ.get("HS_FAKE_QUIET_TAIL", "0"))

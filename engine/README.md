@@ -307,6 +307,8 @@ hs scale -p P --lidar scan.ply --init silhouette --dry-run      # the subject's 
 hs scale -p P --lidar scan.ply --init silhouette --init-points  # ... and write scale/lidar_init.ply
 hs train -p P --init lidar                                      # start Brush from the scan instead of the SfM points
 hs train -p P --layer subject --alpha-mode transparent --init lidar --depth-weight 0.2   # ... and hold the model to the scan's depth
+hs train -p P --layer subject --alpha-mode transparent --init lidar --depth-weight 0.2 --depth-spread-weight 0.2   # ... and make the surface thin where the scan did not reach
+python3 engine/tools/ray_depth.py P --ply P/archive/B/export_40000.ply --ply P/archive/C/export_40000.ply   # how thick is the surface a camera sees?
 ```
 
 Exactly one of `--board` / `--lidar` / `--factor`. The scan (Polycam / Scaniverse from an iPhone Pro, scanned
@@ -589,6 +591,67 @@ structure): mean relative depth error 0.103 at weight 0, 0.069 at 0.02, 0.014 at
 is, and no more for forty times the weight, because the tolerance leaves the loss nothing to
 pull on once the depth is right. 0.2 is the suggested start, four times the weight at which the
 synthetic scene came right; `depth_error_held` failing means raise it.
+
+**`hs train --depth-spread-weight W`** adds the term the depth loss lacks. Run C (2026-10-02,
+`--depth-weight 0.2`) halved the depth error where the scan covers the helmet — 6.3 mm to 3.4 mm,
+better in 103 of 103 views, hold-outs unchanged, +14.9 % time — and left it as smoky as it was:
+the scan never saw the back and the crown, and a loss on a ray's *mean* depth is indifferent to
+weight smeared either side of it. The spread term is per ray `std(z) / E[z]` over the blend
+weights, whatever exceeds `--depth-spread-tolerance` (0.005: 2.5 mm at 0.5 m, what a real surface
+drawn with 2 mm splats has), averaged over the solid pixels. It rides in a second colour channel
+of the same extra render (`z²` beside `z`), needs no scan, and applies to every view; with no
+`--depth-weight` there are no depth maps and Brush trains on the dataset as it is. It thins a
+surface without saying where it is: where the scan covers, `--depth-weight` anchors it; where
+nothing does, the photographs do (a thin surface in the wrong place is wrong in every other
+view). Brush logs "Depth spread at step N: mean relative depth spread S" every 500 steps, the
+mean over the steps since the last line (`depth_spread_curve`; `depth_spread_held`: the median of
+the last five within twice the tolerance; the depth error's lines are such means too from this
+build on — run C's were one view each, hence their scatter). Helmet runs B and C, without the term: 0.018 and
+0.019 over all solid rays, 0.010 where the scan covers, 0.028–0.030 where it does not.
+
+The term counts from step `--depth-spread-from` (default: an eighth of the run, at most 5000)
+and is only measured before. A ray through a faint near surface of weight `a` and an opaque one
+`d` behind it has spread `d·sqrt(a(1 - a)) / z`: below `a = 0.5` the way down is to remove the
+near surface, and steeply so (the slope goes as `1/sqrt(a)`). From step 0 that can stop a
+surface from forming where the model starts sparse — the helmet's back, seen against the inside
+of its front. After a few thousand steps every ray is opaque (run C's depth error was settled
+by step 1500) and the term squeezes what is there. The lines before that step are the same
+model without the term: `depth_rel_spread_before`, the run's own "before".
+
+The weight, from Brush's synthetic sweep (`depth_weight_sweep`: a 33 % shell over a textured
+room 30 % further, 9 views, 3000 steps; the photographs are *of* that two-layer scene, so every
+thinning costs PSNR and the column is an upper bound):
+
+| depth w | spread w | depth error | signed | spread | PSNR dB |
+|---|---|---|---|---|---|
+| 0 | 0 | 0.1048 | +0.1048 | 0.1322 | 43.74 |
+| 0.2 | 0 | 0.0061 | +0.0047 | 0.1270 | 42.05 |
+| 0.2 | 0.2 | 0.0116 | +0.0098 | 0.0503 | 39.38 |
+| 0.2 | 0.5 | 0.0098 | +0.0045 | 0.0242 | 38.31 |
+| 0.2 | 1 | 0.0094 | −0.0036 | 0.0114 | 37.68 |
+| 0 | 0.2 | 0.0441 | +0.0439 | 0.0769 | 40.98 |
+| 0 | 0.5 | 0.0379 | +0.0346 | 0.0305 | 39.03 |
+| 0 | 1 | 0.0170 | −0.0037 | 0.0138 | 37.71 |
+
+The second row is run C in miniature: the depth loss puts the mean on the surface (0.105 →
+0.006) by balancing the haze behind with haze in front, and the spread does not move. Both terms
+are means over their own pixels — the spread over the solid ones — while the photographs' loss
+is a mean over the whole frame, so per ray the spread pulls `1 / (subject's share of the frame)`
+harder than its weight says. The sweep's plane fills the frame; the helmet fills 39 % of it, so
+0.2 on the helmet is the sweep's 0.5. That is the suggested start. The rows without the depth
+loss are the helmet's back: at that weight the surface comes out thin but a third of the way
+from the true surface to where the haze's mean was (+0.035 of +0.105); at twice the weight it
+is on the surface.
+
+`engine/tools/ray_depth.py PROJECT --ply A.ply [--ply B.ply]` is the measurement behind those
+numbers, and the QA the hold-outs cannot do (they sit on the capture path, where a model that
+draws the helmet as 40 mm of haze still scores 31 dB): it composites the splats along a grid of
+rays in the training views the way Brush's depth pass does and reports the thickness of what a
+ray sees (the depth span holding the 10th–90th percentile of the weight), the relative spread
+Brush logs, and — where `train/depth` has a map — the depth error and the share of the weight in
+front of and behind the scan, split into covered and uncovered rays. A model whose surface is
+exactly right reads about 0.9 splat radii *in front* of the scan (depth is the splats' centre
+depth, and the nearer centres are composited first): B's −1.5 mm was that, not haze.
 
 **Dependency**: scipy (≥ 1.10) joins the engine's for `ndimage.label` (3-D connected components)
 and `optimize.minimize` (Nelder–Mead); only `--init silhouette` imports it, and says to reinstall

@@ -33,7 +33,9 @@ RADIUS = 100.0
 DIST = 500.0
 W, H, F = 320, 240, 300.0
 K = np.array([[F, 0, W / 2.0], [0, F, H / 2.0], [0, 0, 1.0]])
-DEPTH_FLAGS = "--depth-loss-weight=,--depth-loss-tolerance=,--depth-loss-every=,--depth-unit="
+DEPTH_ONLY_FLAGS = "--depth-loss-weight=,--depth-loss-tolerance=,--depth-loss-every=,--depth-unit="
+DEPTH_FLAGS = (DEPTH_ONLY_FLAGS + ",--depth-spread-weight=,--depth-spread-tolerance=,--depth-spread-from-iter=,"
+               "--depth-pass-res=")
 
 
 def fibonacci_sphere(n, radius=RADIUS):
@@ -297,7 +299,8 @@ class TrainDepth(unittest.TestCase):
                     refine_every=100, split_at_screen_size=None, export_every=500, resume_from=None,
                     start_iter=None, no_caffeinate=True, brush_args="", exclude="", no_masks=False,
                     min_scale_factor=None, layer="subject", alpha_mode=None, init="sparse",
-                    depth_weight=0.2, depth_tolerance=0.01, depth_res=512, depth_every=1)
+                    depth_weight=0.2, depth_tolerance=0.01, depth_res=512, depth_every=1,
+                    depth_spread_weight=0.0, depth_spread_tolerance=0.005)
         base.update(kw)
         return Namespace(**base)
 
@@ -407,6 +410,97 @@ class TrainDepth(unittest.TestCase):
         with self.assertRaises(events.StageError) as cm:
             train.run(self.train_args(), pj)
         self.assertIn("another rig.npz", str(cm.exception))
+
+    def test_spread_alone_needs_no_scan(self):
+        """The spread term works from the render: no LiDAR record, no depth maps, no view."""
+        pj, cams = self.project()
+        del pj.m["scale"]
+        pj.save()
+        train.run(self.train_args(depth_weight=0.0, depth_spread_weight=0.5, depth_every=2), pj)
+        st = pj.stage("train")
+        argv = st["brush_argv"]
+        self.assertEqual(argv[1], pj.dataset_dir, "nothing to link: Brush trains on the dataset itself")
+        # the term waits an eighth of the run (at most 5000 steps) unless told otherwise
+        for flag, value in (("--depth-spread-weight", "0.5"), ("--depth-spread-tolerance", "0.005"),
+                            ("--depth-spread-from-iter", "125"), ("--depth-pass-res", "512"),
+                            ("--depth-loss-every", "2")):
+            self.assertEqual(argv[argv.index(flag) + 1], value, flag)
+        for flag in ("--depth-loss-weight", "--depth-unit", "--depth-loss-tolerance"):
+            self.assertNotIn(flag, argv)
+        self.assertFalse(os.path.exists(pj.path("train", "depth")))
+        tm = st["metrics"]
+        self.assertEqual(tm["depth_spread"], {"weight": 0.5, "tolerance": 0.005, "from": 125, "every": 2,
+                                              "res": 512})
+        self.assertEqual(tm["dataset_fingerprint"]["depth_spread"]["weight"], 0.5)
+        self.assertNotIn("depth", tm)
+        self.assertEqual(tm["brush_config"]["depth_spread_weight"], 0.5)
+        self.assertEqual(tm["brush_config"]["depth_spread_from"], 125)
+        checks = {c["name"]: c for c in st["checks"]}
+        self.assertTrue(checks["depth_spread_held"]["ok"], checks["depth_spread_held"])
+        self.assertNotIn("depth_error_held", checks)
+        self.assertEqual(tm["depth_spread_curve"][0][0], 1)
+        self.assertLess(tm["depth_rel_spread_final"], tm["depth_spread_curve"][0][1])
+        self.assertIn("Depth spread on, weight 0.5, from step 125", open(pj.log_path("train")).read())
+        self.assertNotIn("depth_rel_spread_before", tm, "no line between step 1 and the start")
+
+    def test_spread_from_a_later_step(self):
+        """The lines before the term starts are the model without it: the 'before' of the run."""
+        pj, _cams = self.project()
+        train.run(self.train_args(depth_weight=0.0, depth_spread_weight=0.5, depth_spread_from=600), pj)
+        st = pj.stage("train")
+        argv = st["brush_argv"]
+        self.assertEqual(argv[argv.index("--depth-spread-from-iter") + 1], "600")
+        tm = st["metrics"]
+        self.assertEqual([it for it, _e in tm["depth_spread_curve"]], [1, 500, 1000])
+        self.assertEqual(tm["depth_rel_spread_before"], 0.03)          # the line at step 500
+        check = {c["name"]: c for c in st["checks"]}["depth_spread_held"]
+        self.assertTrue(check["ok"], check)                            # the line at step 1000: 0.006
+        self.assertIn("0.0300 over the last 1 lines before the term started at step 600", check["value"])
+        self.assertIn("0.0060 over the last 1 lines", check["value"])
+
+    def test_spread_from_step_zero_and_from_too_late(self):
+        pj, _cams = self.project()
+        train.run(self.train_args(depth_weight=0.0, depth_spread_weight=0.5, depth_spread_from=0), pj)
+        argv = pj.stage("train")["brush_argv"]
+        self.assertEqual(argv[argv.index("--depth-spread-from-iter") + 1], "0")
+        for bad in (self.TOTAL, -1):
+            with self.assertRaises(events.StageError) as cm:
+                train.run(self.train_args(depth_weight=0.0, depth_spread_weight=0.5, depth_spread_from=bad), pj)
+            self.assertIn("--depth-spread-from", str(cm.exception))
+
+    def test_spread_with_the_depth_loss(self):
+        pj, _cams = self.project()
+        train.run(self.train_args(depth_spread_weight=1.0, depth_spread_tolerance=0.004, depth_res=384), pj)
+        st = pj.stage("train")
+        argv = st["brush_argv"]
+        for flag, value in (("--depth-loss-weight", "0.2"), ("--depth-spread-weight", "1"),
+                            ("--depth-spread-tolerance", "0.004"), ("--depth-pass-res", "384"),
+                            ("--depth-loss-every", "1")):
+            self.assertEqual(argv[argv.index(flag) + 1], value, flag)
+        self.assertEqual(argv.count("--depth-loss-every"), 1)
+        checks = {c["name"]: c for c in st["checks"]}
+        self.assertTrue(checks["depth_error_held"]["ok"])
+        self.assertTrue(checks["depth_spread_held"]["ok"])
+        self.assertEqual(json.load(open(pj.path("train", "depth", "depth_report.json")))["long_edge"], 384)
+
+    def test_spread_off_by_default(self):
+        pj, _cams = self.project()
+        train.run(self.train_args(depth_weight=0.0), pj)
+        st = pj.stage("train")
+        self.assertFalse(any(str(x).startswith("--depth") for x in st["brush_argv"]))
+        self.assertNotIn("depth_spread", st["metrics"])
+        self.assertNotIn("depth_spread", st["metrics"]["dataset_fingerprint"])
+        self.assertEqual(st["metrics"]["brush_config"]["depth_spread_weight"], 0.0)
+
+    def test_refuses_a_brush_without_the_spread_flag(self):
+        pj, _cams = self.project()
+        os.environ["HS_FAKE_BRUSH_FLAGS"] = DEPTH_ONLY_FLAGS      # the 10-01 build: depth loss, no spread
+        with self.assertRaises(events.StageError) as cm:
+            train.run(self.train_args(depth_spread_weight=0.5), pj)
+        self.assertIn("--depth-spread-weight", str(cm.exception))
+        self.assertEqual(pj.status("train"), "pending")
+        train.run(self.train_args(), pj)                          # the depth loss alone still runs on it
+        self.assertEqual(pj.status("train"), "done")
 
     def test_with_the_scan_as_init_too(self):
         pj, _cams = self.project()
