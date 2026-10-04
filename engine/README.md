@@ -71,8 +71,10 @@ hs scale   -p P --lidar SCAN.ply [--units m|mm|cm] [--scan-up auto|y|z] [--pairs
                                                                       a phone LiDAR scan aligned to the solve: mono/array scale applied, stereo scale checked (applied with --trust-scan); up, ground
 hs scale   -p P --factor F [--note '…'] [--trust-scan]                 apply a scale factor you already have (solve units x F = mm)
 hs exposure -p P [--reference median|auto|capNNN|board|checker] [--reference-view V] [--mode rgb|luma] [--restore] [--dry-run]   match every view to one reference (board/checker: a shared target, fine on an array)
-hs masks   -p P [--radius 0.10] [--margin-mm 5] [--min-opacity 0.2]   per-view subject silhouettes for Brush's mask channel
+hs masks   -p P [--radius 0.10] [--margin-mm 5] [--min-opacity 0.2]   per-view subject silhouettes for Brush's mask channel; ends with the check below
            [--exclude-highlights [240] --highlight-grow-px N]          glossy subjects: cut the specular glints out of the subject mask
+hs masks   -p P --check-only                                          check the masks on disk against each other -> masks_review/ (builds nothing)
+hs masks   -p P --decide L/cap012=repair,@undecided=exclude            repair | exclude | keep | undo a flagged view; hs train refuses until every one is decided
 hs train   -p P [--brush PATH]                                        brush → train/exports/export_NNNNN.ply   (Mac only)
 hs move    -p P --preset sweep|boom|custom [--keys ...] [--name N]    move/N.json + move/N_aim_check.jpg
 hs move    -p P --script shot.hsmove [--name N]                      compile a cue sheet against the captured hull (movescript.py)
@@ -100,6 +102,56 @@ metrics, checks and artifacts in `manifest.json`. `-v` also streams the child's 
 `{"ev":"log"}` events. Opening a project reconciles it first: a stage the manifest still calls
 `running` whose recorded pid is gone becomes `failed — interrupted`, so a ^C'd or crashed run
 reports that instead of blocking the next stage with "solve is running".
+
+## The masks are checked before anything is trained on them (2026-10-04)
+
+A subject mask that leaves part of the subject out is trained, in `--alpha-mode transparent`, as
+"empty from this direction", and the model paints that part black from there. On
+2026-09-28_Stormtrooper_iPhone 36 of 243 masks did this: 17 where Vision found no object and the
+rough region was used, 4 that stop at the brow, 15 with a bite out of the jaw or the chin. They
+were found in four rounds, three of them after a 2 h 40 min train. The build had recorded
+`vision_fell_back: 17`; nothing stopped.
+
+`hs masks` now ends by checking the masks against each other (`hs/maskcheck.py`; no trained
+model needed, 24 s for 243 views), and `hs train` with masks in use refuses to start until every
+flagged view has a decision. The full contract, with the report's fields, is
+`docs/mask-review.md`.
+
+```
+hs masks -p P --check-only                              # on masks built earlier; builds nothing, marks nothing stale
+hs masks -p P --decide @exact=repair                    # the repairs that need no look
+hs masks -p P --decide L/sel230-02123=repair,L/sel212-01985=keep
+hs masks -p P --decide @undecided=exclude               # whatever is left: out of training
+hs masks -p P --decide L/sel230-02123=undo
+```
+
+- **Test A:** sparse points inside the mask in ≥ 90 % of their views are the subject's; a mask
+  holding under 90 % of those is flagged. **Test B:** the masks that pass A vote a visual hull
+  (a voxel is solid for a view when ≥ 97 % of the *other* views have it inside their mask); the
+  hull is projected into the view, and a compact piece of it outside the mask (≥ 0.3 % of the
+  subject's area there, after an opening that removes the rim) is flagged.
+- On the helmet: 45 flagged, 34 of the 36 known bad masks among them; the two missed leave out
+  0.2–0.3 %. At least two of the 45 are false alarms (air in front of the face: the hull is too
+  large where few views are tangent). **The check does not decide. It picks what a person looks at.**
+- **Repairs.** Where Vision's own object is still in `masks_vision/` and the hull confirms it,
+  that object is the repair (13 of the 17 fall-backs on the helmet had one; the build had turned
+  it down because the SfM points, and so the rough region, sit on the faceplate only). A hole is
+  filled. A piece on the silhouette is added with the hull's outline. Only the first two need no
+  look (`approximate: false`, the `@exact` list: 5 of 45 on the helmet); every other repair rests
+  on the hull and is marked approximate.
+- `masks_review/<eye>/<cap>.jpg` shows each flagged view: red the mask, blue the hull, yellow the
+  piece; `<cap>_repair.jpg` shows the repaired mask in green.
+- A decision belongs to the mask *file* (its md5). A rebuild removes the review; `exclude` and
+  `keep` carry over to masks that come out identical.
+- `repair` replaces the dataset's mask (original kept in `masks_review/original/`, `undo` puts it
+  back) and marks train, prune, render and views stale. Views decided `exclude` are left out of
+  `hs train` without being named in `--exclude`.
+- `hs train --allow-unreviewed-masks` trains anyway; `hs masks --no-check` builds without the
+  check.
+
+Limits: thresholds set on one project; a bite shared by more than 3 % of the views is not seen;
+with fewer than 34 voting views the vote is unanimous, so one bad mask carves the hull for all
+the others; masks that are too *large* are not tested.
 
 ## Keyframes only, and a highlight knee on the frames (2026-09-23)
 

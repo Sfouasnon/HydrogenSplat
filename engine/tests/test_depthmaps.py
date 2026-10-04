@@ -298,6 +298,7 @@ class TrainDepth(unittest.TestCase):
         base = dict(brush=os.path.join(FAKEBIN, "brush"), total_train_iters=self.TOTAL, growth_stop_iter=700,
                     refine_every=100, split_at_screen_size=None, export_every=500, resume_from=None,
                     start_iter=None, no_caffeinate=True, brush_args="", exclude="", no_masks=False,
+                    allow_unreviewed_masks=True,     # hand-made masks; the gate is test_maskcheck.py's
                     min_scale_factor=None, layer="subject", alpha_mode=None, init="sparse",
                     depth_weight=0.2, depth_tolerance=0.01, depth_res=512, depth_every=1,
                     depth_spread_weight=0.0, depth_spread_tolerance=0.005)

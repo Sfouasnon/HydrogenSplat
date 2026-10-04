@@ -120,6 +120,17 @@ def add_parser(sub):
                    help="--exclude-highlights: dilate each glint by this many px (default 0.2%% of the width)")
     p.add_argument("--point-mm", type=float, default=None,
                    help="--from-points: world footprint drawn per SfM point; default: 2%% of the radius")
+    rv = p.add_argument_group("review (hs/maskcheck.py): do the masks agree with each other?")
+    rv.add_argument("--check-only", action="store_true",
+                    help="check the masks already on disk and write masks_review/; builds nothing, "
+                         "marks nothing stale")
+    rv.add_argument("--no-check", action="store_true",
+                    help="build without the check (hs train will then ask for it)")
+    rv.add_argument("--decide", action="append", default=None, metavar="VIEW=CHOICE[,…]",
+                    help="record what to do with flagged views and exit: repair (use the repaired mask), "
+                         "exclude (leave the view out of training), keep (train on it as it is), undo. "
+                         "VIEW is L/cap012, or a list: @undecided, @repairable (undecided, has a repair), "
+                         "@exact (undecided, its repair needs no look), @decided. Applied in the order given")
     return p
 
 
@@ -227,8 +238,30 @@ def read_ply_cloud(path):
     return xyz, opa, scale
 
 
+def run_review(a, pj):
+    """--check-only and --decide: the stage's own record (status, metrics, argv) stays as the
+    build left it; only the review's metric and check are replaced."""
+    from .. import maskreview
+    pj.require(STAGE)
+    if not os.path.isdir(os.path.join(pj.dataset_dir, "masks")):
+        raise events.StageError("no train/dataset/masks to review", hint=f"hs masks -p {pj.root}")
+    pj.acquire(STAGE)
+    try:
+        if getattr(a, "decide", None):
+            review, _changed = maskreview.decide(pj, STAGE, a.decide)
+        else:
+            review = maskreview.run_check(
+                pj, STAGE, progress=lambda d, n: events.progress(STAGE, d, n, step="check"))
+    finally:
+        pj.save()            # also after a decide that stopped half-way: what it did is on record
+        pj.release()
+    return review
+
+
 def run(a, pj):
     import cv2
+    if getattr(a, "decide", None) or getattr(a, "check_only", False):
+        return run_review(a, pj)
     pj.require(STAGE)
     rig = pj.rig_npz
     if not os.path.exists(rig):
@@ -316,6 +349,8 @@ def run(a, pj):
         segs = {v: r for (v, _p), r in zip(todo, out)}
 
     events.start(STAGE, "project")
+    from .. import maskreview
+    old_review = maskreview.retire(pj)      # the masks it was about are being overwritten
     mdir = os.path.join(pj.dataset_dir, "masks")
     cover, previews, empty, unseen = [], [], [], []
     hl_share, hl_views = [], []
@@ -463,6 +498,14 @@ def run(a, pj):
     for s in ("train", "prune", "render", "views"):
         if pj.status(s) in ("done", "failed", "running"):
             pj.m["stages"][s]["status"] = "stale"
+    st["finished"] = now_iso()     # the Vision cache is judged current against this (maskreview._vision_dirs)
+    if not getattr(a, "no_check", False):
+        # a mask that leaves part of the subject out is painted black from that view by the trainer;
+        # found here it costs ten seconds, found after training it cost 2 h 40 min a round
+        from ..depthmaps import view_key
+        maskreview.run_check(pj, STAGE, fell_back={view_key(n): w for n, w in fell_back},
+                             settings=maskreview.build_settings(pj, a), previous=old_review,
+                             progress=lambda d, n: events.progress(STAGE, d, n, step="check"))
     st["status"] = "done"
     st["finished"] = now_iso()
     pj.save()

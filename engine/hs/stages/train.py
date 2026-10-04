@@ -143,6 +143,9 @@ def add_parser(sub):
     p.add_argument("--no-caffeinate", action="store_true",
                    help="do not hold the Mac awake (also HS_NO_CAFFEINATE=1)")
     p.add_argument("--brush-args", default="", help="extra arguments passed to brush verbatim")
+    p.add_argument("--allow-unreviewed-masks", action="store_true",
+                   help="train even though the masks were never checked against each other, changed since "
+                        "they were, or have flagged views without a decision (hs masks --check-only / --decide)")
     p.add_argument("--exclude", default="",
                    help="views to leave out, comma separated: L/cap064,R/cap069 (cap064_L also accepted); "
                         "@holdout = the captures in solve/holdout.json (hs cameras --holdout N --write)")
@@ -464,6 +467,14 @@ def run(a, pj):
     if layer is None:
         layer = "subject" if (use_masks and have_masks) else "full"
     invert_masks = layer == "background"
+    mask_review = None
+    if use_masks and have_masks:
+        # the masks must have been checked against each other, and every flagged view decided:
+        # a mask that leaves part of the subject out is trained as "empty from here" (maskcheck.py)
+        from .. import maskreview
+        left_out, mask_review = maskreview.gate(pj, exclude, allow=bool(getattr(a, "allow_unreviewed_masks", False)))
+        mask_review["excluded_by_review"] = sorted(left_out - set(exclude))
+        exclude = set(exclude) | left_out
     # what Brush will actually do: no masks at all, or masked (its default) unless asked otherwise
     effective_alpha = (alpha_mode or "masked") if (use_masks and have_masks) else None
     for opt in ("exposure", "masks") if use_masks else ("exposure",):
@@ -527,6 +538,8 @@ def run(a, pj):
         pj.metric(STAGE, "excluded_views", [])
         pj.metric(STAGE, "masks_used", os.path.isdir(os.path.join(dataset, "masks")))
         pj.metric(STAGE, "layer", layer)
+    if mask_review is not None:
+        pj.metric(STAGE, "mask_review", mask_review)
     init_ply = os.path.join(brush_root, "init.ply")
     if os.path.exists(init_ply):
         os.remove(init_ply)  # a stale resume file would silently seed a fresh run

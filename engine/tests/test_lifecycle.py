@@ -104,6 +104,7 @@ class TrainResume(Base):
         base = dict(brush=os.path.join(FAKEBIN, "brush"), total_train_iters=self.TOTAL, growth_stop_iter=30,
                     refine_every=10, split_at_screen_size=None, export_every=10, resume_from=None,
                     start_iter=None, no_caffeinate=True, brush_args="", exclude="", no_masks=False,
+                    allow_unreviewed_masks=True,     # hand-made masks; the gate is test_maskcheck.py's
                     min_scale_factor=None, layer=None, alpha_mode=None)
         base.update(kw)
         return Namespace(**base)
