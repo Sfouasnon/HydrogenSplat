@@ -72,8 +72,11 @@ Xcode 16.3+ (Swift 6.1) and, on Xcode 26, the Metal toolchain
 
 The project page lists every `archive/*/` model, the live `train/exports` model and any
 `prune/*.ply`; **View** opens one in its own window (two windows = an A/B). The renderer is
-[MetalSplatter](https://github.com/scier/MetalSplatter) (MIT), pinned by commit in
-`Package.swift`.
+[MetalSplatter](https://github.com/scier/MetalSplatter) (MIT) at `464eb37c`, vendored in
+`Vendor/MetalSplatter` with one shader statement changed: the viewer blends the splats' colours
+as code values, the way Brush trains them, and draws into a `bgra8Unorm` target. Upstream
+blends in linear light, which is brighter than the trained picture wherever splats mix
+(`Vendor/MetalSplatter/HYDROGENSPLAT.md`).
 
 - **Stand here** puts the camera exactly at a capture — its pose *and* its pinhole, fitted into
   the window — so cap065 in the viewer is cap065. ← → step captures, L/R picks the eye.

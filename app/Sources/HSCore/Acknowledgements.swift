@@ -27,13 +27,13 @@ public enum Acknowledgements {
         Acknowledgement(
             name: "MetalSplatter", author: "Sean Cier", license: "MIT",
             url: "https://github.com/scier/MetalSplatter",
-            revision: "464eb37c55d90d7362a79120fdf8b50d4ae03296",
-            use: "Renders Gaussian splats with Metal and reads .ply models (MetalSplatter, SplatIO, PLYIO) — the in-app model viewer.",
+            revision: "464eb37c55d90d7362a79120fdf8b50d4ae03296, modified (app/Vendor/MetalSplatter/HYDROGENSPLAT.md)",
+            use: "Renders Gaussian splats with Metal and reads .ply models (MetalSplatter, SplatIO, PLYIO) — the in-app model viewer. Modified by HydrogenSplat: one shader statement, so that colours blend the way Brush trains them.",
             licenseText: metalSplatterLicense),
         Acknowledgement(
             name: "spz-swift", author: "Niantic Labs; Swift port by Sean Cier", license: "MIT",
             url: "https://github.com/scier/spz-swift",
-            revision: "2.1.0 or later, as resolved in app/Package.resolved",
+            revision: "2.1.0, as resolved in app/Package.resolved",
             use: "Linked through MetalSplatter's SplatIO (the .spz reader). A Swift port of https://github.com/nianticlabs/spz.",
             licenseText: spzSwiftLicense),
     ]

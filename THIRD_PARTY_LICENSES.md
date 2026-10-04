@@ -7,12 +7,14 @@ this file into `HydrogenSplat.app/Contents/Resources/`.
 
 | Component | Author | Licence | Pinned | Used for |
 |---|---|---|---|---|
-| [MetalSplatter](https://github.com/scier/MetalSplatter) (MetalSplatter, SplatIO, PLYIO) | Sean Cier | MIT | `464eb37c55d90d7362a79120fdf8b50d4ae03296` | the in-app splat viewer |
-| [spz-swift](https://github.com/scier/spz-swift) | Niantic Labs; Swift port by Sean Cier | MIT | ≥ 2.1.0 (`app/Package.resolved`) | linked through SplatIO's .spz reader |
+| [MetalSplatter](https://github.com/scier/MetalSplatter) (MetalSplatter, SplatIO, PLYIO) | Sean Cier | MIT | `464eb37c55d90d7362a79120fdf8b50d4ae03296`, vendored in `app/Vendor/MetalSplatter` **with one modification** | the in-app splat viewer |
+| [spz-swift](https://github.com/scier/spz-swift) | Niantic Labs; Swift port by Sean Cier | MIT | 2.1.0 (`app/Package.resolved`) | linked through SplatIO's .spz reader |
 
-SwiftPM also fetches `swift-argument-parser` (Apache-2.0) because MetalSplatter's package
-declares it for its `SplatConverter` command-line tool. HydrogenSplat does not build or link
-that tool, so none of it ships in the app.
+MetalSplatter is modified: one statement of `MetalSplatter/Resources/SplatProcessing.metal`
+(the vertex shader no longer converts each splat's colour to linear light), so that the viewer
+blends colours the way Brush trains them. What changed and why:
+`app/Vendor/MetalSplatter/HYDROGENSPLAT.md`. Its tests, sample apps and `SplatConverter` tool
+are not vendored, so `swift-argument-parser` is no longer fetched.
 
 The engine launches Brush, COLMAP / pycolmap, OpenCV, NumPy, FFmpeg and REDline as separate
 programs installed by the user. They are not distributed with HydrogenSplat.

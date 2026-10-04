@@ -13,11 +13,12 @@ let package = Package(
     ],
     dependencies: [
         // The splat viewer's renderer and .ply reader (MIT — notices in HSCore/Acknowledgements.swift and
-        // THIRD_PARTY_LICENSES.md). Pinned to a commit, like Brush: 1.0.1 plus what landed after it —
-        // the PLY reader accepts SH degree 1 and 2 files (1.0.1 took only 0 or 45 f_rest_* properties),
-        // and SplatChunk no longer writes past a splat's SH slot when counts disagree.
+        // THIRD_PARTY_LICENSES.md): MetalSplatter 464eb37c (1.0.1 plus what landed after it — the PLY
+        // reader accepts SH degree 1 and 2 files, and SplatChunk no longer writes past a splat's SH
+        // slot when counts disagree), vendored with one shader line changed so the viewer blends
+        // colours the way Brush trains them (Vendor/MetalSplatter/HYDROGENSPLAT.md).
         // Needs a Swift 6.1+ toolchain (Xcode 16.3 or later).
-        .package(url: "https://github.com/scier/MetalSplatter.git", revision: "464eb37c55d90d7362a79120fdf8b50d4ae03296"),
+        .package(path: "Vendor/MetalSplatter"),
     ],
     targets: [
         // Everything that is not a view: event parsing, the process runner, manifests, projects.

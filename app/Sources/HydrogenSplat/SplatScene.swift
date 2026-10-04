@@ -115,7 +115,7 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
     /// Set when the grade pass could not be built; the viewer then draws ungraded and says so.
     @Published var lookProblem: String?
     private var offscreen: MTLTexture?
-    private var offscreenCodes: MTLTexture?        // the same pixels viewed as bgra8Unorm: raw code values
+    private var offscreenCodes: MTLTexture?        // what the grade pass reads: the same texture, raw code values
     private var lutTexture: MTLTexture?
     private var lutFor: GradeSettings?
     private var gradePipeline: MTLRenderPipelineState?
@@ -125,9 +125,9 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
         let source: MTLTexture, codes: MTLTexture, lut: MTLTexture, pipe: MTLRenderPipelineState
     }
 
-    /// Full-screen triangle; the fragment looks each code value up in the grade tables and hands the
-    /// sRGB drawable the linear value that stores exactly that code — so the preview is the curve
-    /// ffmpeg applies to code values, not an approximation of it.
+    /// Full-screen triangle; the fragment looks each code value up in the grade tables and writes
+    /// the result as it is — the drawable stores code values (see `colorFormat`) — so the preview
+    /// is the curve ffmpeg applies to code values, not an approximation of it.
     private static let gradeShader = """
     #include <metal_stdlib>
     using namespace metal;
@@ -145,7 +145,6 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
             uint k = uint(clamp(c[i], 0.0, 1.0) * 255.0 + 0.5);
             o[i] = lut.read(uint2(k, 0))[i];
         }
-        o = select(pow((o + 0.055) / 1.055, 2.4), o / 12.92, o <= 0.04045);
         return float4(o, 1.0);
     }
     """
@@ -158,7 +157,7 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
                 let d = MTLRenderPipelineDescriptor()
                 d.vertexFunction = lib.makeFunction(name: "grade_vs")
                 d.fragmentFunction = lib.makeFunction(name: "grade_fs")
-                d.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
+                d.colorAttachments[0].pixelFormat = SplatScene.colorFormat
                 gradePipeline = try device.makeRenderPipelineState(descriptor: d)
             } catch {
                 gradeBuildFailed = true
@@ -170,12 +169,12 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
             }
         }
         if offscreen == nil || offscreen!.width != width || offscreen!.height != height {
-            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: width,
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: SplatScene.colorFormat, width: width,
                                                              height: height, mipmapped: false)
-            d.usage = [.renderTarget, .shaderRead, .pixelFormatView]
+            d.usage = [.renderTarget, .shaderRead]
             d.storageMode = .private
             offscreen = device.makeTexture(descriptor: d)
-            offscreenCodes = offscreen?.makeTextureView(pixelFormat: .bgra8Unorm)
+            offscreenCodes = offscreen
         }
         if lutTexture == nil || lutFor != g {
             // a fresh texture per change: frames still in flight keep reading the one they had
@@ -208,6 +207,15 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
         enc.endEncoding()
     }
 
+    /// Every target the model is drawn into stores code values, with no sRGB encode on write.
+    /// Brush composites the splats' colours as they are — sum(w·c) — and that sum is what the loss
+    /// compared with the photograph. With an sRGB target (and MetalSplatter's own conversion of
+    /// each splat to linear light) the viewer showed encode(sum(w·c^2.2)) instead: brighter than
+    /// the trained picture wherever splats mix, most of all where a colour is over range. On the
+    /// Stormtrooper's model E that drew white bars across the vent slats which no render has.
+    /// The other half of the fix is one line of the vendored shader (Vendor/MetalSplatter/HYDROGENSPLAT.md).
+    static let colorFormat: MTLPixelFormat = .bgra8Unorm
+
     let device: MTLDevice?
     private let queue: MTLCommandQueue?
     private var renderer: SplatRenderer?
@@ -225,7 +233,7 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
 
     func configure(_ view: SplatMTKView) {
         view.device = device
-        view.colorPixelFormat = .bgra8Unorm_srgb
+        view.colorPixelFormat = SplatScene.colorFormat
         view.depthStencilPixelFormat = .depth32Float
         view.sampleCount = 1
         view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)   // Brush trains against black
@@ -260,7 +268,7 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
                 self.resetOrbit()
                 self.phase = .loading("reading \((model.ply as NSString).lastPathComponent) (\(model.sizeLabel))…")
 
-                let r = try SplatRenderer(device: device, colorFormat: .bgra8Unorm_srgb, depthFormat: .depth32Float,
+                let r = try SplatRenderer(device: device, colorFormat: SplatScene.colorFormat, depthFormat: .depth32Float,
                                           sampleCount: 1, maxViewCount: 1, maxSimultaneousRenders: SplatScene.maxRenders,
                                           clearColor: MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1))
                 let url = URL(fileURLWithPath: model.ply)
