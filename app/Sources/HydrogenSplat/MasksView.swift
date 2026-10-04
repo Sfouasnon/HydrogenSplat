@@ -33,6 +33,14 @@ struct MasksView: View {
     private var stage: StageState? { manifest.stage("masks") }
     private var queue: RunQueue? { model.maskQueues[project.path] }
     private var running: Bool { queue?.isRunning ?? false }
+    /// The Build button's title. The review section's check and decide runs go through this same
+    /// queue, and they build nothing.
+    private var buildTitle: String {
+        guard running else { return "Build Masks" }
+        return queue?.steps.first?.title == MasksView.buildStep ? "Building…" : "Working…"
+    }
+    /// The title of the build's step in the queue: how a build is told from a check or a decide.
+    private static let buildStep = "Build masks"
     private var solveReady: Bool { manifest.stage("solve")?.status == .done }
     /// A model exists to project. Stale counts: building masks marks train stale, and the model is
     /// still on disk — reading "not done" as "no model" flipped the source to SfM points after the
@@ -79,6 +87,9 @@ struct MasksView: View {
                     commandPreview
                     buttons
                     results
+                    if !files.isEmpty {
+                        MaskReviewSection(project: project, reloadKey: reloadKey)
+                    }
                 }
             }
             .padding(4)
@@ -203,7 +214,7 @@ struct MasksView: View {
 
     private var buttons: some View {
         HStack(spacing: 12) {
-            Button(running ? "Building…" : "Build Masks") {
+            Button(buildTitle) {
                 if trainDone && !files.isEmpty { confirmStale = true } else { run() }
             }
             .disabled(blocked)
@@ -222,7 +233,7 @@ struct MasksView: View {
     }
 
     private func run() {
-        let steps = [RunQueue.Step(title: "Build masks", arguments: settings.wrappedValue.arguments(project: project.path))]
+        let steps = [RunQueue.Step(title: MasksView.buildStep, arguments: settings.wrappedValue.arguments(project: project.path))]
         let q = RunQueue(config: model.config, steps: steps)
         let path = project.path
         q.onStep = { s in model.projectRuns[path] = s }

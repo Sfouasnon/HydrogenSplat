@@ -15,6 +15,11 @@ struct TrainView: View {
     @State private var confirmReplace = false
     @State private var lock: ProjectSummary.LockInfo?
     @State private var onBattery = PowerStatus.onBattery
+    /// masks_review/review.json, whether mask files exist and the captures the hold-out is taken
+    /// from, for the warning under Layer. Read when the masks stage changes, never in body.
+    @State private var maskReview: MaskReview?
+    @State private var maskFilesExist = false
+    @State private var maskCaptures = CaptureSet(names: [], stereo: true)
     private let tick = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
 
     private var settings: Binding<TrainSettings> {
@@ -71,6 +76,29 @@ struct TrainView: View {
         FileManager.default.fileExists(atPath: (project.path as NSString).appendingPathComponent("train/dataset/masks"))
     }
 
+    /// The masks stage as the manifest has it, its `mask_review` metric (the engine rewrites it on
+    /// every decide), whether a masks run from this app is in flight, when the solve last finished
+    /// (it names the captures) and when review.json was last written (one stat per pass).
+    private var maskReviewKey: String {
+        let s = manifest.stage("masks")
+        let metric = s?.metrics["mask_review"]?.compactJSON ?? ""
+        let running = model.maskQueues[project.path]?.isRunning ?? false
+        let solved = manifest.stage("solve")?.finished?.timeIntervalSince1970 ?? 0
+        let attrs = try? FileManager.default.attributesOfItem(atPath: MaskReview.reportPath(project: project.path))
+        let stamp = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return "\(project.path)|\(s?.finished?.timeIntervalSince1970 ?? 0)|\(s?.status.rawValue ?? "")|\(metric)|\(running)|\(solved)|\(stamp)"
+    }
+
+    /// `hs train` refuses to start on masks that were never checked, or while a flagged view it
+    /// would train on has no decision. Only a layer that reads the masks is affected.
+    private var maskReviewWarning: String? {
+        let s = settings.wrappedValue
+        guard s.layer.needsMasks else { return nil }
+        // the views this run leaves out anyway need no decision
+        let excluded = s.excludedViews(in: maskCaptures)
+        return MaskReview.trainWarning(maskReview, masksExist: maskFilesExist, excluded: excluded)
+    }
+
     private var solveDone: Bool { manifest.stage("solve")?.status == .done }
     private var queue: RunQueue? { model.trainQueues[project.path] }
     /// The lock as either source sees it: this view polls it every 3 s, and the store carries the
@@ -118,6 +146,11 @@ struct TrainView: View {
         }
         .onAppear(perform: refresh)
         .onReceive(tick) { _ in refresh() }
+        .task(id: maskReviewKey) {
+            maskCaptures = CaptureSet.read(project: project.path)
+            maskFilesExist = !MaskFiles.read(project: project.path).isEmpty
+            maskReview = MaskReview.read(project: project.path)
+        }
         .confirmationDialog("Train without keeping the result?", isPresented: $confirmReplace) {
             Button("Train without keeping it", role: .destructive) { start() }
         } message: {
@@ -212,6 +245,11 @@ struct TrainView: View {
                 Label("No masks in this project — build them in the Masks panel above to train a subject or background layer.",
                       systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary).padding(.leading, 140)
+            }
+            if let w = maskReviewWarning {
+                Label(w, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange).padding(.leading, 140)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if settings.wrappedValue.layer == .subject {
                 Handle(title: "Outside the mask", help: "Brush's default leaves the masked-out pixels out of the loss, so the room is unsupervised rather than empty — that is what produced the coins run's clean subject and shredded room. Pushed empty premultiplies the ground truth and turns on the L1 on rendered alpha, so the model holds nothing out there. Measured on coins: left unsupervised kept 78.5% of the model's opacity outside the mask, pushed empty 16.2% and nothing beyond half a metre. Only a pushed-empty subject can be merged with a background.") {

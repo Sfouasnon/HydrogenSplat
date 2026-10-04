@@ -262,6 +262,27 @@ lower Size. Look at the preview sheet (yellow edge, magenta Vision region) befor
 Writes `train/dataset/masks/{L,R}/capNNN.png`, `select/masks_preview.jpg`, `masks_vision/`;
 marks train, prune, render and views stale.
 
+### Review
+
+A build ends by checking the masks against each other. A mask that leaves part of the subject
+out is trained as "empty from here" and the model paints that part black from that side, so
+**Train will not start while a flagged view has no decision.** The list is worst first. Each row
+shows the view (red: its mask, blue: the subject as the other views see it, yellow: the piece in
+question) and, beside it, the repaired mask in green.
+
+| Control | What it does |
+|---|---|
+| **Repair** | The repaired mask replaces this view's mask (original kept; train goes stale). "Approximate" repairs rest on the other views' hull, which can be too large near the outline: look first. |
+| **Exclude** | The view is left out of training. Nothing in the dataset changes. |
+| **Keep** | Train on the mask as built: the flag was wrong (the yellow piece is air or background). |
+| **Undo** | Clears the decision; an undone repair puts the original mask back. |
+| **Apply the N repairs that need no look** | Vision's own object where the build had turned it down, and closed holes. |
+| **Exclude the rest** | Every view still undecided is left out of training. |
+| **Check masks / Check again** | `hs masks --check-only` on the masks on disk. Decisions stay with every mask that has not changed. |
+
+The check picks what to look at; it does not decide. Expect a few flags that are wrong.
+Contract and limits: `docs/mask-review.md`.
+
 Skip it unless you want a layer. What has worked: train a full model, build masks from it,
 train the layer.
 
