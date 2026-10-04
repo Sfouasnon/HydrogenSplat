@@ -95,7 +95,8 @@ public struct Manifest: Sendable {
     public let name: String
     public let created: Date?
     public let profileID: String?
-    /// "array" for a camera array (one frame per camera), "mono" for one camera's frames; nil/"clip" for a Hydrogen clip
+    /// "array" for a camera array (one frame per camera), "mono" for one camera (frames as given,
+    /// or a clip that Select picks from); nil for a Hydrogen clip
     public let sourceKind: String?
     public let cameras: [String]
     public let clipPath: String?
@@ -128,6 +129,10 @@ public struct Manifest: Sendable {
     /// A frames source (engine `Project.frames_route`): an array, or one camera's frames ("mono",
     /// 2026-09-21). Both have select done at ingest and solve through monocolmap.py.
     public var isArray: Bool { sourceKind == "array" || sourceKind == "mono" }
+    /// Frames ingested as they were given: an array, photographs, or picks made before ingest.
+    /// There is no clip, so Select has nothing to do. One camera's *clip* (source.kind "mono" with
+    /// a clip, 2026-10-04) is not this: Select picks its frames like a Hydrogen clip's.
+    public var framesOnly: Bool { isArray && clipPath == nil }
 
     /// The furthest stage that is done, for the project list.
     public var lastDone: String? {

@@ -149,6 +149,8 @@ public struct FrameQuality: Decodable, Sendable {
     public let flagText: [String: String]
     public let medians: Medians
     public let measuredEyes: Bool
+    /// 1 for one ordinary camera's clip (no right eye to report), 2 or absent for a Hydrogen clip.
+    public let eyes: Int?
     public let flagCounts: [String: Int]
     public let flagged: Int
     /// Problems with the whole set rather than one frame (every pick clips; a soft stretch).
@@ -158,7 +160,7 @@ public struct FrameQuality: Decodable, Sendable {
     public let trace: Trace
 
     enum CodingKeys: String, CodingKey {
-        case version, fps, thresholds, medians, flagged, warnings, frames, trace
+        case version, fps, thresholds, medians, flagged, warnings, frames, trace, eyes
         case framesTotal = "frames_total"
         case flagText = "flag_text"
         case measuredEyes = "measured_eyes"
@@ -168,9 +170,16 @@ public struct FrameQuality: Decodable, Sendable {
 
     /// The pick that became capture `capNNN` in the solved dataset (pick N is capture N).
     public func frame(cap: String) -> Frame? {
-        guard let n = Int(cap.lowercased().replacingOccurrences(of: "cap", with: "")) else { return nil }
+        let low = cap.lowercased()
+        // a one-camera capture is named after its file: sel012-00345 is pick 12
+        let digits = low.hasPrefix("sel") ? String(low.dropFirst(3).prefix { $0.isNumber })
+                                          : low.replacingOccurrences(of: "cap", with: "")
+        guard let n = Int(digits) else { return nil }
         return frames.first { $0.sel == n }
     }
+
+    /// The right-eye columns have something to show: both eyes were measured, and there are two.
+    public var hasRightEye: Bool { measuredEyes && (eyes ?? 2) != 1 }
 
     public static func path(project: String) -> String {
         (project as NSString).appendingPathComponent("select/quality.json")

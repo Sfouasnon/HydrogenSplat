@@ -183,7 +183,7 @@ struct ProjectDetailView: View {
     private func sourceBox(_ m: Manifest) -> some View {
         GroupBox("Source") {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
-                if m.isArray {
+                if m.framesOnly {
                     row("cameras", m.cameras.isEmpty ? "—" : "\(m.cameras.count): " + m.cameras.joined(separator: " "))
                     row("from", m.originalPath ?? "—")
                     row("md5", m.clipMD5 ?? "—")
@@ -197,7 +197,12 @@ struct ProjectDetailView: View {
                     if let w = m.probe["width"]?.int, let h = m.probe["height"]?.int {
                         row("video", "\(w)×\(h) \(m.probe["codec"]?.string ?? "") · \(m.probe["fps"]?.display ?? "?") fps · \(m.probe["nb_frames"]?.display ?? "?") frames · \(Format.duration(m.probe["duration_s"]?.double))")
                     }
-                    row("profile", m.profileID ?? "—")
+                    if m.isArray {
+                        // one ordinary camera's clip: no stereo calibration applies
+                        row("camera", "one camera · frames picked in Select")
+                    } else {
+                        row("profile", m.profileID ?? "—")
+                    }
                 }
                 row("created", m.created.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "—")
             }

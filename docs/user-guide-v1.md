@@ -31,22 +31,46 @@ re-reads manifests and locks every 3 seconds, so a Terminal run shows up without
 
 ## New Project (Source)
 
-Sidebar ▸ **New Project** (⌘N). **Source** picks Phone or File.
+Sidebar ▸ **New Project** (⌘N). **Source** picks Phone or File. Phone is the Hydrogen One over
+adb; File takes everything else, and a Hydrogen clip too.
+
+### What File takes
+
+| Source | What exactly | What happens to it |
+|---|---|---|
+| **RED Hydrogen One 3D clip** | `VID_*_2x1.h4v` as the phone wrote it: one 3840×1080 stream with the `leia3d` tags. | Copied; frames are picked in Select; solved as a stereo rig with the calibration profile. |
+| **Video from one camera** | `.mov` or `.mp4` from an iPhone or any other camera. 1080p and 4K, upright or sideways, SDR or HLG HDR (iPhone "HDR Video", Dolby Vision 8.4 included). | Copied; frames are picked in Select, the same way; solved as one camera. |
+| **Photographs** | A folder of JPEG, PNG, TIFF or HEIC, all the same size, from one camera and one lens setting. Either one camera's set (taken while moving round the subject), or one frame from each camera of a fixed array (one folder, or one folder per camera with one frame in each). | Every photograph is used. File names become view names: `IMG_0001.JPG` goes in as `IMG-0001` (letters, digits, `-`); the originals are not touched. HEIC is converted to JPEG. |
+| **RED camera array** | A folder of R3D clips, one per camera (`G007_A067_…RDC`). Drop the folder, a clip, or one `.R3D`. | One take becomes the project: the first frame of that take from every camera, rendered through REDline (BT.709, 8-bit). Needs a REDline that runs. |
+
+Not read: PQ (HDR10) video, raw stills (DNG and others), EXR, and a single R3D clip as video.
+Photographs of two sizes (some upright, some sideways) are refused: one camera model needs one size.
 
 | Control | What it does |
 |---|---|
 | **Refresh** (Phone) | `hs phone`: lists adb devices (USB or wireless, USB debugging on) and their `VID_*_2x1.h4v` clips. The newest clip not yet in a project is preselected. |
-| Drop zone / **Choose…** (File) | One `.h4v` or `.mp4`. |
-| **Label** | Folder becomes `YYYY-MM-DD_<label>` (default: the clip's time); `-2`, `-3` are added rather than reuse a folder. |
-| **Ingest** (⌘↩) | Phone: `hs ingest --phone SERIAL --remote PATH`, pulled into `source/` and MD5-compared with the phone. File: `hs ingest --clip PATH`, copied. **Open Project** appears on success. |
+| Drop zone / **Choose…** (File) | A file or a folder. The engine says what it is (`hs source PATH`; nothing is written): the kind, one line of facts, what will be renamed or converted, and why not when it cannot be used. |
+| **These are** (photographs in one folder) | **As detected**, **One camera** or **One per camera**. The engine reads it off the file names (one numbered sequence is one camera); change it if it read them wrong. |
+| **Take**, **Frame size** (RED) | The take to use (three cameras or more), and Full, Half or Quarter of the recorded size. |
+| **Label** | Folder becomes `YYYY-MM-DD_<label>`: the day the source was recorded, then the label (default: the source's own name; for a Hydrogen clip, its time). `-2`, `-3` are added rather than reuse a folder. |
+| **Ingest** (⌘↩) | Phone: `hs ingest --phone SERIAL --remote PATH`, pulled into `source/` and MD5-compared with the phone. File: `hs ingest --clip PATH`, `--frames DIR [--kind mono\|array]` or `--r3d DIR --take NNN [--res 2]`, whichever the engine's report gives. **Open Project** appears on success. |
 
 The pull runs at USB/Wi-Fi speed with an ETA; the checks after it take seconds:
 `clip_is_2x1_video` (one 3840×1080 stream tagged `leia3d_layout=2x1`, anything else refused),
 `pull_matches_phone`, `profile_matched` (no calibration profile for the mode blocks). Writes
 `source/<clip>`, `<clip>.md5`, `probe.json`.
 
-No button for frames sources (a mono take, camera-named frames, an R3D array); ingest marks
-select done for them:
+A one-camera clip is checked before anything is copied (`clip_is_video`), and gets no profile.
+Photographs and RED arrays land in `source/frames/`, and ingest marks select done for them:
+there is nothing to pick. The same from Terminal:
+
+```
+hs source PATH
+```
+
+```
+hs ingest -p P --clip IMG_2525.MOV
+```
 
 ```
 hs ingest -p P --frames DIR [--kind mono|array]
@@ -63,7 +87,8 @@ The **Source** rail item shows the clip or cameras, MD5, format and profile, and
 
 ### Select frames
 
-Hydrogen clips only; array and mono projects say there is nothing to select.
+For a clip: a Hydrogen clip, or one camera's video (one eye in the report, and the frame count
+is judged as views: 50–400). Photographs and arrays say there is nothing to select.
 
 | Control | What it does |
 |---|---|

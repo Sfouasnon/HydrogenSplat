@@ -147,6 +147,22 @@ public final class ProjectStore: ObservableObject {
         return clean.isEmpty ? stem : clean
     }
 
+    /// A folder name for a source whose own name carries no date (everything but a Hydrogen clip):
+    /// "2026-09-28" and "IMG-2525" → "2026-09-28_IMG-2525"; a label replaces the stem. `date` is
+    /// when the source was recorded, as the engine's probe reports it.
+    public nonisolated static func suggestedName(date: String?, stem: String, label: String = "") -> String {
+        func clean(_ s: String) -> String {
+            s.trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "[^A-Za-z0-9_-]+", with: "-", options: .regularExpression)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        }
+        let typed = clean(label)
+        let own = clean(stem)
+        let tail = typed.isEmpty ? (own.isEmpty ? "project" : own) : typed
+        guard let d = date, d.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else { return tail }
+        return "\(d)_\(tail)"
+    }
+
     /// `name`, or `name-2`, `name-3`… so an ingest never lands in an existing project.
     public func uniqueFolder(_ name: String) -> String {
         let fm = FileManager.default

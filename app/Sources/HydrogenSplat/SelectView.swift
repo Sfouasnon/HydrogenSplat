@@ -42,9 +42,9 @@ struct SelectView: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
-                if manifest.isArray {
+                if manifest.framesOnly {
                     Text(manifest.sourceKind == "mono"
-                         ? "A mono project was ingested as frames already picked — nothing to select here."
+                         ? "One camera's frames were ingested as they were given (photographs, or picks made earlier) — every one is used, nothing to select here."
                          : "An array project has one frame per camera — ingest already did the selecting.")
                         .foregroundStyle(.secondary)
                     if let n = frameCount {
@@ -79,8 +79,8 @@ struct SelectView: View {
         } label: {
             HStack {
                 // an array has nothing to select: this box is its solve
-                Text(manifest.isArray ? "Solve" : "Select frames").font(.headline)
-                if let s = manifest.isArray ? solveStage : selectStage { StatusBadge(status: s.status) }
+                Text(manifest.framesOnly ? "Solve" : "Select frames").font(.headline)
+                if let s = manifest.framesOnly ? solveStage : selectStage { StatusBadge(status: s.status) }
             }
         }
         .task(id: reloadKey) { quality = FrameQuality.load(project: project.path) }
@@ -205,7 +205,7 @@ struct SelectView: View {
     private var frameCount: Int? {
         if let n = selectStage?.metrics["frames_selected"]?.int ?? selectStage?.metrics["selected"]?.int { return n }
         if let q = quality { return q.frames.count }
-        return manifest.isArray && !manifest.cameras.isEmpty ? manifest.cameras.count : nil
+        return manifest.framesOnly && !manifest.cameras.isEmpty ? manifest.cameras.count : nil
     }
 
     /// Re-estimate on appear, after every select run and whenever the frame count changes.
@@ -218,7 +218,7 @@ struct SelectView: View {
     private func loadEstimate() async {
         estimate = nil
         estimating = false
-        guard manifest.isArray || selectDone, model.config.problems.isEmpty else { return }
+        guard manifest.framesOnly || selectDone, model.config.problems.isEmpty else { return }
         estimating = true
         let e = await SolveEstimate.load(config: model.config, project: project.path)
         if Task.isCancelled { return }
@@ -261,7 +261,7 @@ struct SelectView: View {
                 Button(running && queue?.steps.first?.title == "Solve" ? "Solving…" : solveLabel) { startSolve() }
                     .disabled(running || lockAlive || !model.config.problems.isEmpty)
                     .help("hs solve: COLMAP on the selected frames. Training unlocks when it is done.")
-                if manifest.isArray, lockAlive, let l = project.lock {
+                if manifest.framesOnly, lockAlive, let l = project.lock {
                     // a clip project says this beside Select Frames already
                     Label("\(l.stage ?? "a stage") is running", systemImage: "lock.fill").foregroundStyle(.secondary)
                 }
@@ -548,10 +548,12 @@ struct FrameCard: View {
             row("Exposure", frame.ev.map { String(format: "%+.2f EV", $0) } ?? "—",
                 detail: frame.dark.flatMap { $0 > 0.01 ? String(format: "%.0f%% crushed", $0 * 100) : nil },
                 warn: frame.flags.contains("exposure") || frame.flags.contains("crushed"))
-            if quality.measuredEyes {
+            if quality.hasRightEye {
                 row("Right eye", frame.focusRRel.map { String(format: "focus %.2f×", $0) } ?? "—",
                     detail: frame.eyeEV.map { String(format: "%+.2f EV vs L", $0) },
                     warn: frame.flags.contains("right_soft") || frame.flags.contains("eye_exposure"))
+            }
+            if quality.measuredEyes {
                 row("Noise", frame.noise.map { String(format: "%.2f", $0) } ?? "—",
                     detail: frame.noiseRel.map { String(format: "%.2f× median", $0) },
                     warn: frame.flags.contains("noisy"))
