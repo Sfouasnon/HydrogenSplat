@@ -58,7 +58,9 @@ hs/
 ## Stages
 
 ```
+hs source  PATH                                                       what a file or folder would be ingested as: stereo | video | stills | r3d (no project, writes nothing)
 hs ingest  -p P --clip VID_..._2x1.h4v [--link]                       copy, MD5, ffprobe, validate 2x1 video, match the calibration profile
+hs ingest  -p P --clip IMG_2525.MOV [--link]                          any other camera's video: one camera (source.kind mono); hs select picks its frames
 hs ingest  -p P --frames DIR | --r3d RDM_DIR --take 067 [--res 1]     frames source, select is marked done: array (one frame per camera; REDline renders the R3Ds)
            [--kind auto|mono|array]                                   or mono (one camera's frames, e.g. select_frames.py --mono picks) — see below
 hs select  -p P [--residual 1.5 --max-gap 90 --end N --dry-run]      frames + selection.json + quality.json + thumbs/ + contact.jpg
@@ -102,6 +104,58 @@ metrics, checks and artifacts in `manifest.json`. `-v` also streams the child's 
 `{"ev":"log"}` events. Opening a project reconciles it first: a stage the manifest still calls
 `running` whose recorded pid is gone becomes `failed — interrupted`, so a ^C'd or crashed run
 reports that instead of blocking the next stage with "solve is running".
+
+## Any source through one door (2026-10-04)
+
+`hs ingest` took four kinds of source, and the app's New Project page took one. A phone orbit
+went through `select_frames.py --mono` and `hs ingest --frames` by hand, and a folder straight
+off a camera was refused for the underscore in `IMG_0001.JPG`. Now:
+
+```
+hs source PATH                              # what is it? one `source` metric; no project, nothing written
+hs ingest -p P --clip IMG_2525.MOV          # one ordinary camera's clip
+hs select -p P                              # ...picked in the project (select_frames.py --mono)
+hs ingest -p P --frames ~/Pictures/helmet   # photographs, names made safe, HEIC converted
+hs ingest -p P --r3d RED_Footage --take 067
+```
+
+- **`--clip` decides by the container's own tags.** A Hydrogen clip carries `leia3d_*` tags in
+  its comment and nothing else does; anything without them is one camera (`source.kind: mono`
+  with a `clip`). It is read before it is copied: no video stream, PQ HDR, or a 3840×1080 /
+  `_2x1` clip that has lost its tags (it would be read as one very wide picture) is refused first.
+- **A one-camera clip is picked by `hs select`**, like a Hydrogen clip: same parallax rule, same
+  flags, `--mono` added, picks named `selNNN-FFFFF.jpg`. quality.json has `eyes: 1`, the right-eye
+  columns are null, and the exposure reference is named after its file. The frame count is
+  judged as views (50–400; the Stormtrooper orbit used 267, the greeting card 101 — where those
+  sit, not a calibrated range). `Project.frames_route` is true, so solve is monocolmap.py.
+  Frames ingested as frames (`--frames`) still have nothing to select.
+- **File names become view names** (`sourceprobe.safe_names`): anything but letters, digits and
+  `-` turns into `-`, because an underscore collides with the `_L` / `_R` suffix. Two files that
+  come out the same get `-2`. The manifest's `cameras[*].origin` keeps the original path, and
+  `names_made_safe` says how many changed. The originals are never touched.
+- **HEIC** goes through macOS's `sips` to JPEG at quality 95 (OpenCV has no HEIC reader).
+  `HS_SIPS` overrides the executable. Hidden files (`.DS_Store`, a card's `._` twins) are skipped.
+- **`hs source` on a RED folder** lists every take with its cameras, its date and what spoils
+  it (a camera with two clips of the take), proposes the first with three cameras or more, and
+  says whether a REDline runs. Given one `.R3D`, an `.RDC` or an `.RDM`, it climbs to the folder
+  that holds the array: out of the clip and volume folders, then up to two levels more while
+  each adds cameras and until the take has three. It stops at three so the next folder's shoot
+  with the same take number is not swept in, and never passes a mount point or the home folder.
+  The clips are found by a walk that follows no links (`sourceprobe.r3d_files`); `hs ingest
+  --r3d` uses the same walk, so brackets in a folder name are names.
+- **One picture is not a clip.** ffprobe reads an EXR, a DNG or a BMP as a video stream of no
+  length; that is refused as a single picture rather than ingested as a one-frame "orbit".
+- **Exposure ▸ a frame you pick** works on a one-camera set: `--reference cap012` (what the app
+  sends) finds the view named `sel012-…`, and a view's own name is accepted too.
+- **`hs selftest`'s ingest call** gave `hs ingest` a clip and no `phone` attribute, which has
+  raised `AttributeError` since the phone route was added; ingest no longer requires it.
+
+Run on real footage: an iPhone portrait HLG clip (1080×1920, 1,518 frames) reads as it is
+displayed, ingests as mono, and `hs select --end 500` picks 37 frames in 29 s; a Hydrogen clip
+reads as stereo. Not run: a solve from a clip picked this way, HEIC through the real `sips`, a
+real stills set, a real RED tree. Still not read: PQ video, raw stills, EXR, an R3D clip as video
+(ingest takes frame 1 only). A folder of photographs with a second folder beside it on the card
+(`100APPLE`, `101APPLE`) is refused as "one frame per camera expected": put them in one folder.
 
 ## The masks are checked before anything is trained on them (2026-10-04)
 

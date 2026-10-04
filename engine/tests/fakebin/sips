@@ -1,0 +1,4 @@
+#!/bin/sh
+# stand-in for macOS's sips (see ../fake_sips.py)
+HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$HERE/../../.."
+exec "${HS_PYTHON:-$ROOT/.venv/bin/python}" "$HERE/../fake_sips.py" "$@"

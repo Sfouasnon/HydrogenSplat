@@ -30,6 +30,7 @@ eye_ev  log2(right / left linear luma). A constant offset between eyes is normal
         offset.
 """
 import math
+import os
 
 import numpy as np
 
@@ -63,8 +64,10 @@ REFERENCE_BLOCKERS = {"soft", "exposure", "eye_exposure", "right_soft", "clipped
                       "untracked"}
 
 
-def pick_reference(frames, ev_tol=EV_TOL):
+def pick_reference(frames, ev_tol=EV_TOL, mono=False):
     """The pick to match every view's exposure to, with the reason, or None.
+
+    mono: the capture is named after its file (sel012-00345), not capNNN.
 
     Among picks with none of REFERENCE_BLOCKERS and within ev_tol of the set's median exposure,
     the one with the least clipping (worse eye). Least clipping because a gain can only move
@@ -88,7 +91,10 @@ def pick_reference(frames, ev_tol=EV_TOL):
     why = (f"least clipping of the {len(pool)} {'picks' if relaxed else 'clean picks within ' + format(ev_tol, '.2f') + ' EV of the median'}: "
            f"{100 * worst_clip(best):.1f}% at 250+ vs {100 * med:.1f}% median, {best['ev']:+.2f} EV"
            + (f", focus {best['focus_rel']:.2f}x" if best.get("focus_rel") is not None else ""))
-    return {"sel": best["sel"], "frame": best["frame"], "cap": f"cap{best['sel']:03d}",
+    cap = f"cap{best['sel']:03d}"
+    if mono:
+        cap = os.path.splitext(best["file"])[0] if best.get("file") else f"sel{best['sel']:03d}-{best['frame']:05d}"
+    return {"sel": best["sel"], "frame": best["frame"], "cap": cap,
             "ev": best["ev"], "clip": round(worst_clip(best), 5), "relaxed": relaxed, "why": why,
             "pool": len(pool)}
 
@@ -296,9 +302,10 @@ def analyse(selection, measured=None):
         "medians": {"sharp": _r(med_sharp, 1), "focus": _r(med_focus, 4), "clip": _r(med_clip, 5), "luma": _r(med_luma, 6), "eye_ev": _r(med_eye, 3),
                     "noise": _r(med_noise, 3)},
         "measured_eyes": bool(measured),
+        "eyes": 1 if selection.get("mono") else 2,
         "flag_counts": counts,
         "flagged": sum(1 for fr in frames if fr["flags"]),
-        "exposure_reference": pick_reference(frames),
+        "exposure_reference": pick_reference(frames, mono=bool(selection.get("mono"))),
         "keyframes": keyframe_summary(selection),
         "frames": frames,
         "trace": {"frame": t_frames, "sharp": tr.get("sharp", []),

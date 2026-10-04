@@ -538,19 +538,28 @@ def _reference(a, pj, views, med, M):
                                     hint="re-run hs select (it writes the quality report), or name a capture")
         q = json.load(open(qp))
         n_caps = sum(1 for e, _ in views if e == "L")
-        if n_caps != len(q.get("frames", [])):
+        # one camera's picks are named after their files, so a pick finds its view by name even
+        # when the solve placed only some of them; a stereo pick is capture N by position
+        if q.get("eyes", 2) != 1 and n_caps != len(q.get("frames", [])):
             raise events.StageError(f"the quality report has {len(q.get('frames', []))} picks but the dataset "
                                     f"has {n_caps} captures, so pick N is not capture N",
                                     hint="re-run hs select and hs solve, or name a capture")
-        pick = q.get("exposure_reference") or frame_quality.pick_reference(q["frames"])
+        pick = q.get("exposure_reference") or frame_quality.pick_reference(q["frames"], mono=q.get("eyes", 2) == 1)
         if not pick:
             raise events.StageError("no pick in the quality report has an exposure measurement")
         cap, why = pick["cap"], f"auto: {pick['why']} (source frame {pick['frame']})"
+    elif _view_for(views, r) is not None:        # a view by its own name: sel012-00345
+        cap, why = r, "chosen by hand"
     else:
         digits = r.lower().removeprefix("cap")
         if not digits.isdigit():
-            raise events.StageError(f"--reference {r!r}: use median, auto, capNNN, NNN, board or checker")
+            raise events.StageError(f"--reference {r!r}: use median, auto, capNNN, NNN, a view's name, board or checker")
         cap, why = f"cap{int(digits):03d}", "chosen by hand"
+        if _view_for(views, cap) is None:
+            # one camera's views are named after the picks: pick 12 is sel012-FFFFF
+            named = [os.path.splitext(f)[0] for e, f in views if e == "L" and f.startswith(f"sel{int(digits):03d}-")]
+            if len(named) == 1:
+                cap = named[0]
     key = _view_for(views, cap)
     if key is None:
         raise events.StageError(f"--reference {cap}: no left-eye view {cap} in the dataset")

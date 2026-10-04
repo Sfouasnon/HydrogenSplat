@@ -1,5 +1,10 @@
 """hs select — frame selection by parallax (strategy §4.3) = select_frames.py, unchanged.
 
+A Hydrogen clip, or (2026-10-04) one ordinary camera's clip (`hs ingest --clip` with any other
+video: source.kind "mono" with a clip). The second runs select_frames.py --mono: the same
+selection on the whole frame, picks named selNNN-FFFFF.jpg, one eye in the report, and a frame
+count judged as views of one camera rather than as stereo captures.
+
 Defaults are the calibrated ones (residual 1.5 px at 480 wide, min gap 6, max 90, search 4,
 clip < 2%). Adds: the checks — frame count in 30–120, median gap 6–15, fraction of max-gap
 picks < 15% — and select/quality.json: every pick's sharpness (Laplacian variance), exposure off
@@ -55,7 +60,8 @@ def add_parser(sub):
 
 def run(a, pj):
     pj.require(STAGE)
-    if pj.frames_route:
+    mono = pj.source_kind == "mono" and bool(pj.clip)     # one camera's clip: picked here, with --mono
+    if pj.frames_route and not mono:
         what = ("an array project has one frame per camera" if pj.source_kind == "array"
                 else "a mono project was ingested as frames already picked (select_frames.py --mono)")
         raise events.StageError(f"{what}; ingest already marked select done",
@@ -71,6 +77,8 @@ def run(a, pj):
                               "--start", a.start, "--end", a.end)
     if a.dry_run:
         argv.append("--dry-run")
+    if mono:
+        argv.append("--mono")
     # new flags only when set, so a default run's command line is what it always was
     # (getattr: selftest builds its Namespace by hand)
     keyframes = bool(getattr(a, "keyframes", False))
@@ -144,7 +152,13 @@ def run(a, pj):
     if knee is not None:
         pj.metric(STAGE, "highlight_knee", knee)
 
-    pj.check(STAGE, "frame_count_in_range", 30 <= n <= 120, value=f"{n} (want 30–120; rig6 65)")
+    if mono:
+        # every pick is ONE view here, not a stereo pair: the Stormtrooper orbit used 267, the
+        # greeting card 101. The range is where those sit, not a calibrated limit.
+        pj.check(STAGE, "frame_count_in_range", 50 <= n <= 400,
+                 value=f"{n} (one camera: want 50–400; the Stormtrooper orbit used 267)")
+    else:
+        pj.check(STAGE, "frame_count_in_range", 30 <= n <= 120, value=f"{n} (want 30–120; rig6 65)")
     if keyframes and gop:
         # every gap is a whole number of GOPs; more than two in the median means the parallax
         # rule is routinely waiting past a keyframe it could have used — or the keyframes are sparse
@@ -173,7 +187,7 @@ def run(a, pj):
         events.start(STAGE, "measure")
         try:
             measured = frame_measure.measure(frames_dir, os.path.join(select_dir, "thumbs"),
-                                             work_width=a.work_width)
+                                             work_width=a.work_width, mono=mono)
         except Exception as e:
             events.log(STAGE, f"[hs] measuring the written frames failed: {e!r}")
     quality = frame_quality.analyse(sel, measured)
@@ -194,7 +208,8 @@ def run(a, pj):
     if not a.dry_run:
         events.start(STAGE, "contact")
         try:
-            contact = frame_measure.contact_sheet(frames_dir, quality, os.path.join(select_dir, "contact.jpg"))
+            contact = frame_measure.contact_sheet(frames_dir, quality, os.path.join(select_dir, "contact.jpg"),
+                                                  mono=mono)
             if contact:
                 pj.artifact(STAGE, contact, "image")
         except Exception as e:

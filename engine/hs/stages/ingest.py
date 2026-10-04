@@ -1,12 +1,19 @@
-"""hs ingest — bring a clip into a project and validate it (strategy §4.1, file-drop path).
+"""hs ingest — bring a source into a project and validate it (strategy §4.1, file-drop path).
 
-Two routes: a clip file (``--clip``, the "dropped onto the window" path; copied or linked), or
-a clip on the phone (``--phone SERIAL --remote /sdcard/DCIM/Camera/VID_…``) pulled over adb
-straight into ``source/`` with byte progress and an MD5 compared against the phone's own.
+Two routes for a Hydrogen clip: a clip file (``--clip``, the "dropped onto the window" path; copied
+or linked), or a clip on the phone (``--phone SERIAL --remote /sdcard/DCIM/Camera/VID_…``) pulled
+over adb straight into ``source/`` with byte progress and an MD5 compared against the phone's own.
 Then MD5 it, ffprobe it, and refuse anything that is not one 3840x1080 video stream
 whose comment tag says ``leia3d_layout=2x1`` / ``leia3d_width_per_view=1920``. The matching
 calibration profile is chosen by the clip's match keys and recorded in the manifest; no
 match blocks with "no calibration for this mode". Listing the phone is ``hs phone``.
+
+``--clip`` with any other video (2026-10-04) is **one ordinary camera**: an iPhone orbit, say. The
+container's comment says which it is: a Hydrogen clip carries ``leia3d_*`` tags, nothing else does.
+The clip is copied into ``source/`` the same way, ``source.kind`` is ``mono``, and ``hs select``
+then picks the frames from it (select_frames.py --mono), so the picks can be redone from the app
+like a Hydrogen clip's. SDR and HLG HDR are read; PQ is refused (select_frames.py --hdr).
+``hs source PATH`` says what a file or folder would be taken as, without a project.
 
 Third route, the **array** source (one photograph per camera, every camera the same body and
 lens): ``--frames DIR`` takes a folder of PNG/JPEG/TIFF frames named by camera, ``--r3d DIR
@@ -14,6 +21,10 @@ lens): ``--frames DIR`` takes a folder of PNG/JPEG/TIFF frames named by camera, 
 camera position (``G007_A067`` -> ``GA``) and renders its first frame through REDline (16-bit
 BT.709 TIFF, converted to PNG). Frames land in ``source/frames/``; there is no clip and
 nothing to select, so ingest also marks ``select`` done and ``hs solve`` runs monocolmap.py.
+A file name becomes a view name, and a view name is letters, digits and '-' (an underscore
+would collide with the _L / _R suffix): ``IMG_0001.JPG`` goes in as ``IMG-0001``, and the
+manifest keeps where each frame came from. iPhone photographs (HEIC) are converted to JPEG
+through macOS's sips. Hidden files (.DS_Store, the ._ twins on a camera card) are skipped.
 
 ``source.kind`` says which of two things the frames are. ``array``: one frame from each of
 several cameras — per-camera subfolders (one frame each), an R3D take, or a flat folder of
@@ -24,7 +35,6 @@ differ where the number of cameras matters. ``--kind`` overrides the guess for a
 A manifest without ``kind`` is a Hydrogen clip; mono data ingested before ``mono`` existed is
 tagged ``array`` and keeps working as one.
 """
-import glob
 import json
 import os
 import re
@@ -33,11 +43,12 @@ import subprocess
 import tempfile
 import time
 
-from .. import calib, events, runner
+from .. import calib, events, runner, sourceprobe
 from ..project import dir_digest, md5_file, tool_versions
 
 STAGE = "ingest"
-FRAME_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff")
+FRAME_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff")      # what source/frames holds
+SOURCE_EXTS = FRAME_EXTS + sourceprobe.HEIC_EXTS             # what a frames folder may hold
 # RED clip names: <reel><cam>NNN_<take>_<hash>: G007_A067_04036V -> camera "GA", take "067"
 RE_R3D_NAME = re.compile(r"^([A-Z])\d{3}_([A-Z])(\d{3})_")
 # REDline (--format 1 = TIFF, --gammaCurve 1 / --colorSpace 1 = BT.709): a display-referred
@@ -47,7 +58,9 @@ REDLINE_ARGS = ["--format", "1", "--gammaCurve", "1", "--colorSpace", "1", "--fr
 
 def add_parser(sub):
     p = sub.add_parser("ingest", help="copy a clip into the project, MD5 + ffprobe + validate, pick the profile")
-    p.add_argument("--clip", default=None, help="VID_*_2x1.h4v (a plain MP4)")
+    p.add_argument("--clip", default=None,
+                   help="a video file: a Hydrogen VID_*_2x1.h4v (stereo), or any other camera's "
+                        "clip (.mov/.mp4: one camera, frames picked by hs select)")
     p.add_argument("--phone", default=None, metavar="SERIAL", help="pull from this adb device instead of --clip")
     p.add_argument("--remote", default=None, help="with --phone: the clip's path on the phone")
     p.add_argument("--adb", default=os.environ.get("HS_ADB", "adb"))
@@ -98,10 +111,14 @@ def frames_layout(src_root):
     """-> (kind or None, [(view name, source path)], why). Per-camera subfolders (two or more,
     each holding one frame) are an array whatever --kind says; a single subfolder is looked into;
     a flat folder is left to guess_flat_kind / --kind (kind None)."""
-    entries = sorted(os.listdir(src_root))
-    flat = [f for f in entries if f.lower().endswith(FRAME_EXTS) and os.path.isfile(os.path.join(src_root, f))]
+    entries = sorted(e for e in os.listdir(src_root) if not sourceprobe.hidden(e))
+
+    def frame(d, f):
+        return (not sourceprobe.hidden(f)) and f.lower().endswith(SOURCE_EXTS) and os.path.isfile(os.path.join(d, f))
+
+    flat = [f for f in entries if frame(src_root, f)]
     subs = [d for d in entries if os.path.isdir(os.path.join(src_root, d))
-            and any(f.lower().endswith(FRAME_EXTS) for f in os.listdir(os.path.join(src_root, d)))]
+            and any(frame(os.path.join(src_root, d), f) for f in os.listdir(os.path.join(src_root, d)))]
     if flat:
         return None, [(os.path.splitext(f)[0], os.path.join(src_root, f)) for f in flat], None
     if len(subs) == 1:
@@ -109,7 +126,7 @@ def frames_layout(src_root):
     if len(subs) >= 2:
         views = []
         for d in subs:
-            fs = sorted(f for f in os.listdir(os.path.join(src_root, d)) if f.lower().endswith(FRAME_EXTS))
+            fs = sorted(f for f in os.listdir(os.path.join(src_root, d)) if frame(os.path.join(src_root, d), f))
             if len(fs) != 1:
                 raise events.StageError(
                     f"camera folder {d!r} holds {len(fs)} frames; an array takes one frame per camera",
@@ -159,7 +176,7 @@ def r3d_clips(root, take):
     """{camera: path} of the ``*_001.R3D`` files for one take under an RDM tree."""
     take = f"{int(take):03d}"
     out = {}
-    for p in sorted(glob.glob(os.path.join(root, "**", "*.R3D"), recursive=True)):
+    for p in sourceprobe.r3d_files(root):        # a walk: no links followed, [brackets] are names
         m = RE_R3D_NAME.match(os.path.basename(p))
         if not m or m.group(3) != take or not p.endswith("_001.R3D"):
             continue
@@ -242,7 +259,11 @@ def run_array(a, pj):
         events.start(STAGE, "copy")
         kind, views, kind_why = frames_layout(src_root)
         if not views:
-            raise events.StageError(f"no frames ({', '.join(FRAME_EXTS)}) in {src_root}")
+            raise events.StageError(f"no frames ({', '.join(SOURCE_EXTS)}) in {src_root}")
+        # a file name becomes a view name: IMG_0001 goes in as IMG-0001 (sourceprobe.safe_names)
+        given = [v for v, _ in views]
+        views = [(n, src) for n, (_v, src) in zip(sourceprobe.safe_names(given), views)]
+        renamed = [(old, new) for old, (new, _s) in zip(given, views) if old != new]
         if kind is None:                        # a flat folder: --kind, else the names decide
             if want != "auto":
                 kind, kind_why = want, f"--kind {want}"
@@ -250,15 +271,25 @@ def run_array(a, pj):
                 kind, kind_why = guess_flat_kind(os.path.dirname(views[0][1]), [v for v, _ in views])
         elif want not in ("auto", kind):
             raise events.StageError(f"--kind {want}, but {src_root} has {kind_why}: that is an {kind}")
-        for cam, src in views:
-            if not re.fullmatch(r"[A-Za-z0-9-]+", cam):
-                raise events.StageError(f"frame name {cam!r} must be letters, digits or '-' (it becomes the view name)")
-            dst = os.path.join(fdir, cam + os.path.splitext(src)[1])
-            if a.link:
-                os.symlink(src, dst)
+        heic = 0
+        for i, (cam, src) in enumerate(views):
+            ext = os.path.splitext(src)[1]
+            if ext.lower() in sourceprobe.HEIC_EXTS:         # OpenCV cannot read it; sips can
+                sourceprobe.convert_heic(src, os.path.join(fdir, cam + ".jpg"))
+                heic += 1
+            elif a.link:
+                os.symlink(src, os.path.join(fdir, cam + ext))
             else:
-                shutil.copy2(src, dst)
+                shutil.copy2(src, os.path.join(fdir, cam + ext))
             origin[cam] = _where(pj, src)
+            events.progress(STAGE, i + 1, len(views), step="copy")
+        if renamed:
+            pj.metric(STAGE, "frames_renamed", len(renamed))
+            pj.check(STAGE, "names_made_safe", True,
+                     value=f"{len(renamed)} of {len(views)} file names changed to view names "
+                           f"(letters, digits, '-'), e.g. {renamed[0][0]} → {renamed[0][1]}")
+        if heic:
+            pj.metric(STAGE, "heic_converted", heic)
 
     events.start(STAGE, "probe")
     frames, sizes = [], {}
@@ -309,7 +340,8 @@ def run_array(a, pj):
         os.symlink(os.path.relpath(os.path.join(fdir, fr["file"]), os.path.dirname(link)), link)
     pj.metric("select", "selected", n)
     pj.metric("select", "note", "array source: one frame per camera, nothing to select" if kind == "array"
-              else "mono source: the frames were picked before ingest (select_frames.py --mono)")
+              else "mono source: one camera's frames as they were given (photographs, or picks made before "
+                   "ingest with select_frames.py --mono); every one is used")
     pj.finish("select", ok=True)
 
 
@@ -392,13 +424,74 @@ def pull(a, pj, dst):
     return m[0] if m and len(m[0]) == 32 else None
 
 
+def run_video(a, pj, src, probe):
+    """--clip with an ordinary video: one camera. The clip goes into source/ like a Hydrogen
+    clip; hs select picks the frames from it (select_frames.py --mono) and solve takes the
+    frames route. Nothing is copied before the stream has been read and accepted."""
+    facts, problems = sourceprobe.video_facts(probe)
+    if facts and not problems and ((facts["width"], facts["height"]) == (3840, 1080) or "_2x1" in os.path.basename(src)):
+        problems = ["this looks like a Hydrogen 2x1 clip without its leia3d tags (re-encoded?): it would be "
+                    "read as one very wide picture, both eyes in it. Use the clip as the phone wrote it"]
+    pj.begin(STAGE, argv=_argv(a))
+    pj.check(STAGE, "clip_is_video", not problems,
+             value=sourceprobe.video_line(facts) if not problems else "; ".join(problems))
+    if problems:
+        raise events.StageError("clip rejected: " + "; ".join(problems),
+                                hint="hs source PATH says what a file or folder would be taken as")
+    events.start(STAGE, "copy")
+    dst = pj.path("source", os.path.basename(src))
+    if a.link:
+        os.symlink(src, dst)
+    else:
+        shutil.copy2(src, dst)
+    events.start(STAGE, "md5")
+    digest = md5_file(dst)
+    with open(dst + ".md5", "w") as f:
+        f.write(f"{digest}  {os.path.basename(dst)}\n")
+    pj.metric(STAGE, "clip_md5", digest)
+    pj.metric(STAGE, "clip_bytes", os.path.getsize(dst))
+    json.dump(probe, open(pj.path("source", "probe.json"), "w"), indent=1)
+    pj.artifact(STAGE, pj.path("source", "probe.json"), "json")
+    for k in ("width", "height", "fps", "nb_frames", "duration_s", "codec"):
+        pj.metric(STAGE, k, facts[k])
+    if facts["hdr"]:
+        pj.metric(STAGE, "hdr", facts["hdr"])
+    if facts["rotation"]:
+        pj.metric(STAGE, "rotation", facts["rotation"])
+    why = "a video from one camera (no leia3d tags in the container)"
+    pj.metric(STAGE, "source_kind", "mono")
+    pj.metric(STAGE, "source_kind_why", why)
+    pj.m["profile_id"] = None
+    pj.m["profile_path"] = None
+    pj.m["source"] = {"kind": "mono", "kind_why": why, "clip": pj.rel(dst), "md5": digest,
+                      "original_path": src, "probe": facts}
+    for k, v in tool_versions().items():
+        pj.record_tool(k, v)
+    pj.finish(STAGE, ok=True)
+
+
 def run(a, pj):
     if getattr(a, "frames", None) or getattr(a, "r3d", None):
         if a.clip or a.phone:
             raise events.StageError("an array source (--frames / --r3d) cannot be combined with --clip / --phone")
         return run_array(a, pj)
+    a.phone, a.remote = getattr(a, "phone", None), getattr(a, "remote", None)   # selftest gives a clip only
     if bool(a.clip) == bool(a.phone):
         raise events.StageError("give exactly one of --clip, --phone SERIAL --remote PATH, --frames DIR, --r3d DIR --take NNN")
+    if a.clip:
+        # which camera wrote it decides the route, and the container says which: a Hydrogen clip
+        # carries leia3d_* tags, no other camera's does
+        first = os.path.abspath(os.path.expanduser(a.clip))
+        if not os.path.isfile(first):
+            raise events.StageError(f"clip not found: {first}")
+        try:
+            probe0 = sourceprobe.ffprobe_json(a.ffprobe, first)
+        except events.StageError as e:
+            pj.begin(STAGE, argv=_argv(a))       # so the refusal is the project's record, not an empty folder
+            pj.check(STAGE, "clip_is_video", False, value=str(e))
+            raise
+        if not sourceprobe.leia_tags(probe0):
+            return run_video(a, pj, first, probe0)
     if a.phone:
         if not a.remote:
             raise events.StageError("--phone needs --remote /sdcard/DCIM/Camera/VID_…_2x1.h4v")

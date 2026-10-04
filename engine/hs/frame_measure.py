@@ -1,5 +1,8 @@
 """Measure the frames hs select wrote, both eyes, and draw the contact sheet.
 
+One ordinary camera's clip (select_frames.py --mono, picks named selNNN-FFFFF.jpg) has one eye:
+the whole frame is measured as the left, and the right-eye columns are None.
+
 The selector sees only the left eye at work width while it walks the clip. The written frames
 are full-resolution 2x1 JPEGs, so this is where the right eye and noise get measured, the
 per-frame thumbnails the app shows are cut, and contact.jpg is drawn with each pick's numbers
@@ -11,6 +14,7 @@ import re
 import numpy as np
 
 FILE_RE = re.compile(r"^VID_(\d+)_(\d+)_2x1\.jpg$", re.I)
+MONO_RE = re.compile(r"^sel(\d+)-(\d+)\.jpg$", re.I)
 _LINEAR = ((np.arange(256) / 255.0) ** 2.2).astype(np.float64)
 
 
@@ -18,7 +22,7 @@ def frame_files(frames_dir):
     """{source frame index: file name} for the frames the selector wrote."""
     out = {}
     for f in sorted(os.listdir(frames_dir)):
-        m = FILE_RE.match(f)
+        m = FILE_RE.match(f) or MONO_RE.match(f)
         if m:
             out[int(m.group(2))] = f
     return out
@@ -37,15 +41,23 @@ def noise_estimate(gray):
     return float(lap[flat].mean())
 
 
-def measure(frames_dir, thumbs_dir, work_width=480, thumb_w=360):
+def measure(frames_dir, thumbs_dir, work_width=480, thumb_w=360, mono=False):
     """{source frame: {file, thumb, sharp_R, std_R, luma_R, clip_R, noise}}; writes one left-eye
-    thumbnail per frame into thumbs_dir."""
+    thumbnail per frame into thumbs_dir. mono: the frame is one view — the thumbnail and the noise
+    are of all of it and the right-eye numbers are None."""
     import cv2
     os.makedirs(thumbs_dir, exist_ok=True)
     out = {}
     for fi, name in frame_files(frames_dir).items():
         im = cv2.imread(os.path.join(frames_dir, name), cv2.IMREAD_COLOR)
         if im is None:
+            continue
+        if mono:
+            th = cv2.resize(im, (thumb_w, int(round(thumb_w * im.shape[0] / im.shape[1]))), interpolation=cv2.INTER_AREA)
+            cv2.imwrite(os.path.join(thumbs_dir, name), th, [cv2.IMWRITE_JPEG_QUALITY, 88])
+            out[fi] = {"file": name, "thumb": os.path.join(os.path.basename(thumbs_dir), name),
+                       "sharp_R": None, "std_R": None, "luma_R": None, "clip_R": None,
+                       "noise": noise_estimate(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY))}
             continue
         half = im.shape[1] // 2
         L, R = im[:, :half], im[:, half:]
@@ -67,7 +79,7 @@ def measure(frames_dir, thumbs_dir, work_width=480, thumb_w=360):
     return out
 
 
-def contact_sheet(frames_dir, quality, out_path, thumb_w=240, per_row=8):
+def contact_sheet(frames_dir, quality, out_path, thumb_w=240, per_row=8, mono=False):
     """contact.jpg: every pick, left eye, labelled with its numbers; flagged picks framed in
     orange with their flags written underneath."""
     import cv2
@@ -78,7 +90,7 @@ def contact_sheet(frames_dir, quality, out_path, thumb_w=240, per_row=8):
         im = cv2.imread(os.path.join(frames_dir, fr["file"]), cv2.IMREAD_COLOR)
         if im is None:
             continue
-        L = im[:, : im.shape[1] // 2]
+        L = im if mono else im[:, : im.shape[1] // 2]
         th = cv2.resize(L, (thumb_w, int(round(thumb_w * L.shape[0] / L.shape[1]))), interpolation=cv2.INTER_AREA)
         h, w = th.shape[:2]
         cv2.rectangle(th, (0, 0), (w, 30), (0, 0, 0), -1)
