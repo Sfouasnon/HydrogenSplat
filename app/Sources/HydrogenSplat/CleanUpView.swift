@@ -114,11 +114,12 @@ final class EraserTool: ObservableObject {
         let x1 = Float(r.maxX / size.width) * 2 - 1
         let y1 = 1 - Float(r.minY / size.height) * 2
         let y0 = 1 - Float(r.maxY / size.height) * 2
+        let dots = EraserTool.maxDots
         busy = true
         note = nil
         Task {
             let found = await Task.detached(priority: .userInitiated) {
-                EraserTool.gather(centres: centres, vp: vp, x0: x0, x1: x1, y0: y0, y1: y1)
+                EraserTool.gather(centres: centres, vp: vp, x0: x0, x1: x1, y0: y0, y1: y1, dots: dots)
             }.value
             self.busy = false
             guard !found.depths.isEmpty else {
@@ -145,7 +146,8 @@ final class EraserTool: ObservableObject {
     /// Every splat centre inside the rectangle and in front of the camera: distances nearest
     /// first, and an even sample of the centres in the same order.
     nonisolated static func gather(centres: [SIMD3<Float>], vp: simd_float4x4,
-                                   x0: Float, x1: Float, y0: Float, y1: Float) -> (depths: [Float], sample: [SIMD3<Float>]) {
+                                   x0: Float, x1: Float, y0: Float, y1: Float,
+                                   dots: Int) -> (depths: [Float], sample: [SIMD3<Float>]) {
         var hits: [(Float, Int32)] = []
         for i in centres.indices {
             let p = centres[i]
@@ -159,7 +161,7 @@ final class EraserTool: ObservableObject {
         }
         hits.sort { $0.0 < $1.0 }
         let depths = hits.map { $0.0 }
-        let step = max(1, hits.count / EraserTool.maxDots)
+        let step = max(1, hits.count / max(dots, 1))
         var sample: [SIMD3<Float>] = []
         var k = 0
         while k < hits.count {
