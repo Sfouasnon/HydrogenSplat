@@ -66,6 +66,23 @@ public struct SourceProbe: Sendable, Equatable {
         public let what: String
     }
 
+    /// One thing found below a dropped folder that could be the footage: the engine lists these
+    /// when it finds more than one, and the page offers them as a choice.
+    public struct Candidate: Sendable, Equatable, Identifiable {
+        public var id: String { path }
+        public let path: String
+        /// Where it is below the dropped folder: "day1/phone/VID_20260915_145235_2x1.h4v".
+        public let rel: String
+        /// "video" or "stills".
+        public let kind: String
+
+        public init(path: String, rel: String, kind: String) {
+            self.path = path
+            self.rel = rel
+            self.kind = kind
+        }
+    }
+
     public static let minimumCameras = 3
 
     public let path: String
@@ -94,11 +111,15 @@ public struct SourceProbe: Sendable, Equatable {
     public let root: String?
     public let takes: [Take]
     public let take: String?
+    /// A folder holding several possible sources: what was found in it, and how many more than listed.
+    public let candidates: [Candidate]
+    public let candidatesMore: Int
 
     public init(path: String, name: String, kind: Kind, title: String, summary: String, accepted: Bool,
                 problems: [String] = [], notes: [String] = [], date: String? = nil, stem: String? = nil,
                 stillsKind: String? = nil, stillsWhy: String? = nil, stillsPerCamera: Bool = false,
-                root: String? = nil, takes: [Take] = [], take: String? = nil) {
+                root: String? = nil, takes: [Take] = [], take: String? = nil,
+                candidates: [Candidate] = [], candidatesMore: Int = 0) {
         self.path = path
         self.name = name
         self.kind = kind
@@ -115,6 +136,8 @@ public struct SourceProbe: Sendable, Equatable {
         self.root = root
         self.takes = takes
         self.take = take
+        self.candidates = candidates
+        self.candidatesMore = candidatesMore
     }
 
     /// The value of the engine's `source` metric. nil when it has no path: not a report at all.
@@ -125,6 +148,10 @@ public struct SourceProbe: Sendable, Equatable {
             guard let n = t["take"]?.string else { return nil }
             return Take(take: n, cameras: t["cameras"]?.array?.compactMap { $0.string } ?? [],
                         problem: t["problem"]?.string, date: t["date"]?.string)
+        }
+        let found: [Candidate] = (v["candidates"]?.array ?? []).compactMap { c -> Candidate? in
+            guard let p = c["path"]?.string else { return nil }
+            return Candidate(path: p, rel: c["rel"]?.string ?? (p as NSString).lastPathComponent, kind: c["kind"]?.string ?? "")
         }
         self.init(path: path,
                   name: v["name"]?.string ?? (path as NSString).lastPathComponent,
@@ -141,7 +168,9 @@ public struct SourceProbe: Sendable, Equatable {
                   stillsPerCamera: v["stills"]?["layout"]?.string == "one folder per camera",
                   root: v["r3d"]?["root"]?.string,
                   takes: takes,
-                  take: v["r3d"]?["take"]?.string)
+                  take: v["r3d"]?["take"]?.string,
+                  candidates: found,
+                  candidatesMore: v["candidates_more"]?.int ?? 0)
     }
 
     /// The report in a finished `hs source` run, or nil when the run printed none.

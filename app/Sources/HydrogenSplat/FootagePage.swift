@@ -120,6 +120,7 @@ struct FootagePage: View {
         if let p = probe {
             found(p)
         }
+        nameCard
         PhoneClipsSection(devices: devices, selectedClip: $selectedClip, run: phoneRun,
                           ingested: store.ingestedClips, refresh: { refreshPhone() })
         subjectCard
@@ -148,10 +149,16 @@ struct FootagePage: View {
     /// What the engine said the dropped thing is, as the four facts, with the choices that kind has.
     private func found(_ p: SourceProbe) -> some View {
         let blocker = p.blocker(options)
-        let verdict: Verdict = blocker == nil ? .good : .blocked
-        return VerdictCard(verdict, headline: p.title + (p.summary.isEmpty ? "" : ": " + p.summary),
-                           detail: blocker ?? p.problems.first) {
-            factChips(kind: p.title, size: nil, exposure: nil, lens: nil)
+        let choosing = !p.candidates.isEmpty          // a folder with several possible sources in it
+        let verdict: Verdict = choosing ? .info : (blocker == nil ? .good : .blocked)
+        return VerdictCard(verdict,
+                           headline: choosing ? p.summary : p.title + (p.summary.isEmpty ? "" : ": " + p.summary),
+                           detail: choosing ? "Choose the one this project is made from." : (blocker ?? p.problems.first)) {
+            if choosing {
+                candidateChoice(p)
+            } else {
+                factChips(kind: p.title, size: nil, exposure: nil, lens: nil)
+            }
             ForEach(p.problems.filter { $0 != blocker }, id: \.self) { w in
                 Label(w, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
@@ -174,6 +181,39 @@ struct FootagePage: View {
             }
             if p.kind == SourceProbe.Kind.r3d, !p.takes.isEmpty {
                 takeChoice(p)
+            }
+        }
+    }
+
+    /// A folder that holds several things that could be the footage: one button each. Choosing one
+    /// is the same as dropping it.
+    private func candidateChoice(_ p: SourceProbe) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(p.candidates) { c in
+                Button {
+                    look(at: URL(fileURLWithPath: c.path))
+                } label: {
+                    Label(c.rel, systemImage: c.kind == "stills" ? "photo.on.rectangle" : "film")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+            }
+            if p.candidatesMore > 0 {
+                Text("and \(p.candidatesMore) more further down; drop the one you mean.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The project's name, asked for where the footage was recognised. The folder is the day the
+    /// footage was recorded and this name; left empty, the footage's own name or time stands in.
+    @ViewBuilder private var nameCard: some View {
+        if project == nil, let folder = targetFolder {
+            VerdictCard(.info, headline: "Name the project",
+                        detail: "It will be saved as " + (folder as NSString).lastPathComponent + ".") {
+                TextField("Project name", text: $label, prompt: Text("a name of your own, for example Garden walk"))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 420)
             }
         }
     }
@@ -249,12 +289,6 @@ struct FootagePage: View {
 
     private var projectCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Name").frame(width: 90, alignment: .leading)
-                TextField("a word for this project (default: the footage's own name or time)", text: $label)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 420)
-            }
             HStack {
                 Text("Folder").frame(width: 90, alignment: .leading)
                 Text(targetFolder ?? "drop footage or pick a clip first")

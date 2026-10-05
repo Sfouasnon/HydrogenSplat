@@ -25,7 +25,7 @@ struct FootageDropZone: View {
                     Text(f.lastPathComponent).font(.system(.body, design: .monospaced))
                     Text(f.deletingLastPathComponent().path).font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Text("Drop a clip, a folder of photographs, or a RED media folder here").font(.headline)
+                    Text("Drop a clip or the folder it is in, a folder of photographs, or a RED media folder").font(.headline)
                     Text("Or pick a clip from a connected phone below.").font(.caption).foregroundStyle(.secondary)
                 }
                 Button("Choose…", action: choose)

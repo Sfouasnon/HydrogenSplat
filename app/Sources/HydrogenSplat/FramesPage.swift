@@ -55,6 +55,36 @@ struct FramesPage: View {
         return nil
     }
     private var registered: Int? { manifest.flatMap { PipelineStage.registered(in: $0) } }
+
+    /// Set when the last solve stopped because some frames could not be placed: how many were
+    /// picked and how many were placed. The placed ones can be kept (`acceptPartial`).
+    private var partial: (picked: Int, placed: Int)? {
+        guard solveStage?.status == .failed, let n = picked, let placed = registered, placed > 0, placed < n else { return nil }
+        return (picked: n, placed: placed)
+    }
+
+    /// The selector's warning that the picks do not chain (check `picks_overlap_enough`), or nil.
+    private var weakLinkWarning: String? {
+        guard let c = selectStage?.checks.first(where: { $0.name == "picks_overlap_enough" }), !c.ok else { return nil }
+        return c.value?.display
+    }
+
+    /// How many unbroken runs the unplaced captures form: cap21 … cap30 is one stretch. A name is
+    /// a prefix and the pick's number ("cap021"), or that and the source frame ("sel149-01347").
+    static func stretches(_ names: [String]) -> Int {
+        let nums: [Int] = names.compactMap { name -> Int? in
+            let head = name.split(separator: "-").first.map(String.init) ?? name
+            let digits = String(head.reversed().prefix(while: { $0.isNumber }).reversed())
+            return Int(digits)
+        }.sorted()
+        guard var prev = nums.first else { return 0 }
+        var count = 1
+        for k in nums.dropFirst() {
+            if k > prev + 1 { count += 1 }
+            prev = k
+        }
+        return count
+    }
     private var reproj: Double? { solveStage?.metrics["mean_reproj_px"]?.double }
 
     var body: some View {
@@ -113,6 +143,8 @@ struct FramesPage: View {
                     if let g = coverage?.gapText { MetricChip(text: g, tint: .orange) }
                 }
             }
+        } else if let p = partial {
+            partialVerdict(picked: p.picked, placed: p.placed)
         } else if stage?.status == .failed {
             VerdictCard(.blocked, headline: "The cameras could not be placed.",
                         detail: stage?.error ?? "Open Details for the engine's reason, then place again.")
@@ -125,10 +157,35 @@ struct FramesPage: View {
                     if let q = quality, q.flagged > 0 { MetricChip(text: "\(q.flagged) frames flagged", tint: .orange) }
                     if let c = estimate?.framesCaption { MetricChip(text: c) }
                 }
+                if let w = weakLinkWarning {
+                    Label(w, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         } else {
             VerdictCard(.info, headline: "No frames picked yet.",
                         detail: "The picker takes a frame each time the camera has moved enough, choosing the sharpest one.")
+        }
+    }
+
+    /// The solve stopped at a partial registration. The frames it did place are sound; say how many,
+    /// where the rest went, and what each way on costs. The footer offers to go on with them.
+    private func partialVerdict(picked n: Int, placed: Int) -> some View {
+        let missing: [String] = solveStage?.metrics["unregistered_captures"]?.array?.compactMap { $0.string } ?? []
+        let lost = missing.isEmpty ? n - placed : missing.count
+        let runs = FramesPage.stretches(missing)
+        let whereText = runs > 0 ? " in \(runs) stretch\(runs == 1 ? "" : "es") of the clip" : ""
+        return VerdictCard(.attention,
+                           headline: "\(placed) of \(n) frames were placed. \(lost) could not be.",
+                           detail: "The solver lost the camera\(whereText): fast movement, blur, or a view with nothing to hold on to. Going on with the \(placed) takes seconds, and the model will have holes where the others looked. Placing again takes as long as it did.") {
+            HStack(spacing: 8) {
+                if let r = reproj { MetricChip(text: String(format: "the placed ones agree to %.2f px", r), tint: r <= 1.8 ? .green : .orange) }
+                if let q = quality, q.flagged > 0 { MetricChip(text: "\(q.flagged) frames flagged", tint: .orange) }
+            }
+            if let w = weakLinkWarning {
+                Label(w, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -260,6 +317,18 @@ struct FramesPage: View {
                 } secondaryAction: {
                     if !blocked { startSolve() }
                 }
+            } else if let p = partial {
+                StepFooter(primary: "Go on with the \(p.placed) placed",
+                           primaryEnabled: !blocked,
+                           secondary: "Place the cameras again",
+                           note: blocked ? "Wait for the running step." : "Going on keeps what was solved; nothing is solved again.") {
+                    acceptPartial()
+                } secondaryAction: {
+                    if !blocked { startSolve() }
+                }
+                if !framesOnly {
+                    Button("Pick the frames again") { if !blocked { confirmRedo = true } }
+                }
             } else if selectDone {
                 StepFooter(primary: running ? "Placing…" : "Place the cameras",
                            primaryEnabled: !blocked,
@@ -281,6 +350,14 @@ struct FramesPage: View {
 
     private func startSelect() {
         run([RunQueue.Step(title: "Select frames", arguments: settings.wrappedValue.arguments(project: project.path))])
+    }
+
+    /// Keep the cameras the last solve placed and write them out for training (`hs solve
+    /// --export-only --allow-partial`): seconds, nothing is solved again, and the solve's check
+    /// keeps saying which frames are missing.
+    private func acceptPartial() {
+        run([RunQueue.Step(title: "Keep the placed cameras",
+                           arguments: ["solve", "-p", project.path, "--export-only", "--allow-partial"])])
     }
 
     private func startSolve() {
