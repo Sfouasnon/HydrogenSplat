@@ -131,6 +131,8 @@ struct ProjectDetailView: View {
             FootagePage(project: project)
         case .frames:
             FramesPage(project: project)
+        case .scan:
+            ScanStepPage(project: project)
         case .look:
             LookPage(project: project)
         case .subject:

@@ -10,14 +10,17 @@ Settings for tools and paths. This page is the contract every worker builds to. 
 |---|---|---|---|
 | 1 | Footage | ingest (`hs source`) | what was dropped, what kind it is, and the four facts that decide later steps: kind, useful resolution, exposure (fixed / auto), lens (calibrated / not) |
 | 2 | Frames | select, solve | frames picked and placed, reprojection in px, coverage (8 directions × 3 heights) with the gap named |
-| 3 | Look | exposure | drift in stops across the orbit, clipped share, and ONE recommendation picked from those numbers (match to a reference / global drop / softer shoulder) |
-| 4 | Subject | masks | whether masking is worth it (subject share of frame → share of the model the room would take), outlines made and tightened, how many frames need a look and the three things to do about them |
-| 5 | Train | train, archive, views | three choices (what is in the shot · how long · score it), live progress in words, then the scores in words against the last run and what would help next |
-| 6 | Shot | move, render, grade | Move (viewer, keys, coverage on the timeline) and Render & grade (checks, graded preview, frame/grade/export with the FULL `hs grade` scope) |
-| — | Calibrate | scale (lidar), calibrate (new) | lens: board shown on screen or saved as PDF, film it, drop the clip, a verdict; LiDAR: fit, coverage, hole, as its own solve |
+| 3 | Scan (optional) | scale (`hs scale --lidar`) | whether the scan lines up with the placed cameras, the fit in mm, how much of the solve lies on it; then it gives real size, up, a starting shape and a surface to hold to. Takes PLY, OBJ or text points |
+| 4 | Look | exposure | drift in stops across the orbit, clipped share, and ONE recommendation picked from those numbers (match to a reference / global drop / softer shoulder) |
+| 5 | Subject | masks | whether masking is worth it (subject share of frame → share of the model the room would take), outlines made and tightened, how many frames need a look and the three things to do about them |
+| 6 | Train | train, archive, views | three choices (what is in the shot · how long · score it), live progress in words, then the scores in words against the last run and what would help next |
+| 7 | Shot | move, render, grade | Move (viewer, keys, coverage on the timeline) and Render & grade (checks, graded preview, frame/grade/export with the FULL `hs grade` scope) |
+| — | Calibrate | calibrate | lens: board shown on screen or saved as PDF, film it, drop the clip, a verdict |
 | — | Settings | tools | the old Setup page, unchanged |
 
-Rail groups are gone; the six numbered steps and the two doors are the whole left column. A step's
+Rail groups are gone; the numbered steps and the two doors are the whole left column. Scan was a
+card behind the Calibrate door in the approved mockup; on the first walk-through it was not found
+there (a scan belongs to a project, not to a camera), so it became a step (2026-10-05). A step's
 dot is the least advanced of its engine stages (as `PipelineStage.status` does today).
 
 ## Page anatomy (StepUI.swift — use these, do not invent parallel ones)

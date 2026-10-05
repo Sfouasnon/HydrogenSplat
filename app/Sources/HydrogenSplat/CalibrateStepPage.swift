@@ -25,13 +25,10 @@ struct CalibrateStepPage: View {
 
     var body: some View {
         StepPage {
-            StepHeader(title: "Calibrate", lead: "Two things the solve cannot find on its own: the lens, from a board you film; and the scale, from a LiDAR scan of the place.")
+            StepHeader(title: "Calibrate", lead: "The lens, from a board you film once for each camera and recording size.")
             lensCard
-            if let m = manifest {
-                LidarScaleCard(project: project, manifest: m)
-            } else {
-                VerdictCard(.info, headline: "LiDAR: add footage first.", detail: "The scan is measured against the solved cameras, so a project needs frames before it can take a scan.")
-            }
+            VerdictCard(.info, headline: "Looking for the LiDAR scan?",
+                        detail: "It has its own step: Scan, after Frames.")
         }
         .sheet(isPresented: $showBoard) {
             LensBoardView(engineImage: boardImage) { showBoard = false }

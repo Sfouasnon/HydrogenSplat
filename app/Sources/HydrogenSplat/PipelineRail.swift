@@ -1,11 +1,12 @@
 import SwiftUI
 import HSCore
 
-/// The six numbered steps and the two doors of docs/ui-rebuild.md, in the order a project walks
-/// them. A step's circle is the least advanced of the engine stages behind it; the text on the
+/// The numbered steps and the two doors of docs/ui-rebuild.md, in the order a project walks
+/// them. Scan (a LiDAR scan measured against the placed cameras) is a step of its own, optional,
+/// right after Frames: it was a card behind the Calibrate door first, and was not found there. A step's circle is the least advanced of the engine stages behind it; the text on the
 /// right is its two-word state ("243 picked", "matched").
 enum PipelineStage: String, CaseIterable, Identifiable {
-    case footage, frames, look, subject, train, shot, calibrate, settings
+    case footage, frames, scan, look, subject, train, shot, calibrate, settings
 
     var id: String { rawValue }
 
@@ -13,6 +14,7 @@ enum PipelineStage: String, CaseIterable, Identifiable {
         switch self {
         case .footage: return "Footage"
         case .frames: return "Frames"
+        case .scan: return "Scan"
         case .look: return "Look"
         case .subject: return "Subject"
         case .train: return "Train"
@@ -22,22 +24,23 @@ enum PipelineStage: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 1–6 for the steps; nil for the two doors.
+    /// 1–7 for the steps; nil for the two doors.
     var number: Int? {
         switch self {
         case .footage: return 1
         case .frames: return 2
-        case .look: return 3
-        case .subject: return 4
-        case .train: return 5
-        case .shot: return 6
+        case .scan: return 3
+        case .look: return 4
+        case .subject: return 5
+        case .train: return 6
+        case .shot: return 7
         case .calibrate, .settings: return nil
         }
     }
 
     var isDoor: Bool { number == nil }
 
-    static let steps: [PipelineStage] = [.footage, .frames, .look, .subject, .train, .shot]
+    static let steps: [PipelineStage] = [.footage, .frames, .scan, .look, .subject, .train, .shot]
     static let doors: [PipelineStage] = [.calibrate, .settings]
 
     /// Engine stages whose details belong to this item.
@@ -45,11 +48,12 @@ enum PipelineStage: String, CaseIterable, Identifiable {
         switch self {
         case .footage: return ["ingest"]
         case .frames: return ["select", "solve"]
+        case .scan: return ["scale"]
         case .look: return ["exposure"]
         case .subject: return ["masks"]
         case .train: return ["train", "archive", "views"]
         case .shot: return ["move", "render", "grade"]
-        case .calibrate: return ["scale", "calibrate"]
+        case .calibrate: return ["calibrate"]
         case .settings: return []
         }
     }
@@ -66,7 +70,7 @@ enum PipelineStage: String, CaseIterable, Identifiable {
     /// A step a project can skip: the circle stays grey and `next` walks past it.
     var optional: Bool {
         switch self {
-        case .look, .subject, .calibrate, .settings: return true
+        case .scan, .look, .subject, .calibrate, .settings: return true
         case .footage, .frames, .train, .shot: return false
         }
     }
@@ -111,6 +115,8 @@ enum PipelineStage: String, CaseIterable, Identifiable {
             }
             if let n = picked { return "\(n) picked" }
             return ""
+        case .scan:
+            return m.stage("scale")?.status == .done ? "scaled" : ""
         case .look:
             guard let e = m.stage("exposure") else { return m.stage("solve")?.status == .done ? "as shot" : "" }
             if e.metrics["restored"] != nil { return "as shot" }
@@ -136,9 +142,7 @@ enum PipelineStage: String, CaseIterable, Identifiable {
             if m.stage("move")?.status == .done { return "keyed" }
             return ""
         case .calibrate:
-            if m.stage("calibrate")?.status == .done { return "lens known" }
-            if m.stage("scale")?.status == .done { return "scaled" }
-            return ""
+            return m.stage("calibrate")?.status == .done ? "lens known" : ""
         case .settings:
             return ""
         }
