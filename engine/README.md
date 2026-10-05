@@ -20,6 +20,7 @@ unchanged) and print `timing: <phase> N s` lines; see "Matching, estimates and E
 | rigcolmap.py | `hs solve` (prep / sfm / export) | numpy, cv2, pycolmap 4.2.0 |
 | spline_path.py | `hs move --preset sweep` | numpy |
 | key_path.py | `hs move --preset boom\|custom` — imports spline_path | numpy |
+| walk_path.py | `hs move --preset walk` — a move for a place: follows a leg of the path the camera walked | numpy, cv2 for the map |
 | prune_splats.py | `hs prune` | numpy |
 | stereocal.py | `hs calib` (v1.1 UI) | numpy, cv2 |
 
@@ -92,6 +93,7 @@ hs train   -p P [--brush PATH]                                        brush → 
 hs train   -p P --recipe matte|glossy|bright|person|scene --effort quick|standard|final   the Train step's choices -> the flags of docs/ui-rebuild.md's table (explicit flags still win); recipe, effort in the metrics and brush_config
 hs move    -p P --preset sweep|boom|custom [--keys ...] [--name N]    move/N.json + move/N_aim_check.jpg
 hs move    -p P --script shot.hsmove [--name N]                      compile a cue sheet against the captured hull (movescript.py)
+hs move    -p P --preset walk [--captures A:B] [--look ahead|as-shot] [--reverse]   a walk-through: move/N.json + move/N_plan.jpg (walk_path.py)
 hs prune   -p P [--radius 0.3]                                        prune/<export>_pruned_r03.ply
 hs prune   -p P --score [--ply PLY] [--name N] [--cell 8]            prune/N_scores.npz + N_report.json — a report, prunes nothing
 hs prune   -p P --floaters [--name N] [--min-importance-quantile 0.02] [--max-blame 0.25]   prune/N_nofloat.ply + N_floaters_only.ply
@@ -1537,6 +1539,38 @@ The limit worth knowing: **a 2D mask constrains the silhouette, not depth.** A s
 behind the subject that projects inside the silhouette is fully supervised, and a transparent
 subject needs something back there to show through. 35.4% of the masked model still sits beyond
 a metre — though only 30% of that population projects into any sampled view at all.
+
+### `hs move --preset walk` — a move for a place
+
+Every other move looks at one point from a shell of cameras round it. A walk through a garden or a
+room has no such point, so `walk` builds the move the capture already holds: one LEG of the path the
+camera walked, with the hand averaged out of it (`--steady`, seconds), the horizon level, an even
+speed with a soft start and stop, and the camera looking `ahead` (where the path goes next, pitched
+as the real camera was) or `as-shot`. `--reverse` travels the leg from its last frame to its first.
+The move lasts as long as the leg took to shoot unless `--frames` says otherwise.
+
+How a leg is found (`hs/walk_path.py`):
+- The placed frames are cut into RUNS at TEARS: a step between two consecutive placed frames more
+  than 4 times the capture's own median pace and more than twice its median step. That is the
+  solve having placed two stretches without tying one to the other; a path across it would cross a
+  distance that is not there in the world. Pace is relative to the capture because a solve's scale
+  is only as good as whatever fixed it.
+- Inside a run a leg is the stretch that maximises (net travel)² / (path length) over the smoothed
+  path, with standing ends cut off, so in and back out are two legs. The default is the leg with
+  the largest net travel × share of its picks that were placed; `--captures A:B` (capture numbers,
+  inclusive) names another, and is refused if it crosses a tear.
+
+It has no aim point and no shell, so instead of `aim_in_frame` and `hull_within_25mm` it writes:
+`solve_has_no_tear`, `walk_crosses_no_gap` (stretches of the leg where no frame was placed),
+`walk_stays_on_the_path` (largest distance from the path to the line the real cameras walked, pass
+≤ a quarter of the distance to the nearest tenth of the scene — a starting figure that has not been
+tested against renders), and `path_checked_on_the_map` (needs a person: `move/<name>_plan.jpg` is the
+path from above, over the sparse points and every placed camera). Metrics `<name>.legs` and
+`<name>.tears` list what was found.
+
+First used on a 115 s walk into a garden and back (211 picks, 162 placed): one tear (4.4 m in
+1.3 s, 6 times the pace, across a whip pan that left two frames with nothing in common), five
+legs, and the default a 12 m leg of 29 frames, every one placed.
 
 ### `.hsmove` and `hs move --script`
 

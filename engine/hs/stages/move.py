@@ -6,6 +6,9 @@ Presets, all from coverage.json + rig.npz:
   boom    key_path.py with boom–slide–settle keys chosen from the coverage table
           (rig6: 51,56,58,60,62,64,16,62 ≈ yesterday's hand-picked move_boom.json), 360 frames, 0.5 s holds
   custom  key_path.py with --keys you give (the click-to-key designer's back end)
+  walk    for a place rather than a subject (hs/walk_path.py): follows one leg of the path the
+          camera actually walked, hand motion averaged out, horizon level, looking ahead or as shot.
+          No aim point and no shell, so it has its own checks (below) instead of aim and hull.
 
 Every build's aim-check line is parsed into a check event with needs_human=true, and the real
 image the aim point was projected into is written with a crosshair as move/<name>_aim_check.jpg.
@@ -33,13 +36,19 @@ HULL_MAX_MM = 25.0
 
 def add_parser(sub):
     p = sub.add_parser("move", aliases=["paths"], help="build a camera move (spline_path.py / key_path.py) + aim check")
-    p.add_argument("--preset", choices=["sweep", "boom", "custom"], default="sweep")
+    p.add_argument("--preset", choices=["sweep", "boom", "custom", "walk"], default="sweep")
     p.add_argument("--script", default=None,
                    help="an .hsmove script in capture coordinates (grammar: engine/hs/movescript.py); overrides --preset")
     p.add_argument("--name", default=None, help="move name (default: the preset)")
     p.add_argument("--frames", type=int, default=None, help="default: sweep 240, boom/custom 360")
     p.add_argument("--fps", type=float, default=30.0)
-    p.add_argument("--captures", default=None, help="sweep: A:B window (default: auto from coverage)")
+    p.add_argument("--captures", default=None,
+                   help="sweep: A:B window of capture indices (default: auto from coverage). "
+                        "walk: A:B capture NUMBERS to follow, inclusive (default: the leg that travels furthest)")
+    p.add_argument("--look", choices=["ahead", "as-shot"], default="ahead",
+                   help="walk: look where the path goes next, or where the real camera looked")
+    p.add_argument("--reverse", action="store_true", help="walk: travel the leg from its last frame to its first")
+    p.add_argument("--steady", type=float, default=1.0, help="walk: seconds of hand motion averaged out of the path")
     p.add_argument("--keys", default=None, help="custom: ordered capture indices 52,54,56,...")
     p.add_argument("--hold", type=float, default=0.5, help="boom/custom: seconds held at each end")
     p.add_argument("--ease", type=float, default=1.0)
@@ -70,10 +79,16 @@ def run(a, pj):
     for f in (out, pj.path("move", f"{name}_aim_check.jpg")):
         if os.path.exists(f):
             os.remove(f)
+    for f in (pj.path("move", f"{name}_plan.jpg"),):
+        if os.path.exists(f):
+            os.remove(f)
     events.start(STAGE, "script" if a.script else a.preset)
 
     if a.script:
         _from_script(a, pj, rig, name, out)
+        return
+    if a.preset == "walk":
+        _walk(a, pj, rig, name, out)
         return
 
     frames = a.frames or (240 if a.preset == "sweep" else 360)
@@ -190,6 +205,85 @@ def run(a, pj):
              needs_human=True, move=name,
              image=pj.rel(img_path) if img_path else None)
     pj.record_run(STAGE, name, preset=a.preset, info=info, path=pj.rel(out))
+    pj.finish(STAGE, ok=True)
+
+
+OFF_PATH_SHARE = 0.25      # of the near distance to the scene; a starting figure, not yet tested against renders
+
+
+def _walk(a, pj, rig, name, out):
+    """hs move --preset walk — follow a leg of the path the camera walked (hs/walk_path.py)."""
+    from .. import walk_path
+    cov = json.load(open(pj.path("solve", "coverage.json")))
+    caps = None
+    if a.captures:
+        try:
+            caps = tuple(int(x) for x in a.captures.split(":"))
+            assert len(caps) == 2
+        except (ValueError, AssertionError):
+            raise events.StageError("--captures for a walk is A:B, two capture numbers", hint="e.g. --captures 177:205")
+    try:
+        rep = walk_path.build(rig, out, cov["up_world"], quality_json=pj.path("select", "quality.json"),
+                              captures=caps, look=a.look, reverse=a.reverse, steady_s=a.steady,
+                              frames=a.frames, fps=a.fps)
+    except ValueError as e:
+        raise events.StageError(str(e), hint="hs move --preset walk --captures A:B names the frames to follow")
+    move = json.load(open(out))
+    pj.artifact(STAGE, out, "move")
+    m = lambda k, v: pj.metric(STAGE, f"{name}.{k}", v)
+    m("frames", rep["frames"])
+    m("size", [move["width"], move["height"]])
+    m("duration_s", round(rep["duration_s"], 2))
+    m("follows", rep["run"])
+    m("look", rep["look"] + (", reversed" if rep["reverse"] else ""))
+    m("path_length_mm", int(round(rep["path_length_mm"])))
+    m("peak_speed_mm_s", int(round(rep["peak_speed_mm_s"])))
+    m("peak_pan_deg_s", round(rep["peak_pan_deg_s"], 1))
+    m("off_path_max_mm", round(rep["off_path_max_mm"], 1))
+    if rep["scene_near_mm"]:
+        m("scene_near_mm", int(round(rep["scene_near_mm"])))
+    legs = [{"captures": [g["first"], g["last"]], "placed": g["captures"], "placed_share": round(g["placed_share"], 2),
+             "travel_mm": int(round(g["net_mm"])), "seconds": None if g["seconds"] is None else round(g["seconds"], 1)}
+            for g in rep["legs"]]
+    m("legs", legs)
+    m("tears", [{"between": [x["after"], x["before"]], "step_mm": int(round(x["step_mm"])),
+                 "times_the_capture_pace": round(x["times_typical"], 1)} for x in rep["tears"]])
+
+    # a tear is the solve's fault, not this move's; it is said here because this is where it bites
+    pj.check(STAGE, "solve_has_no_tear", not rep["tears"],
+             value="every placed frame is a walkable step from the one before it" if not rep["tears"] else
+                   "; ".join(f"cap{x['after']:03d} to cap{x['before']:03d} is {x['step_mm'] / 1000:.1f} "
+                             f"{'m in %.1f s' % x['dt'] if rep['timed'] else 'm in one step'}, "
+                             f"{x['times_typical']:.0f} times this capture's pace" for x in rep["tears"])
+                   + " \u2014 the solve placed the two sides without tying them together; the walk stays on one side",
+             move=name)
+    gaps = rep["gaps"]
+    pj.check(STAGE, "walk_crosses_no_gap", not gaps,
+             value="every frame of this leg was placed" if not gaps else
+                   f"crosses {len(gaps)} stretch{'es' if len(gaps) != 1 else ''} where no frame was placed: "
+                   + "; ".join(f"{g['length_mm'] / 1000:.1f} m after cap{g['after']:03d} ({g['missing']} frames)"
+                               for g in sorted(gaps, key=lambda g: -g["length_mm"])[:4]),
+             move=name)
+    near = rep["scene_near_mm"]
+    if near:
+        limit = OFF_PATH_SHARE * near
+        pj.check(STAGE, "walk_stays_on_the_path", rep["off_path_max_mm"] <= limit,
+                 value=f"the path is never more than {rep['off_path_max_mm']:.0f} mm from the line the real camera walked "
+                       f"(median {rep['off_path_median_mm']:.0f}; pass \u2264 {limit:.0f}, a quarter of the "
+                       f"{near / 1000:.1f} m to the nearest tenth of the scene)", move=name)
+    img = None
+    try:
+        img = walk_path.plan_image(rep, pj.path("move", f"{name}_plan.jpg"))
+        pj.artifact(STAGE, img, "image")
+    except ImportError:
+        pass
+    pj.check(STAGE, "path_checked_on_the_map", True,
+             value=f"follows cap{rep['run'][0]:03d} to cap{rep['run'][1]:03d}"
+                   + (" backwards" if rep["reverse"] else "") + f", {rep['path_length_mm'] / 1000:.1f} m in "
+                   f"{rep['duration_s']:.1f} s, looking {rep['look']}; the map shows where that is",
+             needs_human=True, move=name, image=pj.rel(img) if img else None)
+    pj.record_run(STAGE, name, preset="walk", path=pj.rel(out),
+                  info={"follows": rep["run"], "look": rep["look"], "reverse": rep["reverse"], "legs": legs})
     pj.finish(STAGE, ok=True)
 
 
