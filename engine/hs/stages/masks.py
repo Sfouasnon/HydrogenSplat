@@ -75,6 +75,8 @@ SELECT_FRAC = 0.5         # vision: share of an instance that must lie inside th
 CONTAIN_FRAC = 0.6        # vision: or share of the geometric mask the instance must cover (a glossy subject)
 CONTAIN_MAX_AREA = 0.8    # vision: ... and the instance must be under this share of the frame
 FEATHER_PX = 1.0          # vision: anti-aliased edge; the research report's "hard alpha + 1-2 px AA"
+SNAP_FALLBACK_PX = 3      # --snap-edge: erosion for a view whose edge cannot be measured (the helmet's typical bias)
+SNAP_MAX_PX = 8           # --snap-edge: never move a boundary further than this (the walk is ±12)
 HIGHLIGHT_CODE = 240     # --exclude-highlights: an HLG pick's E' >= 0.94 (select_frames --hdr); the glints on IMG_2525
 HIGHLIGHT_GROW_FRAC = 0.002
 POINT_FRAC = 0.02         # --from-points disc footprint, as a share of the radius (coins: 2 mm on 100)
@@ -95,6 +97,16 @@ def add_parser(sub):
                    help="vision: Gaussian sigma of the anti-aliased edge (0 = hard binary)")
     p.add_argument("--grow-px", type=int, default=0,
                    help="vision: dilate the object mask outward by this many px before feathering")
+    p.add_argument("--snap-edge", action="store_true",
+                   help="vision: move each mask's boundary onto the photograph's colour edge — measure the "
+                        "offset per view (hs/edgesnap.py: median over the boundary of where the largest colour "
+                        "step sits along the normal) and erode or dilate by that many whole px before feathering. "
+                        "Vision's 50%% level sat 2-6 px outside the Stormtrooper helmet, by a different amount "
+                        "in every view; the trainer answered with a half-opaque rim")
+    p.add_argument("--snap-fallback-px", type=int, default=SNAP_FALLBACK_PX,
+                   help=f"--snap-edge: erosion for a view whose boundary has no measurable edge (default {SNAP_FALLBACK_PX})")
+    p.add_argument("--snap-max-px", type=int, default=SNAP_MAX_PX,
+                   help=f"--snap-edge: largest move either way, px (default {SNAP_MAX_PX})")
     p.add_argument("--radius", type=float, default=None,
                    help="metres about the subject centre; default: fitted to the camera orbit (works unscaled)")
     p.add_argument("--radius-scale", type=float, default=1.0,
@@ -195,6 +207,83 @@ def vision_mask(seg, prior, a):
     if a.feather_px > 0:
         m = cv2.GaussianBlur(m, (0, 0), a.feather_px)
     return m, n, len(chosen), None
+
+
+def snap_to_photo(m, photo, a):
+    """--snap-edge on one finished Vision mask (feathered uint8): measure where the photograph's
+    edge is against the hard mask, move the boundary there by whole px, feather again.
+    -> (mask, record). The record carries the measurement (or why there was none) and the move."""
+    import cv2
+    from .. import edgesnap
+    hard = m >= 128
+    r = edgesnap.measure(photo, hard)
+    max_px = int(getattr(a, "snap_max_px", SNAP_MAX_PX))
+    if r is None:
+        px, how = int(getattr(a, "snap_fallback_px", SNAP_FALLBACK_PX)), "fallback"
+    else:
+        px, how = edgesnap.pixels(r["offset"], max_px), "measured"
+    out = edgesnap.snap(hard, px)
+    residual = edgesnap.measure(photo, out >= 128) if r is not None else None
+    if getattr(a, "feather_px", 0) and a.feather_px > 0:
+        out = cv2.GaussianBlur(out, (0, 0), a.feather_px)
+    rec = {"how": how, "px": px,
+           "offset": None if r is None else round(r["offset"], 2),
+           "p10": None if r is None else round(r["p10"], 2), "p90": None if r is None else round(r["p90"], 2),
+           "points": 0 if r is None else r["points"], "sampled": 0 if r is None else r["sampled"],
+           "residual": None if residual is None else round(residual["offset"], 2),
+           "clipped": r is not None and abs(int(np.floor(r["offset"] + 0.5))) > max_px}
+    return out, rec
+
+
+def report_snap(pj, recs, a):
+    """Metrics, the per-view record and the check for --snap-edge."""
+    import json
+    measured = {n: r for n, r in recs.items() if r["how"] == "measured"}
+    fell = [n for n, r in recs.items() if r["how"] == "fallback"]
+    offs = np.array([r["offset"] for r in measured.values()]) if measured else np.array([])
+    res = np.array([r["residual"] for r in measured.values() if r["residual"] is not None])
+    moved = np.array([r["px"] for r in recs.values()]) if recs else np.array([])
+    clipped = [n for n, r in measured.items() if r["clipped"]]
+    pj.metric(STAGE, "snap_measured_views", len(measured))
+    pj.metric(STAGE, "snap_fell_back_views", len(fell))
+    if fell:
+        pj.metric(STAGE, "snap_fell_back_names", fell[:40])
+    if len(offs):
+        pj.metric(STAGE, "snap_offset_px", {"median": round(float(np.median(offs)), 2),
+                                            "p10": round(float(np.percentile(offs, 10)), 2),
+                                            "p90": round(float(np.percentile(offs, 90)), 2),
+                                            "min": round(float(offs.min()), 2), "max": round(float(offs.max()), 2)})
+    if len(moved):
+        pj.metric(STAGE, "snap_moved_px", {"median": float(np.median(moved)), "min": int(moved.min()), "max": int(moved.max()),
+                                           "eroded": int((moved > 0).sum()), "dilated": int((moved < 0).sum()),
+                                           "unmoved": int((moved == 0).sum())})
+    if len(res):
+        pj.metric(STAGE, "snap_residual_px", {"median": round(float(np.median(res)), 2),
+                                              "p90_abs": round(float(np.percentile(np.abs(res), 90)), 2)})
+    if clipped:
+        pj.metric(STAGE, "snap_clipped_views", clipped[:40])
+    unsettled = [n for n, r in measured.items() if r["residual"] is not None and abs(r["residual"]) > 1.5]
+    if unsettled:
+        # the boundary measured one offset and, moved there, measures another: a split boundary
+        # (part of it on the silhouette, part on a trim band or a shadow). Look at these.
+        pj.metric(STAGE, "snap_unsettled_views", unsettled[:40])
+    out = pj.path("masks_snap.json")
+    with open(out, "w") as f:
+        json.dump({"fallback_px": int(getattr(a, "snap_fallback_px", SNAP_FALLBACK_PX)),
+                   "max_px": int(getattr(a, "snap_max_px", SNAP_MAX_PX)), "views": recs}, f, indent=1)
+    pj.artifact(STAGE, out, "json")
+    n = max(1, len(recs))
+    ok = len(measured) >= 0.8 * n and (not len(res) or abs(float(np.median(res))) <= 1.0) and len(clipped) <= 0.1 * n
+    pj.check(STAGE, "masks_sit_on_the_photographs_edge", bool(ok), needs_human=True,
+             value=(f"{len(measured)} of {len(recs)} views measured; photograph's edge was "
+                    + (f"{np.median(offs):+.1f} px (median; {np.percentile(offs, 10):+.1f}…{np.percentile(offs, 90):+.1f}) "
+                       f"inside the mask" if len(offs) else "unmeasured everywhere")
+                    + (f"; boundaries moved by {int(np.median(moved))} px (median, {int(moved.min())}…{int(moved.max())})" if len(moved) else "")
+                    + (f"; residual {np.median(res):+.1f} px" if len(res) else "")
+                    + (f"; {len(fell)} fell back to {int(getattr(a, 'snap_fallback_px', SNAP_FALLBACK_PX))} px" if fell else "")
+                    + (f"; {len(clipped)} hit the ±{int(getattr(a, 'snap_max_px', SNAP_MAX_PX))} px limit: {', '.join(clipped[:4])}" if clipped else "")
+                    + (f"; {len(unsettled)} still read an edge >1.5 px away after the move (split boundaries): "
+                       f"{', '.join(unsettled[:4])}" if unsettled else "")))
 
 
 def auto_radius(G, subject):
@@ -358,6 +447,8 @@ def run(a, pj):
     if hl_code is not None and not 0 < hl_code <= 255:
         raise events.StageError(f"--exclude-highlights {hl_code}: a code value, 1-255")
     prior_cover, n_inst, n_sel, fell_back = [], [], [], []
+    snap_on = method == "vision" and bool(getattr(a, "snap_edge", False))
+    snap_recs = {}
     for v, name in enumerate(names):
         eye = name[-1]
         cap = name[:-2]
@@ -402,6 +493,7 @@ def run(a, pj):
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * margin_px + 1, 2 * margin_px + 1))
             m = cv2.dilate(m, k)
         prior = m
+        photo = None
         if method == "vision":
             m, ni, ns, why = vision_mask(segs.get(v, {"error": "not segmented"}), prior, a)
             prior_cover.append(float((prior > 0).mean()))
@@ -409,8 +501,12 @@ def run(a, pj):
             n_sel.append(ns)
             if why:
                 fell_back.append((name, why))
+            if snap_on:
+                photo = cv2.imread(img)
+                m, rec = snap_to_photo(m, photo, a)
+                snap_recs[name] = rec
         if hl_code is not None:
-            photo = cv2.imread(img)
+            photo = cv2.imread(img) if photo is None else photo
             hot = (photo.min(axis=2) >= hl_code).astype(np.uint8)
             if hot.shape != m.shape:
                 hot = cv2.resize(hot, (m.shape[1], m.shape[0]), interpolation=cv2.INTER_NEAREST)
@@ -468,6 +564,9 @@ def run(a, pj):
                         + (f" (e.g. {fell_back[0][0]}: {fell_back[0][1]})" if fell_back else "")
                         + f"; subject {100 * np.median(cover):.1f}% of frame vs region "
                           f"{100 * np.median(prior_cover):.1f}%"))
+    pj.metric(STAGE, "snap_edge", snap_on)
+    if snap_on:
+        report_snap(pj, snap_recs, a)
     pj.metric(STAGE, "exclude_highlights", hl_code)
     if hl_code is not None and hl_share:
         hs_ = np.array(hl_share)

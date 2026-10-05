@@ -219,19 +219,30 @@ def build_settings(pj, a=None):
     return {"method": method,
             "feather_px": float(getattr(ns, "feather_px", 1.0) or 0.0) if method == "vision" else 0.0,
             "grow_px": int(getattr(ns, "grow_px", 0) or 0) if method == "vision" else 0,
+            "snap_edge": bool(getattr(ns, "snap_edge", False)) if method == "vision" else False,
+            "snap_fallback_px": int(getattr(ns, "snap_fallback_px", 3) or 0),
+            "snap_max_px": int(getattr(ns, "snap_max_px", 8) or 0),
             "exclude_highlights": getattr(ns, "exclude_highlights", None),
             "highlight_grow_px": getattr(ns, "highlight_grow_px", None)}
 
 
 def finish(hard, settings, image_path, grow=False):
-    """A hard repaired mask finished the way `hs masks` finishes its own: grown by --grow-px (an
-    object fresh from Vision only: `grow`), the feathered rim and, when the build cut the glints
-    out, the same cut."""
+    """A hard repaired mask finished the way `hs masks` finishes its own: grown by --grow-px and
+    snapped to the photograph's edge by --snap-edge (both for an object fresh from Vision only:
+    `grow`; a patched mask keeps its boundary, which the build already snapped), the feathered rim
+    and, when the build cut the glints out, the same cut."""
     import cv2
     m = hard
     g = int(settings.get("grow_px") or 0)
     if grow and g > 0:
         m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * g + 1, 2 * g + 1)))
+    if grow and settings.get("snap_edge") and os.path.exists(image_path):
+        from . import edgesnap
+        photo = cv2.imread(image_path)
+        r = edgesnap.measure(photo, m >= 128)
+        px = (edgesnap.pixels(r["offset"], settings.get("snap_max_px", 8)) if r
+              else int(settings.get("snap_fallback_px", 3)))
+        m = edgesnap.snap(m >= 128, px)
     if settings.get("feather_px", 0) > 0:
         m = cv2.GaussianBlur(m, (0, 0), settings["feather_px"])
     code = settings.get("exclude_highlights")

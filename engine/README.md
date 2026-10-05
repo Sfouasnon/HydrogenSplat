@@ -75,6 +75,7 @@ hs scale   -p P --factor F [--note '…'] [--trust-scan]                 apply a
 hs exposure -p P [--reference median|auto|capNNN|board|checker] [--reference-view V] [--mode rgb|luma] [--restore] [--dry-run]   match every view to one reference (board/checker: a shared target, fine on an array)
 hs masks   -p P [--radius 0.10] [--margin-mm 5] [--min-opacity 0.2]   per-view subject silhouettes for Brush's mask channel; ends with the check below
            [--exclude-highlights [240] --highlight-grow-px N]          glossy subjects: cut the specular glints out of the subject mask
+           [--snap-edge [--snap-fallback-px 3] [--snap-max-px 8]]      vision: move each boundary onto the photograph's colour edge (Vision's 50 % level sat 2-8 px outside the helmet) -> masks_snap.json
 hs masks   -p P --check-only                                          check the masks on disk against each other -> masks_review/ (builds nothing)
 hs masks   -p P --decide L/cap012=repair,@undecided=exclude            repair | exclude | keep | undo a flagged view; hs train refuses until every one is decided
 hs train   -p P [--brush PATH]                                        brush → train/exports/export_NNNNN.ply   (Mac only)
@@ -1249,6 +1250,26 @@ themselves beyond what SH recovers from their rims. 240 is set for HLG picks fro
 is what `highlights_are_glints_not_paint` (median ≤ 5 %, max ≤ 25 % of the subject cut;
 `highlights_share_of_subject_median/max`) catches. Subject layer only: the background layer
 reads the holes inverted, as background. App: Masks → Detail → Glints.
+
+**`--snap-edge` (2026-10-04).** Vision's soft matte is generous: on the Stormtrooper helmet its
+50 % level sat 2–8 px outside the photograph's edge (median +3.5 px), by a different amount in
+every view, and the threshold that would land on the edge ranged 128–250 between views. A rim
+that is subject in one view's mask and background in the next leaves the trainer one answer, a
+half-opaque splat, and that was run G's silhouette: a 6–8 px ramp, darker inside the mask, lit
+outside, carrying 28 % of the in-mask error (claude/edge-profile-mask-bias-2026-10-04.md). The flag
+measures the offset per view (`hs/edgesnap.py`: from sampled boundary pixels walk the normal ±12 px
+through the photograph, take the largest colour step, median over the boundary) and erodes or
+dilates the hard mask by that many whole pixels, up to `--snap-max-px` (8), before feathering. A
+view whose boundary carries no measurable edge (a close-up with the helmet off the frame, a white
+dome on a white wall) is eroded by `--snap-fallback-px` (3) and counted. Per-view record in
+`masks_snap.json`; metrics `snap_offset_px`, `snap_moved_px`, `snap_residual_px` (the offset
+measured again after the move; ±0.5 is as good as whole pixels get), `snap_fell_back_views`,
+`snap_clipped_views`, `snap_unsettled_views` (a boundary that reads a second edge > 1.5 px away
+after the move: part silhouette, part trim band or shadow — look at these); check
+`masks_sit_on_the_photographs_edge`. Known limit: where a dark trim band meets a dark background
+the largest step is the paint/trim edge, not the silhouette, and the trim is lost from that view.
+A repaired mask that is a fresh Vision instance is snapped the same way; a patched one keeps the
+boundary the build snapped. Rebuilding masks retires the review, as any build does.
 
 `3DGS_4DGS_Challenging_Materials_Guide.docx` §1: "duplicate or ghosted objects through glass →
 straight-ray model fits incompatible refracted correspondences → mask glass and retrain

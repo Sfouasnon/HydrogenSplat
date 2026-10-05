@@ -64,7 +64,8 @@ the dome, and the two pieces of air.
 A repair is offered only if the repaired mask passes the same check, puts no more than 3 % of
 the subject's area outside the hull, and holds ≥ 90 % of the subject's points. It is finished
 the way the build finished its masks (`--feather-px`, `--exclude-highlights`, and `--grow-px`
-for an object fresh from Vision).
+and `--snap-edge` for an object fresh from Vision; a patched mask keeps the boundary the build
+already snapped).
 
 ## Files (all under the project folder)
 ```

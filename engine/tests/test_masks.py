@@ -343,5 +343,86 @@ class FillHoles(unittest.TestCase):
         self.assertEqual(int(masks.fill_holes(np.zeros((30, 30), np.uint8)).sum()), 0)
 
 
+class SnapEdge(Vision):
+    """--snap-edge: the boundary goes where the photograph's edge is, not where Vision's 50 % level is.
+
+    2026-09-28_Stormtrooper_iPhone: Vision's matte sat 2-6 px outside the helmet, by a different
+    amount per view, and the trainer's answer to a rim that is subject in one view and background in
+    the next was a half-opaque ramp 6-8 px wide (claude/edge-profile-mask-bias-2026-10-04.md). Here
+    the photograph holds a disc of radius 86 and the fake Vision instance is a disc of radius 90."""
+
+    PHOTO_R = 86
+
+    def paint(self, colour=(200, 180, 160)):
+        import cv2
+        d = os.path.join(self.pj.dataset_dir, "images", "L")
+        for f in os.listdir(d):
+            im = np.full((H, W, 3), 128, np.uint8)
+            cv2.circle(im, (W // 2, H // 2), self.PHOTO_R, colour, -1)
+            cv2.imwrite(os.path.join(d, f), im, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+    def test_the_estimator_reads_the_bias_and_nothing_on_a_flat_photograph(self):
+        import cv2
+        from hs import edgesnap
+        im = np.full((H, W, 3), 128, np.uint8)
+        cv2.circle(im, (W // 2, H // 2), self.PHOTO_R, (200, 180, 160), -1)
+        for bias in (0, 2, 4, -3):
+            r = edgesnap.measure(im, self.disc(self.PHOTO_R + bias))
+            self.assertIsNotNone(r, f"bias {bias}: unmeasured")
+            # the step sits between the last background sample and the first subject sample, so a
+            # boundary exactly on the edge reads -0.5 and a mask k px generous reads k - 0.5
+            self.assertAlmostEqual(r["offset"], bias - 0.5, delta=0.6, msg=f"bias {bias}: read {r['offset']}")
+            self.assertEqual(edgesnap.pixels(r["offset"], 8), bias, f"bias {bias}: would move by {edgesnap.pixels(r['offset'], 6)}")
+        self.assertIsNone(edgesnap.measure(np.full((H, W, 3), 128, np.uint8), self.disc(90)), "a flat photograph has no edge to find")
+        self.assertEqual(edgesnap.pixels(9.5, 8), 8, "the move is capped")
+
+    def test_snap_moves_the_mask_onto_the_photograph(self):
+        self.paint()
+        masks.run(args(self.ply, method="vision"), self.pj)
+        for f, m in load_masks(self.pj).items():
+            iou = (m & self.disc(90)).sum() / (m | self.disc(90)).sum()
+            self.assertGreater(iou, 0.97, f"{f}: without --snap-edge the mask is Vision's (IoU {iou:.3f} with r=90)")
+        masks.run(args(self.ply, method="vision", snap_edge=True, snap_fallback_px=3, snap_max_px=8), self.pj)
+        truth = self.disc(self.PHOTO_R)
+        for f, m in load_masks(self.pj).items():
+            iou = (m & truth).sum() / (m | truth).sum()
+            self.assertGreater(iou, 0.97, f"{f}: IoU {iou:.3f} with the photograph's disc (r={self.PHOTO_R})")
+        met = self.pj.stage("masks")["metrics"]
+        self.assertTrue(met["snap_edge"])
+        self.assertEqual(met["snap_measured_views"], N_CAM)
+        self.assertEqual(met["snap_fell_back_views"], 0)
+        self.assertAlmostEqual(met["snap_offset_px"]["median"], 3.5, delta=0.6)
+        self.assertEqual(met["snap_moved_px"]["median"], 4)
+        self.assertLessEqual(abs(met["snap_residual_px"]["median"]), 1.0)
+        chk = {c["name"]: c for c in self.pj.stage("masks")["checks"]}
+        self.assertTrue(chk["masks_sit_on_the_photographs_edge"]["ok"], chk["masks_sit_on_the_photographs_edge"]["value"])
+        self.assertTrue(os.path.exists(self.pj.path("masks_snap.json")))
+
+    def test_a_view_with_no_edge_falls_back_and_is_counted(self):
+        """Flat grey photographs (the default build): nothing to measure, every view falls back to
+        --snap-fallback-px, and the check says so rather than passing."""
+        masks.run(args(self.ply, method="vision", snap_edge=True, snap_fallback_px=2, snap_max_px=8), self.pj)
+        met = self.pj.stage("masks")["metrics"]
+        self.assertEqual(met["snap_measured_views"], 0)
+        self.assertEqual(met["snap_fell_back_views"], N_CAM)
+        truth = self.disc(90 - 2)
+        for f, m in load_masks(self.pj).items():
+            iou = (m & truth).sum() / (m | truth).sum()
+            self.assertGreater(iou, 0.97, f"{f}: IoU {iou:.3f} with r=88 (Vision's 90 eroded by the fallback 2)")
+        chk = {c["name"]: c for c in self.pj.stage("masks")["checks"]}
+        self.assertFalse(chk["masks_sit_on_the_photographs_edge"]["ok"])
+        self.assertIn("fell back", chk["masks_sit_on_the_photographs_edge"]["value"])
+
+    def test_off_by_default_and_the_rim_stays_feathered(self):
+        import cv2
+        self.paint()
+        masks.run(args(self.ply, method="vision", snap_edge=True, feather_px=1.0), self.pj)
+        m = cv2.imread(os.path.join(self.pj.dataset_dir, "masks", "L", "cap000.png"), cv2.IMREAD_GRAYSCALE)
+        self.assertGreater(((m > 0) & (m < 255)).mean(), 0, "snapping must not lose the anti-aliased rim")
+        masks.run(args(self.ply, method="vision"), self.pj)
+        self.assertFalse(self.pj.stage("masks")["metrics"]["snap_edge"])
+        self.assertNotIn("snap_measured_views", self.pj.stage("masks")["metrics"])
+
+
 if __name__ == "__main__":
     unittest.main()
