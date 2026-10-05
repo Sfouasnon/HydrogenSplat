@@ -74,10 +74,36 @@ final class AppModel: ObservableObject {
     @Published var projectPage: [String: ProjectPage] = [:]
     /// The pipeline rail's selected stage, per project path. Unset means "the next thing to do".
     @Published var pipelineStage: [String: PipelineStage] = [:]
-    /// The subject kind chosen on Footage (HSCore `SubjectKind.rawValue`), per project path, until
-    /// `hs source --subject` stores it in the manifest. Keyed by folder so New Project can set it
-    /// before the project exists.
+    /// The subject kind chosen on Footage (HSCore `SubjectKind.rawValue`), per project path. Keyed by
+    /// folder so New Project can set it before the project exists; `syncSubjectKind` keeps it and
+    /// the manifest's `project.subject_kind` in agreement.
     @Published var subjectKind: [String: String] = [:]
+    private var subjectRuns: [String: RunSession] = [:]
+
+    /// One project's subject kind, app and manifest: a kind the manifest holds and the app does not
+    /// is read in; a kind chosen in the app that the manifest lacks or disagrees with is stored
+    /// with `hs source --subject`. While a run holds the project nothing is written (the engine
+    /// would refuse); the next call stores it. Called when a project page appears and when the
+    /// choice changes.
+    func syncSubjectKind(_ project: ProjectSummary) {
+        guard let m = project.manifest else { return }
+        let path = project.path
+        let stored: String? = m.raw["project"]?["subject_kind"]?.string
+        guard let chosen = subjectKind[path] else {
+            if let s = stored { subjectKind[path] = s }
+            return
+        }
+        if chosen == stored { return }
+        if subjectRuns[path]?.isRunning == true { return }
+        if let l = project.lock, l.alive { return }
+        let run = session("Subject kind", ["source", "-p", path, "--subject", chosen])
+        run.onFinish = { [weak self] _ in
+            self?.subjectRuns[path] = nil
+            self?.store.reload()
+        }
+        subjectRuns[path] = run
+        run.start()
+    }
     /// The model chosen in the Viewer page, per project path.
     @Published var viewerFile: [String: ViewerModelFile] = [:]
     /// The in-window viewer's scene: one model held at a time, kept loaded while the page is

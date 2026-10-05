@@ -24,6 +24,9 @@ struct ProjectDetailView: View {
                 pipeline
             }
         }
+        .onAppear { model.syncSubjectKind(project) }
+        .onChange(of: project.path) { _, _ in model.syncSubjectKind(project) }
+        .onChange(of: model.subjectKind[project.path]) { _, _ in model.syncSubjectKind(project) }
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Picker("Page", selection: page) {

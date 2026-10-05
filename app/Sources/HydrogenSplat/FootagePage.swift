@@ -56,7 +56,7 @@ struct FootagePage: View {
     @ViewBuilder private func existing(_ m: Manifest) -> some View {
         VerdictCard(.good, headline: existingHeadline(m), detail: m.originalPath ?? m.clipPath) {
             factChips(kind: existingKind(m), size: existingSize(m),
-                      exposure: m.raw["source"]?["exposure"]?.string,
+                      exposure: existingExposure(m),
                       lens: existingLens(m))
         }
         subjectCard
@@ -80,6 +80,14 @@ struct FootagePage: View {
         let what = m.isArray ? "A clip from one camera" : "A 3D clip from the phone"
         if let f = frames { return "\(what): \(f) frames, \(dur)." }
         return "\(what)" + (m.clipName.map { ": \($0)." } ?? ".")
+    }
+
+    /// Whether the frames agree on brightness, once Look has measured it (`hs exposure --analyze`).
+    /// A clip's file does not say whether exposure was locked, so before that there is no fact.
+    private func existingExposure(_ m: Manifest) -> String? {
+        guard let drift = m.stage("exposure")?.metrics["drift_stops"]?.double else { return nil }
+        if drift < 0.5 { return "steady" }
+        return "varies by " + String(format: "%.1f", drift) + " stops"
     }
 
     private func existingKind(_ m: Manifest) -> String {
@@ -203,7 +211,7 @@ struct FootagePage: View {
         HStack(spacing: 8) {
             MetricChip(text: "Kind: " + (kind ?? "not known yet"))
             MetricChip(text: "Size: " + (size ?? "not known yet"))
-            MetricChip(text: "Exposure: " + (exposure ?? "not known yet"), tint: exposure == nil ? nil : Brand.accent)
+            MetricChip(text: "Exposure: " + (exposure ?? "measured in Look"), tint: exposure == nil ? nil : Brand.accent)
             MetricChip(text: "Lens: " + (lens ?? "not known yet"), tint: lens == nil ? nil : Brand.accent)
         }
     }
@@ -358,8 +366,8 @@ struct FootagePage: View {
             args = p.ingestArguments(project: folder, options: options)
             guard !args.isEmpty else { return }
         }
-        // the subject chosen above travels with the folder; `hs source --subject` will store it
-        // in the manifest once the engine has the flag
+        // the subject chosen above travels with the folder; AppModel.syncSubjectKind stores it in
+        // the manifest when the project's page opens
         let chosen = subject
         let s = model.session("Ingest", args)
         let ingested: URL? = usingPhone ? nil : droppedFile
