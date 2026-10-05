@@ -356,6 +356,86 @@ class Probe(Base):
         self.assertEqual(evs[-1], {"ev": "done", "stage": "source", "exit": 0})
 
 
+class LookBelow(Base):
+    """A folder given as footage is looked into: the clip may be several folders down.
+
+    2026-10-05: a folder holding a Hydrogen clip read "no photographs here", and the clip itself had
+    to be picked. A folder is the natural thing to drop."""
+
+    FF = os.path.join(FAKEBIN, "ffprobe")                # the stand-in: every file is a Holocam 2x1 clip
+
+    def clip(self, *parts):
+        p = os.path.join(self.tmp, *parts)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"\0" * 64)
+        return p
+
+    def photos(self, n, *parts):
+        d = os.path.join(self.tmp, *parts)
+        for i in range(n):
+            write_jpg(os.path.join(d, f"IMG-{i:04d}.jpg"), 40 + i)
+        return d
+
+    def test_one_clip_three_folders_down_is_taken_as_if_it_had_been_given(self):
+        c = self.clip("Shoot", "day1", "phone", "DCIM", "VID_20260915_145235_2x1.h4v")
+        top = os.path.join(self.tmp, "Shoot")
+        r = source.probe(top, self.FF)
+        self.assertEqual((r["kind"], r["accepted"], r["ingest"]), ("stereo", True, ["--clip", c]))
+        self.assertEqual(r["found_in"], top)
+        self.assertEqual(r["notes"][0], "found inside Shoot: " + os.path.join("day1", "phone", "DCIM", os.path.basename(c)))
+
+    def test_a_clip_lying_in_the_folder_itself(self):
+        c = self.clip("Shoot", "VID_20260915_145235_2x1.h4v")
+        r = source.probe(os.path.join(self.tmp, "Shoot"), self.FF)
+        self.assertEqual((r["kind"], r["ingest"]), ("stereo", ["--clip", c]))
+
+    def test_several_finds_are_listed_for_a_choice(self):
+        a = self.clip("Shoot", "a", "one.mov")
+        b = self.clip("Shoot", "b", "two.mp4")
+        ph = self.photos(9, "Shoot", "c", "stills")
+        r = source.probe(os.path.join(self.tmp, "Shoot"), self.FF)
+        self.assertEqual((r["kind"], r["accepted"]), ("unknown", False))
+        self.assertEqual([(c["path"], c["kind"]) for c in r["candidates"]], [(a, "video"), (b, "video"), (ph, "stills")])
+        self.assertEqual(r["candidates"][2]["rel"], os.path.join("c", "stills"))
+        self.assertEqual(r["candidates_more"], 0)
+        self.assertIn("choose one", r["problems"][0])
+
+    def test_no_deeper_than_four_folders_and_not_into_hidden_ones(self):
+        self.clip("Shoot", "1", "2", "3", "4", "5", "deep.mov")
+        self.clip("Shoot", ".Trashes", "gone.mov")
+        r = source.probe(os.path.join(self.tmp, "Shoot"), self.FF)
+        self.assertEqual(r["kind"], "unknown")
+        self.assertIn("no clip and no folder of photographs in Shoot or up to 4 folders below it", r["problems"][0])
+        self.assertNotIn("candidates", r)
+
+    def test_a_stray_picture_does_not_hide_the_clip(self):
+        write_jpg(os.path.join(self.tmp, "Shoot", "notes", "cover.jpg"), 90)
+        c = self.clip("Shoot", "clips", "VID_20260915_145235_2x1.h4v")
+        r = source.probe(os.path.join(self.tmp, "Shoot"), self.FF)
+        self.assertEqual((r["kind"], r["ingest"]), ("stereo", ["--clip", c]))
+
+    def test_photographs_that_were_meant_are_not_replaced_by_a_clip_below(self):
+        d = self.photos(9, "Set")
+        self.clip("Set", "behind-the-scenes", "bts.mov")
+        r = source.probe(d, self.FF)
+        self.assertEqual((r["kind"], r["stills"]["count"]), ("stills", 9))
+        few = self.photos(2, "Two")                         # too few, and nothing below: its own message stands
+        r = source.probe(few, self.FF)
+        self.assertEqual((r["kind"], r["accepted"]), ("stills", False))
+        self.assertIn("at least three", r["problems"][0])
+
+    def test_a_project_given_as_footage_gives_its_own_source(self):
+        proj = os.path.join(self.tmp, "2026-09-22_Garden")
+        c = self.clip("2026-09-22_Garden", "source", "VID_20260922_112802_2x1.h4v")
+        self.clip("2026-09-22_Garden", "render", "orbit_1920.mp4")
+        write_jpg(os.path.join(proj, "select", "contact.jpg"), 90)
+        self.photos(12, "2026-09-22_Garden", "train", "dataset", "images", "L")
+        json.dump({"version": 1, "stages": {"ingest": {"status": "done"}}}, open(os.path.join(proj, "manifest.json"), "w"))
+        r = source.probe(proj, self.FF)
+        self.assertEqual((r["kind"], r["ingest"]), ("stereo", ["--clip", c]))
+        self.assertEqual(r["notes"][0], "found inside 2026-09-22_Garden: " + os.path.join("source", os.path.basename(c)))
+
+
 @unittest.skipUnless(KF.have_tools(), "needs ffmpeg with libx264 and ffprobe")
 class OneCameraClip(Base):
     """An ordinary video: ingested by its tags (none), picked by hs select with --mono."""

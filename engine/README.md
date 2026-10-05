@@ -60,6 +60,7 @@ hs/
 
 ```
 hs source  PATH                                                       what a file or folder would be ingested as: stereo | video | stills | r3d (no project, writes nothing)
+                                                                      a folder that is not footage itself is looked into, four folders down: one find is taken, several come back as `candidates`
 hs source  -p P --subject matte|glossy|bright|person|scene             what the subject is -> manifest project.subject_kind (read by exposure --analyze; the word train --recipe takes)
 hs ingest  -p P --clip VID_..._2x1.h4v [--link]                       copy, MD5, ffprobe, validate 2x1 video, match the calibration profile
 hs ingest  -p P --clip IMG_2525.MOV [--link]                          any other camera's video: one camera (source.kind mono); hs select picks its frames
@@ -302,6 +303,28 @@ hs select -p P                              # ...picked in the project (select_f
 hs ingest -p P --frames ~/Pictures/helmet   # photographs, names made safe, HEIC converted
 hs ingest -p P --r3d RED_Footage --take 067
 ```
+
+**A folder is looked into (2026-10-05).** Dropping the folder a clip is in used to answer "no
+photographs here"; the clip itself had to be picked. `hs source FOLDER` now walks down to four
+folders below it (hidden names skipped, links not followed): every video file, and every folder
+holding eight or more photographs or one frame per camera folder. One find is reported as if it had
+been given, with `found_in` and a note saying where it was. Several come back as kind `unknown`
+with `candidates` (`path`, `rel`, `kind`; at most 12, `candidates_more` says how many were left
+out), which the app offers as buttons. Photographs lying in the given folder itself still win when
+they are plainly a set (eight or more, or one folder per camera). A HydrogenSplat project given as
+footage gives its own `source/`, not its renders and thumbnails.
+
+**`hs select` warns when the picks do not chain (`picks_overlap_enough`).** The selector records,
+for each pick, how many points its tracker carried from the pick before (`tracked` in
+`select/quality.json`). A pick with under 10 has little the solver can tie it to its neighbour
+with. Metrics `weak_links`, `weak_link_share`; the check fails (needs a human) at 5 % of picks.
+On the four clips that have the measurement the share of weak picks and the share of frames the
+solve then lost run together: 0.8 % weak and none lost, 11 % and 12 %, 23 % and 23 %, 30 % and
+36 %. It is a statement about the clip: per frame it is right about half the time, so it does not
+say which frames will go. The app shows it on the Frames page before the cameras are placed, and
+after a partial registration offers to go on with the frames that were placed
+(`hs solve --export-only --allow-partial`).
+
 
 - **`--clip` decides by the container's own tags.** A Hydrogen clip carries `leia3d_*` tags in
   its comment and nothing else does; anything without them is one camera (`source.kind: mono`

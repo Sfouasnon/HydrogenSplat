@@ -58,6 +58,32 @@ def add_parser(sub):
     return p
 
 
+WEAK_LINK_TRACKED = 10     # tracked points from the pick before, under which a pick hangs by a thread
+WEAK_LINK_SHARE = 0.05     # share of such picks above which the solve is warned about
+
+
+def weak_links(pj, frames):
+    """Say before the solve whether the picks chain. `tracked` is how many points the selector's
+    tracker carried from the pick before; a pick with almost none has little the solver can tie it
+    to its neighbour with. On the four clips measured so far the solver lost about the share of
+    frames that were weak this way (0.8 % weak: none lost; 11 %: 12 %; 23 %: 23 %; 30 %: 36 %), so
+    it is a warning about the clip, not a prediction for any one frame (per frame it is right
+    about half the time). Nothing is recorded when the selector measured no tracking."""
+    tr = [f.get("tracked") for f in frames if f.get("tracked") is not None]
+    if not tr:
+        return
+    weak = sum(1 for t in tr if t < WEAK_LINK_TRACKED)
+    share = weak / len(tr)
+    pj.metric(STAGE, "weak_links", weak)
+    pj.metric(STAGE, "weak_link_share", round(share, 4))
+    ok = share < WEAK_LINK_SHARE
+    pj.check(STAGE, "picks_overlap_enough", ok, needs_human=not ok,
+             value=(f"{weak} of {len(tr)} picks barely overlap the pick before them; the cameras should chain" if ok else
+                    f"{weak} of {len(tr)} picks barely overlap the pick before them: expect the solver to lose about "
+                    f"that many frames. The camera moved fast or looked at something featureless there; pick again "
+                    f"with a smaller gap, or go on and accept holes in the model"))
+
+
 def run(a, pj):
     pj.require(STAGE)
     mono = pj.source_kind == "mono" and bool(pj.clip)     # one camera's clip: picked here, with --mono
@@ -199,6 +225,7 @@ def run(a, pj):
     pj.metric(STAGE, "frames_flagged", quality["flagged"])
     for name, count in sorted(quality["flag_counts"].items()):
         pj.metric(STAGE, f"flag_{name}", count)
+    weak_links(pj, quality["frames"])
     med = quality["medians"]
     if med["noise"] is not None:
         pj.metric(STAGE, "noise_median", med["noise"])

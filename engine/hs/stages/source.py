@@ -11,12 +11,19 @@ Hydrogen 3D clip, ``video`` one ordinary camera's clip, ``stills`` a folder of p
 app's New Project page shows exactly this; ``hs/sourceprobe.py`` has the rules, and ``hs ingest``
 applies the same ones.
 
+A folder that is not footage itself is looked into (``sources_below``): a clip, or a folder of
+photographs, up to four folders down. One find is reported as if it had been given, with a note
+saying where it was; several come back as ``candidates`` for a choice. A project folder given as
+footage gives its own ``source/``. (Until 2026-10-05 a folder holding a clip was "no photographs
+here", and the clip itself had to be picked.)
+
 ``hs source -p P --subject KIND`` (matte | glossy | bright | person | scene) is the Footage step's
 one choice about the subject, kept in the manifest as ``project.subject_kind``. ``hs exposure
 --analyze`` reads it for its recommendation and ``hs train --recipe`` is normally given the same
 word; nothing else in the project changes, so no stage goes stale.
 """
 import argparse
+import json
 import os
 
 from .. import calib, events, sourceprobe
@@ -160,6 +167,69 @@ def probe_stills(root, dropped_file=None):
                            "renamed": len(renamed), "heic": heic})
 
 
+SEARCH_DEPTH = 4          # folders below the given one that are looked into for footage
+MIN_STILLS_BELOW = 8      # photographs a folder FOUND by looking must hold: fewer is thumbnails or a contact sheet
+MAX_CANDIDATES = 12       # how many finds are listed for the user to choose from
+
+
+def sources_below(root, max_depth=SEARCH_DEPTH):
+    """[(path, "video" | "stills")] under a folder that is not itself footage: every video file,
+    and every folder of photographs (MIN_STILLS_BELOW or more in one folder, or one frame per
+    camera folder), down to max_depth. Hidden names are skipped, links are not followed, and a
+    folder taken as photographs is not looked into further."""
+    out = []
+    root = os.path.abspath(root)
+    base = root.rstrip(os.sep).count(os.sep)
+    for d, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = sorted(x for x in dirs if not sourceprobe.hidden(x))
+        if d.rstrip(os.sep).count(os.sep) - base >= max_depth:
+            dirs[:] = []
+        out += [(os.path.join(d, f), "video") for f in sorted(files)
+                if not sourceprobe.hidden(f) and f.lower().endswith(sourceprobe.VIDEO_EXTS)]
+        if d == root:
+            continue                      # the given folder's own photographs were judged before this
+        try:
+            kind, views, _why = ingest.frames_layout(d)
+        except (events.StageError, OSError):
+            continue
+        if kind == "array" or len(views) >= MIN_STILLS_BELOW:
+            # frames_layout follows a chain of single folders down; name the folder the pictures
+            # are in (for an array, the one that holds the camera folders), not the top of the chain
+            held = os.path.dirname(views[0][1])
+            out.append((os.path.dirname(held) if kind == "array" else held, "stills"))
+            dirs[:] = []
+    return out
+
+
+def is_project(path):
+    """A HydrogenSplat project folder: a manifest.json with stages in it."""
+    try:
+        with open(os.path.join(path, "manifest.json")) as f:
+            return isinstance(json.load(f).get("stages"), dict)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def probe_below(root, ffprobe_bin, where=None):
+    """A folder that is not footage itself: what lies below it. One find is reported as if it
+    had been given, with a note saying where it was; several are listed for a choice."""
+    found = sources_below(where or root)
+    name = os.path.basename(root.rstrip(os.sep))
+    if not found:
+        return _report(root, "unknown", "no footage here",
+                       [f"no clip and no folder of photographs in {name} or up to {SEARCH_DEPTH} folders below it"])
+    if len(found) == 1:
+        r = probe(found[0][0], ffprobe_bin)
+        r["notes"] = [f"found inside {name}: {os.path.relpath(found[0][0], root)}"] + list(r.get("notes", []))
+        r["found_in"] = root
+        return r
+    shown = found[:MAX_CANDIDATES]
+    return _report(root, "unknown", f"{len(found)} clips or folders of photographs in {name}",
+                   [f"{name} holds {len(found)} things that could be a project's footage; choose one"],
+                   candidates=[{"path": p, "rel": os.path.relpath(p, root), "kind": k} for p, k in shown],
+                   candidates_more=len(found) - len(shown))
+
+
 def probe(path, ffprobe_bin="ffprobe"):
     """The report for one path (see the module docstring)."""
     p = os.path.abspath(os.path.expanduser(path))
@@ -172,7 +242,21 @@ def probe(path, ffprobe_bin="ffprobe"):
         # a RED folder holds R3D clips somewhere below; look only as deep as a card goes
         if sourceprobe.r3d_files(p, max_depth=4):
             return probe_r3d(p)
-        return probe_stills(p)
+        if is_project(p):
+            # an existing project given as footage: its own source, not its renders and thumbnails
+            return probe_below(p, ffprobe_bin, where=os.path.join(p, "source"))
+        r = probe_stills(p)
+        st = r.get("stills")
+        # photographs that were plainly meant (a set, an array, or a layout the engine refused by
+        # name) are reported as they are; a stray picture or nothing at all means the footage may be
+        # further down
+        if r["kind"] != "unknown" and (r["accepted"] or st is None or st.get("layout") == "one folder per camera"
+                                       or st.get("count", 0) >= MIN_STILLS_BELOW):
+            return r
+        below = probe_below(p, ffprobe_bin)
+        if below["kind"] != "unknown" or below.get("candidates"):
+            return below
+        return below if r["kind"] == "unknown" else r
     if low.endswith(sourceprobe.R3D_EXTS):
         return probe_r3d(p)
     if low.endswith(ingest.SOURCE_EXTS):
