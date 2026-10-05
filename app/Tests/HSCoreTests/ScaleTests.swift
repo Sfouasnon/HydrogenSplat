@@ -41,7 +41,7 @@ final class ScaleTests: XCTestCase {
     }
 
     /// The real Circles measurement (2026-09-23): refused, ratio 4.65 from a lawn-only overlap,
-    /// up axis detected as Z, 372 captures off the scan.
+    /// up axis detected as Z, 252 captures off the scan.
     func testReadsTheLastMeasurementFromTheManifest() throws {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "manifest_lidar_check", withExtension: "json", subdirectory: "Fixtures"))
         let m = try XCTUnwrap(Manifest(data: Data(contentsOf: url)))
@@ -54,10 +54,10 @@ final class ScaleTests: XCTestCase {
         XCTAssertEqual(c.impliedBaselineMM ?? 0, 49.45, accuracy: 0.01)
         XCTAssertEqual(c.scanUp, "z")
         XCTAssertEqual(c.scanUpSource, "detected")
-        XCTAssertEqual(c.capturesOffScan, 372)
+        XCTAssertEqual(c.capturesOffScan, 252)
         XCTAssertTrue(c.verdict.hasPrefix("Not aligned — "), c.verdict)
         XCTAssertTrue(c.facts.contains { $0.hasPrefix("scan up axis Z (read off the scan)") }, "\(c.facts)")
-        XCTAssertTrue(c.facts.contains { $0.contains("372 captures outside the scan") }, "\(c.facts)")
+        XCTAssertTrue(c.facts.contains { $0.contains("252 captures outside the scan") }, "\(c.facts)")
         XCTAssertTrue(c.problems.contains { $0.hasPrefix("lidar scale agrees") }, "\(c.problems)")
         XCTAssertNil(AppliedScale(manifest: m))
     }

@@ -32,7 +32,7 @@ final class EstimateTests: XCTestCase {
         XCTAssertEqual(est.label(.auto), "Auto (sequential) ≈ 35 min")
         XCTAssertEqual(est.framesCaption, "844 images, sequential ≈ 35 min")
         XCTAssertEqual(est.detail, "844 images · 355,746 pairs exhaustive · 26,000 pairs sequential. "
-                       + "Times are the engine's defaults until a solve has been timed on this Mac.")
+                       + "Times are for the whole solve (features, matching, mapping, export) and are the engine's defaults until a solve has been timed on this Mac; the mapping share is the least certain.")
     }
 
     /// Other layouts the engine might settle on: a list of entries, a bare total, `<phase>_s` keys,
@@ -49,7 +49,7 @@ final class EstimateTests: XCTestCase {
         XCTAssertEqual(est.cost(.sequential)?.seconds.count, 4)
         XCTAssertEqual(est.autoMatcher, .exhaustive)
         XCTAssertEqual(est.label(.auto), "Auto (exhaustive) ≈ 7 min")
-        XCTAssertEqual(est.calibrationNote, "Times measured on this Mac (3 runs).")
+        XCTAssertEqual(est.calibrationNote, "Times are for the whole solve (features, matching, mapping, export), measured on this Mac (3 runs).")
     }
 
     func testMatchersAtTheTopLevelAndNoWayToResolveAuto() throws {
