@@ -296,6 +296,25 @@ def list_exports(d):
     return sorted(out)
 
 
+RATE_WINDOW_S = 180.0      # the ETA goes by the steps of the last three minutes
+
+
+def recent_rate(samples, now, window=RATE_WINDOW_S):
+    """Steps a second over the last `window` seconds of (time, step) samples, oldest first; the
+    list is trimmed to that window in place. None until a step has been made.
+
+    Brush slows as the model grows, so the mean rate since the start flatters what is left: on a
+    4-million-splat scene at step 9,491 of 20,000 it said 51 minutes while the steps of the last
+    minutes said 83. The first minutes of a run have nothing older to go by and use what there is."""
+    while len(samples) > 2 and samples[1][0] <= now - window:
+        samples.pop(0)
+    t0, d0 = samples[0]
+    t1, d1 = samples[-1]
+    if t1 - t0 <= 1.0 or d1 <= d0:
+        return None
+    return (d1 - d0) / (t1 - t0)
+
+
 def parse_exclude(text, root=None):
     """'L/cap064, cap069_R, R/cap070.jpg' -> {'L/cap064', 'R/cap069', 'R/cap070'}
 
@@ -849,12 +868,13 @@ def run(a, pj):
     st = {"iter": start_iter, "splats": None, "t0": time.monotonic(), "iter0": start_iter,
           "seen_exports": set(p for _, p in list_exports(exports)),   # retained pre-resume history
           "growth": [], "errors": [], "last_emit": 0.0, "depth_err": [], "depth_views": None,
-          "depth_spread": []}
+          "depth_spread": [], "samples": [(time.monotonic(), start_iter)]}
 
     def _progress(force=False):
-        el = time.monotonic() - st["t0"]
+        now = time.monotonic()
         done = st["iter"]
-        rate = (done - st["iter0"]) / el if el > 1 and done > st["iter0"] else None
+        st["samples"].append((now, done))
+        rate = recent_rate(st["samples"], now)
         eta = (total - done) / rate if rate else None
         st["last_emit"] = time.monotonic()
         events.progress(STAGE, done, total, rate=rate, eta_s=eta,

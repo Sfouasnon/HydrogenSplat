@@ -78,6 +78,18 @@ final class EraserTool: ObservableObject {
     @Published private(set) var busy = false
     @Published var note: String?
 
+    /// Where the last clean took splats from (some of them), the copy they are missing from, and
+    /// whether to draw them: the answer to "it says 14,000 went — where?".
+    @Published private(set) var tookOut: [SIMD3<Float>] = []
+    @Published private(set) var tookOutFrom: String?
+    @Published var showTookOut = true
+
+    func setTookOut(_ centres: [SIMD3<Float>], from ply: String?) {
+        tookOut = centres
+        tookOutFrom = ply
+        showTookOut = true
+    }
+
     static let maxBoxes = 12
     static let maxDots = 4000
 
@@ -215,6 +227,15 @@ struct EraserOverlay: View {
             ZStack(alignment: .topLeading) {
                 TimelineView(.animation) { _ in
                     Canvas { ctx, size in
+                        if tool.showTookOut, !tool.tookOut.isEmpty, tool.tookOutFrom == scene.loaded?.ply {
+                            var gone = Path()
+                            for p in tool.tookOut {
+                                if let q = scene.screenPoint(p, size: size) {
+                                    gone.addRect(CGRect(x: q.x - 1.5, y: q.y - 1.5, width: 3, height: 3))
+                                }
+                            }
+                            ctx.fill(gone, with: .color(Color.yellow))
+                        }
                         var path = Path()
                         for b in tool.boxes {
                             for p in b.dots {
@@ -295,6 +316,12 @@ struct CleanUpPanel: View {
                 Text("Take floaters out of the model before you move the camera through it. Everything here writes a copy; the trained model stays as it was, and the picker above the picture switches between them.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if !tool.tookOut.isEmpty, tool.tookOutFrom == chosen?.ply {
+                    Toggle("Show where the last clean took splats from (yellow dots)", isOn: $tool.showTookOut)
+                    Text("They can be behind you or out where the camera stood, so pull the view back to find them.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if busyElsewhere {
                     Text("Another step is running on this project. Cleaning can start when it ends.")
                         .foregroundStyle(Color.orange)
@@ -321,7 +348,7 @@ struct CleanUpPanel: View {
 
     private var pathCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("On the camera's path").font(.headline)
+            Text("Automatic: the camera's path").font(.headline)
             Text("Takes out the specks and haze sitting where the camera itself went. Nothing real can be there, and a move along the camera's path flies straight through them.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -358,7 +385,8 @@ struct CleanUpPanel: View {
             .appendingPathComponent(name + "_clearpath.ply")
         run(title: "Clean the camera's path",
             arguments: ["prune", "-p", path, "--clear-path", strength.steps, "--ply", f.ply, "--name", name],
-            out: out, countKey: "prune.on_the_path", hand: false)
+            out: out, tookOut: String(out.dropLast("_clearpath.ply".count)) + "_path_only.ply",
+            countKey: "prune.on_the_path", hand: false)
     }
 
     // MARK: by hand
@@ -443,12 +471,13 @@ struct CleanUpPanel: View {
         }
         run(title: "Erase by hand",
             arguments: ["prune", "-p", path, "--erase", spec, "--ply", f.ply, "--name", name],
-            out: out, countKey: "prune.erased", hand: true)
+            out: out, tookOut: String(out.dropLast(".ply".count)) + "_only.ply",
+            countKey: "prune.erased", hand: true)
     }
 
     // MARK: running either
 
-    private func run(title: String, arguments: [String], out: String, countKey: String, hand: Bool) {
+    private func run(title: String, arguments: [String], out: String, tookOut: String, countKey: String, hand: Bool) {
         let path = project.path
         let q = RunQueue(config: model.config, steps: [RunQueue.Step(title: title, arguments: arguments)])
         if hand {
@@ -472,11 +501,12 @@ struct CleanUpPanel: View {
                 if let a = removed, let t = total, t > 0 {
                     text = a == 0
                         ? "Nothing was there to take out; the copy is the same as the model."
-                        : "Took out \(CleanUpPanel.grouped(a)) of \(CleanUpPanel.grouped(t)) splats (\(String(format: "%.2f", 100 * a / t)) %). The copy is showing now; the picker above the picture has the model it came from."
+                        : "Took out \(CleanUpPanel.grouped(a)) of \(CleanUpPanel.grouped(t)) splats (\(String(format: "%.2f", 100 * a / t)) %). The copy is showing now, with yellow dots where they were; the picker above the picture has the model it came from."
                 } else {
                     text = "Done. The copy is showing now."
                 }
                 if hand { tool.selecting = false }
+                tool.setTookOut(PlyCentres.read(tookOut, limit: EraserTool.maxDots), from: out)
                 onCleaned(out)
             case .cancelled:
                 text = "Stopped."
@@ -503,6 +533,56 @@ struct CleanUpPanel: View {
         f.numberStyle = .decimal
         f.maximumFractionDigits = 0
         return f.string(from: NSNumber(value: x)) ?? String(Int(x))
+    }
+}
+
+// MARK: - Where a clean took splats from
+
+/// Some of the centres in a Gaussian .ply (metres), evenly thinned to about `limit`: enough to
+/// draw where a clean took splats from. Empty if the file is not a little-endian binary .ply
+/// with float x, y, z.
+enum PlyCentres {
+    private static let sizes: [String: Int] = [
+        "float": 4, "float32": 4, "double": 8, "float64": 8, "uchar": 1, "uint8": 1, "char": 1, "int8": 1,
+        "short": 2, "int16": 2, "ushort": 2, "uint16": 2, "int": 4, "int32": 4, "uint": 4, "uint32": 4,
+    ]
+
+    static func read(_ path: String, limit: Int) -> [SIMD3<Float>] {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe),
+              let end = data.range(of: Data("end_header\n".utf8)),
+              let head = String(data: data.subdata(in: 0..<end.lowerBound), encoding: .ascii),
+              head.contains("binary_little_endian") else { return [] }
+        var count = 0
+        var stride = 0
+        var at: [String: Int] = [:]
+        for line in head.split(separator: "\n") {
+            let w = line.split(separator: " ").map(String.init)
+            guard w.count == 3 else { continue }
+            if w[0] == "element", w[1] == "vertex" {
+                count = Int(w[2]) ?? 0
+            } else if w[0] == "property" {
+                guard let n = sizes[w[1]] else { return [] }
+                if n == 4, w[1].hasPrefix("float") { at[w[2]] = stride }
+                stride += n
+            }
+        }
+        guard count > 0, stride > 0, let ox = at["x"], let oy = at["y"], let oz = at["z"],
+              data.count >= end.upperBound + count * stride else { return [] }
+        let body = end.upperBound
+        let step = max(1, count / max(limit, 1))
+        var out: [SIMD3<Float>] = []
+        out.reserveCapacity(count / step + 1)
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            var i = 0
+            while i < count {
+                let o = body + i * stride
+                out.append(SIMD3<Float>(raw.loadUnaligned(fromByteOffset: o + ox, as: Float.self),
+                                        raw.loadUnaligned(fromByteOffset: o + oy, as: Float.self),
+                                        raw.loadUnaligned(fromByteOffset: o + oz, as: Float.self)))
+                i += step
+            }
+        }
+        return out
     }
 }
 

@@ -125,6 +125,33 @@ class AutoEta(unittest.TestCase):
         self.assertIn('"eta_s":5', last)
 
 
+class TrainRate(unittest.TestCase):
+    """hs train's own ETA goes by the last three minutes, not by the mean since the start."""
+
+    def test_a_run_that_slows_is_timed_by_its_recent_steps(self):
+        from hs.stages.train import recent_rate
+        samples = [(0.0, 0)]
+        t, step = 0.0, 0
+        for _ in range(60):                       # ten minutes at 10 steps a second
+            t += 10.0; step += 100
+            samples.append((t, step))
+            recent_rate(samples, t)
+        self.assertAlmostEqual(recent_rate(samples, t), 10.0, places=6)
+        for _ in range(30):                       # then five minutes at 2 a second
+            t += 10.0; step += 20
+            samples.append((t, step))
+            r = recent_rate(samples, t)
+        self.assertAlmostEqual(r, 2.0, places=6)                       # the mean since the start would say 7.3
+        self.assertLessEqual(samples[-1][0] - samples[0][0], 190.0)    # and the list does not grow with the run
+
+    def test_nothing_to_go_by_yet(self):
+        from hs.stages.train import recent_rate
+        self.assertIsNone(recent_rate([(5.0, 0)], 5.0))
+        self.assertIsNone(recent_rate([(5.0, 0), (5.5, 3)], 5.5))      # under a second
+        self.assertIsNone(recent_rate([(5.0, 7), (65.0, 7)], 65.0))    # no step made
+        self.assertAlmostEqual(recent_rate([(5.0, 0), (25.0, 40)], 25.0), 2.0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

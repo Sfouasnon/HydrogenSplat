@@ -115,6 +115,9 @@ Workers never commit; commits happen per phase after the build is clean.
     still on, to check they sit on the floater. "Erase What Is Marked" writes the boxes to
     `prune/<model>_hand_erase.json` and runs `hs prune --erase`; the result is one hand-cleaned copy
     per model (`prune/<model>_hand_erased.ply`) that later erases add to in place.
+  - **Where it went.** After either clean the copy is shown with yellow dots where the removed
+    splats were (read from the `_path_only` / `_erased_only` file the engine writes), with a switch
+    to hide them. On an orbit they sit out where the camera stood, behind the usual view.
   - A box is the viewer's projection × view, a rectangle in its screen and a reach in metres from
     that camera; the engine runs the same test on splat centres (`clearpath.inside_boxes`), so
     what the dots show is what goes.
