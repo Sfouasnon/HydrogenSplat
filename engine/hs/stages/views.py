@@ -811,8 +811,11 @@ def summarize(metrics, checks, prev=None, solve_metrics=None, solve_checks=None,
         steps.append(f"Calibrate the lens: the cameras agree to {c.get('value') or 'more than wanted'}; film the board, "
                      f"then solve again with the profile.")
     if edge_weak:
-        steps.append("Tighten the outlines in the Subject step (snap the edges, review the flagged frames): "
-                     "the edge of the outline is where the score is lost.")
+        # Not "tighten the outlines": run I (2026-10-05) trained on outlines snapped to the photograph's
+        # edge and scored 5.6 dB lower in the edge band than run H did on the same outlines. The model
+        # fades in over several px either side of whatever boundary it was trained with.
+        steps.append("The outline is the weak part: the model fades in over several pixels there. Review the "
+                     "flagged frames in the Subject step; moving the outline moves the soft rim with it.")
     if "no_view_much_softer_than_achievable" in failed:
         soft = m.get("views_soft") or []
         steps.append("Leave the blurred frames out (hs train --exclude) or shoot again more slowly: "

@@ -279,11 +279,13 @@ struct SubjectPage: View {
         }
     }
 
-    /// `hs masks` with the panel's settings; the edge snap is on for everything but a person
-    /// (hair), and the outlines are checked against each other in the same run.
+    /// `hs masks` with the panel's settings; the outlines are checked against each other in the
+    /// same run. The edge snap (`--snap-edge`) is not passed: trained on snapped outlines the model
+    /// scored 5.6 dB lower along the outline than one trained on Vision's own (run I against run H,
+    /// 2026-10-05) — the soft rim moves with the boundary. The page still reports a snap when the
+    /// masks on disk were built with one.
     private func build() {
-        var args = settings.wrappedValue.arguments(project: project.path)
-        if settings.wrappedValue.method == .vision && kind != .person { args.append("--snap-edge") }
+        let args = settings.wrappedValue.arguments(project: project.path)
         run("Build masks", args)
     }
 

@@ -1457,6 +1457,15 @@ the largest step is the paint/trim edge, not the silhouette, and the trim is los
 A repaired mask that is a fresh Vision instance is snapped the same way; a patched one keeps the
 boundary the build snapped. Rebuilding masks retires the review, as any build does.
 
+**What it did to a model (run I, 2026-10-05): off by default, and leave it off for training.** The
+same recipe trained on snapped masks scored 14.7 dB in the edge band of the snapped hold-out masks;
+the model trained on Vision's own masks (run H) scored 19.0 dB in that same band, better in 10 of
+10 views, and 0.3 dB better inside. Against the masks each was trained on, both read 14-15 dB. The
+soft rim is centred on whatever boundary the model was trained with and about 8 px to either side:
+snapping moved it onto the helmet instead of leaving it in the strip of background outside. The
+flag measures the bias correctly; it is useful for scoring (masks that stop at the object) and
+for anything that needs the true silhouette, not as a way to sharpen the rim.
+
 `3DGS_4DGS_Challenging_Materials_Guide.docx` §1: "duplicate or ghosted objects through glass →
 straight-ray model fits incompatible refracted correspondences → mask glass and retrain
 background". Masking is the one thing that guide recommends which Brush actually has: its

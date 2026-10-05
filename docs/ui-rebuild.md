@@ -75,7 +75,7 @@ JSON (K, distortion, image size, rms px) under the user's Application Support, k
 | matte | yes | transparent | lidar if present | 0.2 / 0.2 if scan | 3 | kept | |
 | glossy | yes | transparent | lidar if present | 0.2 / 0.2 (spread on even without scan) | 3 | kept | |
 | bright | yes | transparent | lidar if present | 0.2 / 0.2 | 3 | kept | Look recommends the softer shoulder |
-| person | yes | transparent | lidar if present | 0.2 / 0.2 | 3 | kept | masks with `--snap-edge` off (hair) |
+| person | yes | transparent | lidar if present | 0.2 / 0.2 | 3 | kept | |
 | scene | no | — | lidar if present | 0 / 0 | 3 | — | full-scene layer |
 
 | Effort | max resolution | total iters | growth stop | refine every |
@@ -85,7 +85,8 @@ JSON (K, distortion, image size, rms px) under the user's Application Support, k
 | final | source (≤ 3840) | 40,000 | 30,000 | 130 |
 
 Run H (2026-10-04) showed 1920 scores the same as 3840 on the helmet in half the time; that is why
-standard is 1920.
+standard is 1920. No recipe passes `hs masks --snap-edge`: run I (2026-10-05) trained on snapped
+outlines and scored 5.6 dB lower along the outline than run H on the same outlines.
 
 ## Build loop
 

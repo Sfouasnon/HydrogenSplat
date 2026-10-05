@@ -33,7 +33,7 @@ class Summary(unittest.TestCase):
         self.assertEqual(S["summary"][3], "1.3% of the model sits out of place in the typical view (worst view 8%).")
         # the weak edge is the one next step on a run whose checks all pass
         self.assertEqual(len(S["next_steps"]), 1)
-        self.assertIn("Tighten the outlines", S["next_steps"][0])
+        self.assertIn("The outline is the weak part", S["next_steps"][0])
 
     def test_against_the_last_run(self):
         same = views.summarize(METRICS, OK, prev={"psnr_interior_median": 31.0})
@@ -73,7 +73,7 @@ class Summary(unittest.TestCase):
         self.assertEqual(steps[3], "Shoot from below: no frame covers it.")
         self.assertTrue(steps[4].startswith("Match the exposure in the Look step: The subject's brightness swings 1.2 stops"))
         self.assertTrue(steps[5].startswith("Calibrate the lens: the cameras agree to 2.4 px"))
-        self.assertTrue(steps[6].startswith("Tighten the outlines"))
+        self.assertTrue(steps[6].startswith("The outline is the weak part"))
         self.assertIn("sel010_L, sel011_L", steps[7])
         self.assertIn("The subject itself is out of place", steps[8])
         self.assertEqual(len(steps), 9)
