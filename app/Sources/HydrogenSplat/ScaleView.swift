@@ -277,8 +277,10 @@ struct LidarScaleCard: View {
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [UTType(filenameExtension: "ply"), UTType(filenameExtension: "obj"),
                                      UTType(filenameExtension: "xyz"), UTType(filenameExtension: "txt"),
-                                     UTType(filenameExtension: "csv"), UTType(filenameExtension: "pts")].compactMap { $0 }
-        panel.message = "A phone LiDAR scan of the scene (PLY, OBJ or XYZ)"
+                                     UTType(filenameExtension: "csv"), UTType(filenameExtension: "pts"),
+                                     UTType(filenameExtension: "e57"), UTType(filenameExtension: "las"),
+                                     UTType(filenameExtension: "laz")].compactMap { $0 }
+        panel.message = "A LiDAR scan of the scene: PLY, OBJ or XYZ from a phone, E57 or LAS from a scanner"
         guard panel.runModal() == .OK, let u = panel.url else { return }
         copyError = nil
         let dir = (project.path as NSString).appendingPathComponent("lidar")

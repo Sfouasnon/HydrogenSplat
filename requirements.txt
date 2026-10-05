@@ -2,3 +2,5 @@ numpy>=2.0
 opencv-python-headless>=4.10
 pycolmap==4.2.0
 scipy>=1.10
+# optional: compressed LAS scans (.laz) for `hs scale --lidar`; E57 and plain LAS need nothing
+# laspy[lazrs]>=2.5

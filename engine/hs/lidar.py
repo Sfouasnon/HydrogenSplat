@@ -1,5 +1,6 @@
-"""LiDAR scan: load a phone scan (Polycam / Scaniverse PLY, OBJ, XYZ/CSV), register it to a
-solve, and read metric scale, up and the ground plane off it.
+"""LiDAR scan: load a scan — a phone's (Polycam / Scaniverse PLY, OBJ, XYZ/CSV) or a survey
+scanner's (E57, LAS; hs/scanformats.py) — register it to a solve, and read metric scale, up and
+the ground plane off it.
 
 Pure functions over numpy arrays, like hs/board.py; `hs scale --lidar` (stages/scale.py) is the
 caller. Nearest neighbours are cv2.flann kd-trees (`NN`), so the dependencies stay numpy + cv2.
@@ -41,7 +42,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-UNIT_MM = {"m": 1000.0, "cm": 10.0, "mm": 1.0}
+UNIT_MM = {"m": 1000.0, "cm": 10.0, "mm": 1.0,
+           "ft": 304.8, "usft": 1200.0 / 3937.0 * 1000.0}      # a survey in feet (LAS, US state plane)
+ORIGIN_SHIFT_BEYOND_MM = 1.0e6     # a scan centred more than a kilometre from zero is moved to it (load_scan)
 
 
 # ======================================================================== loading
@@ -341,9 +344,15 @@ def load_scan(path, units=None):
         pts, rgb, nrm, meta, declared = _load_obj(path)
     elif ext in (".xyz", ".csv", ".txt", ".pts"):
         pts, rgb, nrm, meta, declared = _load_text_points(path)
+    elif ext == ".e57":
+        from . import scanformats
+        pts, rgb, nrm, meta, declared = scanformats.load_e57(path)
+    elif ext in (".las", ".laz"):
+        from . import scanformats
+        pts, rgb, nrm, meta, declared = scanformats.load_las(path)
     else:
-        raise ValueError(f"unsupported scan format {ext or '(none)'}: export PLY (point cloud or mesh), "
-                         "OBJ, or XYZ/CSV from the scanning app")
+        raise ValueError(f"unsupported scan format {ext or '(none)'}: PLY (point cloud or mesh), OBJ, "
+                         "XYZ/CSV text points, E57 and LAS are read; export one of those from the scanning app")
     n_file = len(pts)
     good = np.isfinite(pts).all(axis=1)
     pts = pts[good]
@@ -357,12 +366,26 @@ def load_scan(path, units=None):
         u, src, confident = units, "flag", True
     elif declared:
         u, src, confident = declared, "header", True
+    elif meta.get("units_assumed"):
+        # a LAS with no coordinate system: metres, and said to be a guess (hs/scanformats.py)
+        u, src, confident = meta["units_assumed"], "assumed", False
     else:
         src = "extent"
         u, confident = infer_units(ext_file)
     k = UNIT_MM[u]
     pts = pts * k
+    # A georeferenced scan (a LAS in a projected coordinate system, an E57 tied to a survey) sits
+    # hundreds or thousands of kilometres from zero. The kd-trees (cv2.flann) and the files written
+    # from the scan are single precision, which is good to a quarter of a millimetre at 4 km and to
+    # a quarter of a metre at 4,000 km, so such a scan is brought to the origin by whole metres and
+    # the move is recorded: scan coordinates anywhere downstream + origin_shift_mm = the file's.
+    centre = np.median(pts, axis=0)
+    shift = None
+    if float(np.abs(centre).max()) > ORIGIN_SHIFT_BEYOND_MM:
+        shift = np.round(centre / 1000.0) * 1000.0
+        pts = pts - shift
     meta.update({
+        "origin_shift_mm": None if shift is None else [float(x) for x in shift],
         "path": os.path.abspath(path), "file_bytes": os.path.getsize(path),
         "vertices": int(n_file), "points": int(len(pts)), "dropped_nonfinite": int(n_file - len(pts)),
         "units": u, "units_source": src, "units_confident": bool(confident),

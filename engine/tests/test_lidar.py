@@ -196,7 +196,8 @@ class Parse(unittest.TestCase):
         np.testing.assert_array_equal(sc.colors, self.C)
 
     def test_refusals(self):
-        for name, body, why in (("scan.las", b"LASF", "unsupported"),
+        for name, body, why in (("scan.usdz", b"PK", "unsupported"),
+                                ("scan.las", b"LASF", "not a LAS file"),
                                 ("noxyz.ply", b"ply\nformat ascii 1.0\nelement vertex 1\nproperty float a\nend_header\n1\n", "no x, y, z"),
                                 ("notply.ply", b"hello\n", "not a PLY"),
                                 ("short.ply", b"ply\nformat binary_little_endian 1.0\nelement vertex 100\nproperty float x\n"

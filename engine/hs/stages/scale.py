@@ -118,9 +118,10 @@ def add_parser(sub):
     p.add_argument("--dry-run", action="store_true", help="measure and report, write nothing")
     g = p.add_argument_group("LiDAR scan (instead of --board)")
     g.add_argument("--lidar", metavar="SCAN", default=None,
-                   help="a phone LiDAR scan of the scene (Polycam / Scaniverse PLY point cloud or mesh, OBJ, "
-                        "XYZ/CSV): aligned to the solve's sparse points; its metric scale is applied to a "
-                        "mono/array solve and checked against a stereo one")
+                   help="a LiDAR scan of the scene: a phone's (Polycam / Scaniverse PLY point cloud or mesh, OBJ, "
+                        "XYZ/CSV) or a survey scanner's (E57, LAS; LAZ with laspy installed). Aligned to the "
+                        "solve's sparse points; its metric scale is applied to a mono/array solve and checked "
+                        "against a stereo one")
     g.add_argument("--units", choices=tuple(lidarlib.UNIT_MM), default=None,
                    help="the scan file's units (default: a header comment, else inferred from its extent)")
     g.add_argument("--scan-up", choices=("auto",) + tuple(lidarlib.SCAN_UP), default="auto",
@@ -898,7 +899,7 @@ def measure_lidar(pj, G, names, L, scan, a, init, pairs, stereo, sil_rows=None):
     bad = [r["capture"] for r in rows if not r["ok"]]
 
     meta = scan.meta
-    units_ok = meta["units_source"] != "extent" or meta["units_confident"]
+    units_ok = meta["units_source"] not in ("extent", "assumed") or meta["units_confident"]
     metrics = {
         "lidar_scan": os.path.basename(a.lidar), "scan_points": meta["points"], "scan_faces": meta["faces"],
         "scan_units": meta["units"], "scan_units_source": meta["units_source"],

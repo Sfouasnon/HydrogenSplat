@@ -624,6 +624,23 @@ hs train -p P --layer subject --alpha-mode transparent --init lidar --depth-weig
 python3 engine/tools/ray_depth.py P --ply P/archive/B/export_40000.ply --ply P/archive/C/export_40000.ply   # how thick is the surface a camera sees?
 ```
 
+**Scan files (2026-10-05: E57 and LAS added).** PLY (point cloud or mesh), OBJ and XYZ / CSV / PTS
+text points, as a phone scanning app exports them; and E57 and LAS, as a survey scanner or survey
+package delivers them (`hs/scanformats.py`). E57 and LAS are read with numpy alone, because the
+engine's Python has no libE57 wheel: every scan in an E57 is moved by its own pose into the file's
+frame, Float / Integer / ScaledInteger fields and cartesian or spherical coordinates are read,
+returns marked invalid are dropped; LAS 1.0–1.4 with colour where the point format has it. LAZ is
+read through `laspy[lazrs]` when that is installed and refused by name otherwise. A scan of more
+than 8 million records is thinned to that while it is read (every k-th record; about 2 million
+records a second), and `meta.records` / `meta.stride` say so. E57 is metres; a LAS says its unit in
+its coordinate system (metres, feet, US survey feet: `--units` takes `ft` and `usft` too) and one
+without a coordinate system is taken as metres and flagged by `lidar_units_known`. A scan centred
+more than a kilometre from zero (survey coordinates) is brought to the origin by whole metres and
+`origin_shift_mm` in the report records the move. Checked against libE57 (pye57 0.4.19) on
+libE57Format's reference files and against laspy 2.7; no file from a real scanner has been
+through it, and neither has the registration of a whole-set scan against a solve of one small
+subject. E57 page checksums are not verified. USDZ, glTF and FBX are not read.
+
 Exactly one of `--board` / `--lidar` / `--factor`. The scan (Polycam / Scaniverse from an iPhone Pro, scanned
 before the shoot) is registered to rig.npz's sparse points **solve → scan**: the solve's points
 are a subset of what the scan saw, so every one has a surface under it and the scan's extra
