@@ -2,187 +2,79 @@ import SwiftUI
 import AppKit
 import HSCore
 
-/// Build the per-view subject silhouettes, look at them, and see what they cost.
-///
-/// The masks are written once and read two ways: the subject model trains on them as they are,
-/// the background model reads the same files inverted. What they mean to the loss is a Train
-/// setting, not a Masks one — see the Layer control there.
-struct MasksView: View {
-    @EnvironmentObject var model: AppModel
-    @EnvironmentObject var store: ProjectStore
-    let project: ProjectSummary
-    let manifest: Manifest
-
-    @State private var showAdvanced = false
-    @State private var confirmStale = false
-    /// Listed on appear and whenever the stage changes, never in body: body runs on every poll.
-    @State private var files = MaskFiles(counts: [:], newest: nil)
-
-    private var settings: Binding<MaskSettings> {
-        Binding(get: { model.maskSettings[project.path] ?? defaults },
-                set: { model.maskSettings[project.path] = $0 })
-    }
-
-    /// Without a model there is nothing to project but the sparse cloud.
-    private var defaults: MaskSettings {
-        var s = MaskSettings()
-        if !trainDone { s.source = .points }
-        return s
-    }
-
-    private var stage: StageState? { manifest.stage("masks") }
-    private var queue: RunQueue? { model.maskQueues[project.path] }
-    private var running: Bool { queue?.isRunning ?? false }
-    /// The Build button's title. The review section's check and decide runs go through this same
-    /// queue, and they build nothing.
-    private var buildTitle: String {
-        guard running else { return "Build Masks" }
-        return queue?.steps.first?.title == MasksView.buildStep ? "Building…" : "Working…"
-    }
-    /// The title of the build's step in the queue: how a build is told from a check or a decide.
-    private static let buildStep = "Build masks"
-    private var solveReady: Bool { manifest.stage("solve")?.status == .done }
-    /// A model exists to project. Stale counts: building masks marks train stale, and the model is
-    /// still on disk — reading "not done" as "no model" flipped the source to SfM points after the
-    /// first build, so a second press would have rebuilt from the worse source.
-    private var trainDone: Bool {
-        let s = manifest.stage("train")?.status
-        return s == .done || s == .stale
-    }
-    private var lockAlive: Bool { project.lock?.alive == true }
-    private var blocked: Bool { running || lockAlive || !model.config.problems.isEmpty }
-    /// The solve ran without a metric reference: the engine's _m/_mm figures are in its own units.
-    private var unscaled: Bool {
-        manifest.stage("solve")?.checks.contains { $0.name == "scene_scaled" && !$0.ok } ?? false
-    }
-
-    private var reloadKey: String {
-        "\(project.path)|\(stage?.finished?.timeIntervalSince1970 ?? 0)|\(stage?.status.rawValue ?? "")"
-    }
-
-    /// Masks built before the model they would now be rebuilt from: still valid silhouettes, but
-    /// not the tightest ones available. This is the coins case — the set on disk came from an
-    /// export that training has since replaced.
-    private var olderThanModel: Bool {
-        guard let built = files.newest, let trained = manifest.stage("train")?.finished else { return false }
-        return built < trained
-    }
-
-    /// The preview sheet the stage recorded, if it is still there.
-    private var previewSheet: String? {
-        guard let a = stage?.artifacts.first(where: { $0.hasSuffix(".jpg") }) else { return nil }
-        let p = a.hasPrefix("/") ? a : (project.path as NSString).appendingPathComponent(a)
-        return FileManager.default.fileExists(atPath: p) ? p : nil
-    }
+/// The pieces of the Subject step (SubjectPage) behind "Adjust the outlines": how `hs masks`
+/// draws the subject's outline in every frame. The defaults are the engine's.
+struct MaskSettingsPanel: View {
+    @Binding var settings: MaskSettings
+    /// A trained model exists to project from; without one only the sparse points can be.
+    let modelAvailable: Bool
+    @State private var more = false
 
     var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 14) {
-                if !solveReady {
-                    Text("Solve first — the silhouettes are projected with each view's own K, R and t.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    intro
-                    handles
-                    commandPreview
-                    buttons
-                    results
-                    if !files.isEmpty {
-                        MaskReviewSection(project: project, reloadKey: reloadKey)
-                    }
-                }
-            }
-            .padding(4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            HStack {
-                Text("Masks").font(.headline)
-                if let s = stage { StatusBadge(status: s.status) }
-                if !files.isEmpty {
-                    Text(files.summary).font(.caption.monospaced()).foregroundStyle(.secondary)
-                }
-            }
-        }
-        .task(id: reloadKey) { files = MaskFiles.read(project: project.path) }
-        .confirmationDialog("Rebuild the masks?", isPresented: $confirmStale) {
-            Button("Build masks", role: .destructive) { run() }
-        } message: {
-            Text("The current model was trained against the masks on disk; replacing them marks train, prune, render and views stale.")
-        }
-    }
-
-    private var intro: some View {
-        Text("A mask of the subject in every view. Vision finds the objects in each photo; the region projected from the solve decides which one is the subject. White is what the trainer keeps. The same files serve both layers: the background model reads them inverted.")
-            .font(.callout).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    // MARK: handles
-
-    private var handles: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Handle(title: "Method", help: "Object (Vision): Apple Vision finds the objects in each photo and keeps the one that sits inside the projected region — a tight mask of the thing itself, with a hard edge and a 1–2 px anti-aliased rim. Region only: the projected region itself, which also takes in whatever is near the subject (on the greeting card: 45% of the frame, backdrop and table included). A view where Vision finds nothing inside the region falls back to the region and is counted in the checks.") {
-                Picker("", selection: settings.method) {
+            StepSetting(title: "Method", help: "Object: the thing itself, found in each frame. Region: the projected area around it, backdrop included.") {
+                Picker("", selection: $settings.method) {
                     ForEach(MaskSettings.Method.allCases) { Text($0.title).tag($0) }
                 }
                 .labelsHidden().pickerStyle(.segmented).frame(width: 260)
             }
-            Handle(title: "Built from", help: sourceHelp) {
-                Picker("", selection: settings.source) {
+            StepSetting(title: "Built from", help: modelAvailable ? "The trained model gives the tightest outline; the sparse points need no model."
+                                                                 : "No model in this project yet, so the sparse points are what there is.") {
+                Picker("", selection: $settings.source) {
                     ForEach(MaskSettings.Source.allCases) { Text($0.title).tag($0) }
                 }
                 .labelsHidden().pickerStyle(.segmented).frame(width: 260)
-                .disabled(!trainDone)
+                .disabled(!modelAvailable)
             }
-            Handle(title: "Size", help: "The radius is fitted to your camera orbit — the subject fills about 70% of the frame at the median camera distance — so it works whether or not the scene has metric scale. Below 1 tightens it; above 1 takes in more around the subject.") {
-                Slider(value: settings.radiusScale, in: 0.5...2.0, step: 0.05) { EmptyView() }
+            StepSetting(title: "Size", help: "Below 1 tightens the region; above 1 takes in more around the subject.") {
+                Slider(value: $settings.radiusScale, in: 0.5...2.0, step: 0.05) { EmptyView() }
                     .frame(width: 220)
-                Text(String(format: "×%.2f", settings.wrappedValue.radiusScale))
+                Text(String(format: "×%.2f", settings.radiusScale))
                     .monospacedDigit().frame(width: 60, alignment: .leading)
             }
-            Handle(title: "Margin", help: "The silhouette is dilated outward by this share of the radius. One-sided on purpose: a generous mask costs a little background supervision, a tight one deletes real observations of the subject.") {
-                Slider(value: settings.marginFrac, in: 0...0.2, step: 0.01) { EmptyView() }
+            StepSetting(title: "Margin", help: "The outline grows outward by this share; generous costs little, tight deletes real subject.") {
+                Slider(value: $settings.marginFrac, in: 0...0.2, step: 0.01) { EmptyView() }
                     .frame(width: 220)
-                Text(String(format: "%.0f%%", settings.wrappedValue.marginFrac * 100))
+                Text(String(format: "%.0f%%", settings.marginFrac * 100))
                     .monospacedDigit().frame(width: 60, alignment: .leading)
             }
-            DisclosureGroup("Detail", isExpanded: $showAdvanced) {
+            DisclosureGroup("More", isExpanded: $more) {
                 VStack(alignment: .leading, spacing: 10) {
-                    if settings.wrappedValue.method == .vision {
-                        Handle(title: "Edge", help: "Softness of the object mask's rim: the sigma of a Gaussian over the hard edge, in pixels. 1 gives the 1–2 px anti-aliasing an opaque subject wants; 0 is a hard binary edge.") {
-                            Slider(value: settings.featherPx, in: 0...4, step: 0.5) { EmptyView() }
+                    if settings.method == .vision {
+                        StepSetting(title: "Edge", help: "Softness of the outline's rim in pixels; 1 suits an opaque subject, 0 is a hard edge.") {
+                            Slider(value: $settings.featherPx, in: 0...4, step: 0.5) { EmptyView() }
                                 .frame(width: 220)
-                            Text(String(format: "%.1f px", settings.wrappedValue.featherPx))
+                            Text(String(format: "%.1f px", settings.featherPx))
                                 .monospacedDigit().frame(width: 60, alignment: .leading)
                         }
                     }
-                    Handle(title: "Minimum opacity", help: "Splats fainter than this are not drawn. Raise it when a decayed model leaves haze inside the radius; lower it when the silhouette comes out patchy.") {
-                        Slider(value: settings.minOpacity, in: 0...0.6, step: 0.05) { EmptyView() }
+                    StepSetting(title: "Minimum opacity", help: "Splats fainter than this are not drawn; raise it against haze, lower it against a patchy outline.") {
+                        Slider(value: $settings.minOpacity, in: 0...0.6, step: 0.05) { EmptyView() }
                             .frame(width: 220)
-                        Text(String(format: "%.2f", settings.wrappedValue.minOpacity))
+                        Text(String(format: "%.2f", settings.minOpacity))
                             .monospacedDigit().frame(width: 60, alignment: .leading)
                     }
-                    Handle(title: "Close gaps", help: "Morphological close, in pixels, to bridge the gaps between projected splats before the interior is filled.") {
-                        Stepper(value: settings.closePx, in: 1...81, step: 2) {
-                            Text("\(settings.wrappedValue.closePx) px").monospacedDigit()
+                    StepSetting(title: "Close gaps", help: "Bridges gaps between projected splats before the inside is filled.") {
+                        Stepper(value: $settings.closePx, in: 1...81, step: 2) {
+                            Text("\(settings.closePx) px").monospacedDigit()
                         }
                         .frame(width: 160)
                     }
-                    Handle(title: "Glints", help: "For glossy subjects: cut the specular highlights out of the subject mask, so training does not fill the surface with veil to fake a highlight that moves as the camera does. The surface takes its colour from the views where that spot is not lit; the glints themselves are mostly lost. Read highlights_share_of_subject afterwards — above a few percent it is cutting paint, not glints. Train the subject layer with it, not the background layer.") {
-                        Toggle("Exclude specular highlights", isOn: settings.excludeHighlights)
-                        if settings.wrappedValue.excludeHighlights {
-                            Stepper(value: settings.highlightCode, in: 200...254, step: 2) {
-                                Text("≥ \(settings.wrappedValue.highlightCode)").monospacedDigit()
+                    StepSetting(title: "Glints", help: "Cut the specular highlights out of the outline so training does not fake them with haze.") {
+                        Toggle("Keep glints out of the outline", isOn: $settings.excludeHighlights)
+                        if settings.excludeHighlights {
+                            Stepper(value: $settings.highlightCode, in: 200...254, step: 2) {
+                                Text("≥ \(settings.highlightCode)").monospacedDigit()
                             }
                             .frame(width: 130)
                         }
                     }
-                    Handle(title: "One object", help: "Keep only the largest connected silhouette. Turn it off when the subject really is in separate pieces.") {
-                        Toggle("Keep the largest piece only", isOn: settings.keepLargest)
+                    StepSetting(title: "One object", help: "Keep only the largest piece; turn off when the subject really is in separate pieces.") {
+                        Toggle("Keep the largest piece only", isOn: $settings.keepLargest)
                     }
-                    Handle(title: "Preview", help: "How many views go into the preview sheet written beside the masks.") {
-                        Stepper(value: settings.previewViews, in: 2...12) {
-                            Text("\(settings.wrappedValue.previewViews) views").monospacedDigit()
+                    StepSetting(title: "Preview", help: "How many frames go into the preview sheet written beside the outlines.") {
+                        Stepper(value: $settings.previewViews, in: 2...12) {
+                            Text("\(settings.previewViews) frames").monospacedDigit()
                         }
                         .frame(width: 160)
                     }
@@ -190,118 +82,5 @@ struct MasksView: View {
                 .padding(.top, 6)
             }
         }
-    }
-
-    private var sourceHelp: String {
-        if !trainDone {
-            return "No model in this project yet, so the sparse SfM points are all there is to project. They are thin and scattered, so the silhouette leans on the close and fill steps — check the preview before you train on it. Once a model exists, rebuild from that instead."
-        }
-        return settings.wrappedValue.source == .model
-            ? "The trained model: the prune output if there is one, else the final export. Dense, so the silhouette needs the least bridging. This is the order that has worked — train once without masks, build the masks from that model, then train the layer."
-            : "The sparse SfM points, which need no model at all. The cloud is thin, so the discs are inflated and the close step does the rest; on the coins set this produced silhouettes that were rejected in favour of ones projected from a trained model."
-    }
-
-    // MARK: run
-
-    private var commandPreview: some View {
-        let args = settings.wrappedValue.arguments(project: project.path)
-        let line = (["hs"] + args.map { $0 == project.path ? "$P" : $0 }).map(shellQuote).joined(separator: " ")
-        return VStack(alignment: .leading, spacing: 4) {
-            Text("Runs (P = this project):").font(.caption).foregroundStyle(.secondary)
-            CopyableCommand(text: line)
-        }
-    }
-
-    private var buttons: some View {
-        HStack(spacing: 12) {
-            Button(buildTitle) {
-                if trainDone && !files.isEmpty { confirmStale = true } else { run() }
-            }
-            .disabled(blocked)
-            .help("Project the silhouettes into every view and write train/dataset/masks.")
-            if !files.isEmpty {
-                Button("Reveal in Finder") {
-                    let p = (project.path as NSString).appendingPathComponent("train/dataset/masks")
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
-                }
-                .disabled(running)
-            }
-            if lockAlive, let l = project.lock {
-                Label("\(l.stage ?? "a stage") is running", systemImage: "lock.fill").foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func run() {
-        let steps = [RunQueue.Step(title: MasksView.buildStep, arguments: settings.wrappedValue.arguments(project: project.path))]
-        let q = RunQueue(config: model.config, steps: steps)
-        let path = project.path
-        q.onStep = { s in model.projectRuns[path] = s }
-        q.onFinish = { _ in store.reload() }
-        model.maskQueues[path] = q
-        q.start()
-    }
-
-    // MARK: results
-
-    @ViewBuilder private var results: some View {
-        if let s = stage, s.status != .pending, !s.metrics.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Divider()
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("What was built").font(.subheadline.weight(.semibold))
-                    if s.status == .stale {
-                        Text("the solve was rewritten since — rebuild before training")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-                }
-                if let p = previewSheet {
-                    ThumbImage(path: p)
-                        .frame(maxWidth: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                    Text("Yellow is the mask edge; everything outside it is dimmed. With Vision, magenta is the projected region it chose from.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                MetricGrid(rows: rows(s.metrics, keys: ["method", "vision_fell_back", "prior_coverage_median", "source", "views", "points_available", "points_used",
-                                                        "radius_source", "radius_scale",
-                                                        "coverage_median", "coverage_min", "coverage_max"]))
-                if let r = s.metrics["radius_m"]?.double {
-                    Text(unscaled
-                         ? String(format: "Radius %.4g scene-metres — this solve has no metric scale, so that is its own unit, not a real metre. The masks don't depend on it.", r)
-                         : String(format: "Radius %.0f mm.", r * 1000))
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                ForEach(s.checks) { c in
-                    CheckRow(name: c.name, ok: c.ok, value: c.value?.display, needsHuman: c.needsHuman)
-                }
-                if olderThanModel {
-                    Label("These were built before the model now in train/exports. They are still valid silhouettes — rebuild only if you want them projected from the current model.",
-                          systemImage: "clock.arrow.circlepath")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let cov = s.metrics["coverage_median"]?.double {
-                    Text(coverageNote(cov))
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-
-    private func coverageNote(_ median: Double) -> String {
-        let pct = median * 100
-        if pct < 2 {
-            return String(format: "The subject covers %.1f%% of the frame — almost nothing is being kept. Raise the radius, or lower the minimum opacity.", pct)
-        }
-        if pct > 75 {
-            return String(format: "The subject covers %.1f%% of the frame, so the mask is keeping most of the picture and buying little. Lower the radius.", pct)
-        }
-        return String(format: "The subject covers %.1f%% of the frame. The background layer gets the other %.1f%%.", pct, 100 - pct)
-    }
-
-    private func rows(_ m: [String: JSONValue], keys: [String]) -> [(String, String)] {
-        keys.compactMap { k in m[k].map { (k, $0.display) } }
     }
 }

@@ -111,6 +111,18 @@ public struct TrainSettings: Equatable, Sendable {
     /// Start Brush from the LiDAR scan (`hs train --init lidar`: scale/lidar_init.ply, written by
     /// `hs scale --lidar … --init-points`) instead of the solve's sparse points.
     public var initFromLidar = false
+    /// Brush's `--max-resolution`: the long edge the training images are capped at. nil = Brush's
+    /// own default. `TrainEffort.final` asks for the source size, up to 3840.
+    public var maxResolution: Int? = nil
+    /// `hs train --depth-weight`: hold the model to the registered LiDAR scan's depth. 0 = off.
+    /// Needs scale/lidar_init.ply (`hs scale --lidar SCAN --init-points`).
+    public var depthWeight: Double = 0
+    /// `hs train --depth-spread-weight`: thin a smoky surface per ray. 0 = off; needs no scan.
+    public var depthSpreadWeight: Double = 0
+    /// `hs train --recipe KIND --effort E`, recorded in the manifest when the settings came from
+    /// the Train step's three choices (`TrainSettings.recipe`). The explicit flags above still win.
+    public var recipe: String? = nil
+    public var effort: String? = nil
 
     public init() {}
 
@@ -132,6 +144,7 @@ public struct TrainSettings: Equatable, Sendable {
     public var brushArgs: String {
         var parts: [String] = []
         if let n = backgroundNoise { parts.append("--background-noise-strength \(TrainSettings.num(n))") }
+        if let r = maxResolution, r > 0 { parts.append("--max-resolution \(r)") }
         let extra = extraBrushArgs.trimmingCharacters(in: .whitespaces)
         if !extra.isEmpty { parts.append(extra) }
         return parts.joined(separator: " ")
@@ -154,9 +167,15 @@ public struct TrainSettings: Equatable, Sendable {
         if let s = splitAtScreenSize { a.append("--split-at-screen-size=\(TrainSettings.num(s))") }
         let ex = excludedViews(in: set)
         if !ex.isEmpty { a.append("--exclude=\(ex.joined(separator: ","))") }
+        if let r = recipe { a.append("--recipe=\(r)") }
+        if let e = effort { a.append("--effort=\(e)") }
         a.append("--layer=\(layer.rawValue)")
         if layer == .subject { a.append("--alpha-mode=\(alphaMode.rawValue)") }   // explicit, so the manifest says which
-        if initFromLidar { a.append("--init=lidar") }
+        // with a recipe named, every choice the recipe would make is passed explicitly, so what the
+        // page shows is what runs (an explicit flag wins over the recipe in the engine)
+        if initFromLidar { a.append("--init=lidar") } else if recipe != nil { a.append("--init=sparse") }
+        if depthWeight > 0 || recipe != nil { a.append("--depth-weight=\(TrainSettings.num(depthWeight))") }
+        if depthSpreadWeight > 0 || recipe != nil { a.append("--depth-spread-weight=\(TrainSettings.num(depthSpreadWeight))") }
         let b = brushArgs
         if !b.isEmpty { a.append("--brush-args=\(b)") }
         return a
@@ -460,5 +479,121 @@ public enum GrowthCurve {
         }
         if out.count > 4000 { out = out.enumerated().filter { $0.offset % 2 == 0 }.map(\.element) }
         return out
+    }
+}
+
+// MARK: - Recipes (docs/ui-rebuild.md: "what is in the shot" × "how long")
+
+/// What is in the shot, as the Footage step asks it. The engine records it with
+/// `hs source --subject KIND`; until then the app keeps it per project.
+public enum SubjectKind: String, CaseIterable, Identifiable, Sendable {
+    case matte, glossy, bright, person, scene
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .matte: return "Matte object"
+        case .glossy: return "Glossy object"
+        case .bright: return "Bright object"
+        case .person: return "Person"
+        case .scene: return "Whole scene"
+        }
+    }
+
+    /// One line of what the choice means for the model.
+    public var meaning: String {
+        switch self {
+        case .matte: return "Matte means: a dull surface — the model is cut to the outline and the room is left out."
+        case .glossy: return "Glossy means: reflections and glints — the model is cut to the outline and its surface is kept thin."
+        case .bright: return "Bright means: near-white or lit — the model is cut to the outline; the Look step softens the highlights."
+        case .person: return "Person means: hair and skin — the model is cut to the outline, which is left soft for hair."
+        case .scene: return "Whole scene means: the room is the subject — no outline, one model for everything in frame."
+        }
+    }
+
+    /// Masks, and so a subject layer, for everything but a whole scene.
+    public var usesMasks: Bool { self != .scene }
+    /// The surface-thinning spread term runs even without a scan on a glossy subject.
+    public var spreadWithoutScan: Bool { self == .glossy }
+}
+
+/// How long to spend. The resolutions and schedules of docs/ui-rebuild.md's effort table.
+public enum TrainEffort: String, CaseIterable, Identifiable, Sendable {
+    case quick, standard, final
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .quick: return "Quick"
+        case .standard: return "Standard"
+        case .final: return "Final"
+        }
+    }
+
+    /// A rough length, in minutes, for the page before a run has been timed on this Mac.
+    public var minutes: Int {
+        switch self {
+        case .quick: return 45
+        case .standard: return 90
+        case .final: return 180
+        }
+    }
+
+    public var meaning: String {
+        switch self {
+        case .quick: return "A first look: half the steps, growth stops early. About \(minutes) min."
+        case .standard: return "The full schedule at 1920 px — scores the same as full size in half the time. About \(minutes) min."
+        case .final: return "The full schedule at the source size (up to 3840 px). About \(minutes) min."
+        }
+    }
+
+    public var totalIters: Int { self == .quick ? 20_000 : 40_000 }
+    public var growthStopIter: Int { self == .quick ? 15_000 : 30_000 }
+    public var refineEvery: Int { 130 }
+    /// Brush's `--max-resolution`; nil = the source size, capped by `TrainSettings.sourceCap`.
+    public var maxResolution: Int? { self == .final ? nil : 1920 }
+
+    /// The effort whose schedule these settings carry, if any — so the page can show the tile
+    /// the settings came from after a relaunch or a hand edit under All settings.
+    public static func matching(_ s: TrainSettings) -> TrainEffort? {
+        allCases.first { e in
+            s.totalIters == e.totalIters && s.growthStopIter == e.growthStopIter
+                && (e == .final ? (s.maxResolution ?? TrainSettings.brushDefaultResolution) >= TrainSettings.sourceCap
+                                : (s.maxResolution ?? TrainSettings.brushDefaultResolution) == 1920)
+        }
+    }
+}
+
+extension TrainSettings {
+    /// The largest long edge a "final" run trains at.
+    public static let sourceCap = 3840
+    /// What Brush caps the training images at when `--max-resolution` is not given.
+    public static let brushDefaultResolution = 1920
+
+    /// The recipe table: what is in the shot × how long, on top of `base` (which keeps the
+    /// archive name, scoring choices and anything typed under All settings). `hasScan` is a
+    /// registered LiDAR scan with init points (scale/lidar_init.ply): the model starts from it
+    /// and is held to its depth. `sourceLongEdge` is the training images' long edge, for `final`.
+    public static func recipe(kind: SubjectKind, effort: TrainEffort, hasScan: Bool,
+                              sourceLongEdge: Int? = nil, base: TrainSettings = TrainSettings()) -> TrainSettings {
+        var s = base
+        s.recipe = kind.rawValue
+        s.effort = effort.rawValue
+        s.totalIters = effort.totalIters
+        s.growthStopIter = effort.growthStopIter
+        s.refineEvery = effort.refineEvery
+        if let r = effort.maxResolution {
+            s.maxResolution = r
+        } else {
+            s.maxResolution = min(sourceLongEdge ?? TrainSettings.sourceCap, TrainSettings.sourceCap)
+        }
+        s.layer = kind.usesMasks ? .subject : .full
+        s.alphaMode = .transparent
+        s.initFromLidar = hasScan
+        s.depthWeight = hasScan && kind.usesMasks ? 0.2 : 0
+        s.depthSpreadWeight = kind.usesMasks && (hasScan || kind.spreadWithoutScan) ? 0.2 : 0
+        return s
     }
 }

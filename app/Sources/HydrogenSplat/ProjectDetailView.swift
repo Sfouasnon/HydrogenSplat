@@ -2,13 +2,14 @@ import SwiftUI
 import AppKit
 import HSCore
 
-/// One project: its source, every stage's state, and a stage's metrics / checks / log.
-/// The app runs ingest, select (+ solve), exposure, masks and train; the other stages are read from
-/// the manifest the CLI writes.
+/// One project: the rail of six steps and two doors on the left, the selected step's page on the
+/// right. Each page states one verdict and holds the one action that moves the project on.
 struct ProjectDetailView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: ProjectStore
     let project: ProjectSummary
+    /// The engine's checks and metrics for the selected step, beside the page, for a closer look.
+    @State private var showDetails = false
 
     private var page: Binding<ProjectPage> {
         Binding(get: { model.projectPage[project.path] ?? .pipeline },
@@ -31,9 +32,11 @@ struct ProjectDetailView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .disabled(project.manifest == nil)
-                .help("Pipeline: every stage. Viewer: look at a trained model (⌘1 / ⌘2).")
+                .help("Steps: the project, one step at a time. Viewer: the model and its camera move (⌘1 / ⌘2).")
             }
             ToolbarItemGroup {
+                Toggle(isOn: $showDetails) { Label("Details", systemImage: "list.bullet.rectangle") }
+                    .help("The engine's checks and metrics for this step")
                 Button { store.reload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)])
@@ -52,18 +55,25 @@ struct ProjectDetailView: View {
 
     private func stageBinding(_ m: Manifest) -> Binding<PipelineStage> {
         Binding(get: { model.pipelineStage[project.path] ?? PipelineStage.next(in: m, lock: project.lock) },
-                set: { item in
-                    model.pipelineStage[project.path] = item
-                    if item.inViewer { page.wrappedValue = .viewer }   // the move panel is unchanged
-                })
+                set: { item in model.pipelineStage[project.path] = item })
     }
 
     private func step(_ d: Int, _ m: Manifest) {
-        let all = PipelineStage.allCases
+        let all = PipelineStage.steps + PipelineStage.doors
         let cur = stageBinding(m).wrappedValue
         guard let i = all.firstIndex(of: cur) else { return }
         let j = min(max(i + d, 0), all.count - 1)
         if j != i { stageBinding(m).wrappedValue = all[j] }
+    }
+
+    /// Labels the rail cannot read off the manifest: a scene has no outlines by choice.
+    private var railLabels: [PipelineStage: String] {
+        var out: [PipelineStage: String] = [:]
+        if let raw = model.subjectKind[project.path], let k = SubjectKind(rawValue: raw), !k.usesMasks,
+           project.manifest?.stage("masks") == nil {
+            out[.subject] = "everything"
+        }
+        return out
     }
 
     private var pipeline: some View {
@@ -76,23 +86,22 @@ struct ProjectDetailView: View {
                     }
                 }
             }
+            Divider()
             if let m = project.manifest {
                 let sel = stageBinding(m)
-                Divider()
-                PipelineRail(manifest: m, lock: project.lock, selection: sel)
-                Divider()
                 HStack(alignment: .top, spacing: 0) {
-                    ScrollView {
-                        workspace(sel.wrappedValue, m)
-                            .padding(20)
-                            .frame(maxWidth: 980, alignment: .leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    PipelineRail(manifest: m, lock: project.lock, selection: sel, labels: railLabels)
+                        .frame(width: 230)
                     Divider()
-                    ScrollView {
-                        inspector(sel.wrappedValue, m).padding(14)
+                    stepPage(sel.wrappedValue)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    if showDetails {
+                        Divider()
+                        ScrollView {
+                            inspector(sel.wrappedValue, m).padding(14)
+                        }
+                        .frame(width: 340)
                     }
-                    .frame(width: 340)
                 }
                 .frame(maxHeight: .infinity)
                 .layoutPriority(1)
@@ -111,48 +120,27 @@ struct ProjectDetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    @ViewBuilder private func workspace(_ item: PipelineStage, _ m: Manifest) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            switch item {
-            case .source:
-                sourceBox(m)
-                stagesBox(m)
-            case .frames:
-                SelectView(project: project, manifest: m)
-                if m.stage("solve")?.status == .done || m.stage("scale") != nil {
-                    ScaleView(project: project, manifest: m)
-                }
-            case .exposure:
-                ExposureView(project: project, manifest: m)
-            case .masks:
-                MasksView(project: project, manifest: m)
-            case .train:
-                TrainView(project: project, manifest: m)
-                ModelsBox(scene: model.viewerScene, project: project)
-            case .grade:
-                viewerCard(item)
-                GradeView(project: project)
-            case .move, .render:
-                viewerCard(item)
-            }
+    /// One page per step. Train, Shot and Calibrate are TrainStepPage, ShotStepPage and
+    /// CalibrateStepPage (docs/ui-rebuild.md, W2); Settings is the Setup page as it was.
+    @ViewBuilder private func stepPage(_ item: PipelineStage) -> some View {
+        switch item {
+        case .footage:
+            FootagePage(project: project)
+        case .frames:
+            FramesPage(project: project)
+        case .look:
+            LookPage(project: project)
+        case .subject:
+            SubjectPage(project: project)
+        case .train:
+            TrainStepPage(project: project)
+        case .shot:
+            ShotStepPage(project: project)
+        case .calibrate:
+            CalibrateStepPage(project: project)
+        case .settings:
+            SetupView()
         }
-    }
-
-    private func viewerCard(_ item: PipelineStage) -> some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(item == .grade
-                     ? "The look is set in the Viewer's move panel, live on the model, and Render bakes it. Below: the baked result, checked on a rendered frame."
-                     : "\(item.title) is worked in the Viewer, beside the model: key the camera, set the look, look at the first, middle and last frame, then render.")
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("Open the Viewer") { page.wrappedValue = .viewer }
-                    .keyboardShortcut(.defaultAction)
-                Text("⌘2 does the same from anywhere; ⌘1 comes back here.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } label: { Text(item.title).font(.headline) }
     }
 
     @ViewBuilder private func inspector(_ item: PipelineStage, _ m: Manifest) -> some View {
@@ -163,6 +151,7 @@ struct ProjectDetailView: View {
                 Text("Nothing has run here yet.").foregroundStyle(.secondary)
             }
             ForEach(states) { st in StageDetail(project: project, stage: st) }
+            if item == .footage { stagesBox(m) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -180,44 +169,7 @@ struct ProjectDetailView: View {
         }
     }
 
-    private func sourceBox(_ m: Manifest) -> some View {
-        GroupBox("Source") {
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
-                if m.framesOnly {
-                    row("cameras", m.cameras.isEmpty ? "—" : "\(m.cameras.count): " + m.cameras.joined(separator: " "))
-                    row("from", m.originalPath ?? "—")
-                    row("md5", m.clipMD5 ?? "—")
-                    if let w = m.probe["width"]?.int, let h = m.probe["height"]?.int {
-                        row("frames", "\(w)×\(h) · " + (m.sourceKind == "mono" ? "\(m.cameras.count) from one camera" : "one per camera"))
-                    }
-                } else {
-                    row("clip", m.clipName ?? "—")
-                    row("from", m.originalPath ?? "—")
-                    row("md5", m.clipMD5 ?? "—")
-                    if let w = m.probe["width"]?.int, let h = m.probe["height"]?.int {
-                        row("video", "\(w)×\(h) \(m.probe["codec"]?.string ?? "") · \(m.probe["fps"]?.display ?? "?") fps · \(m.probe["nb_frames"]?.display ?? "?") frames · \(Format.duration(m.probe["duration_s"]?.double))")
-                    }
-                    if m.isArray {
-                        // one ordinary camera's clip: no stereo calibration applies
-                        row("camera", "one camera · frames picked in Select")
-                    } else {
-                        row("profile", m.profileID ?? "—")
-                    }
-                }
-                row("created", m.created.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "—")
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(4)
-        }
-    }
-
-    private func row(_ k: String, _ v: String) -> some View {
-        GridRow {
-            Text(k).foregroundStyle(.secondary)
-            Text(v).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-        }
-    }
-
+    /// Every engine stage in one table, for the Details column of the Footage step.
     private func stagesBox(_ m: Manifest) -> some View {
         GroupBox("Stages") {
             Table(m.stages, selection: Binding(get: { nil as String? }, set: { name in
@@ -227,32 +179,8 @@ struct ProjectDetailView: View {
                     .width(76)
                 TableColumn("Status") { s in StatusBadge(status: s.status) }
                     .width(64)
-                TableColumn("Checks") { s in
-                    if s.checks.isEmpty {
-                        Text("—").foregroundStyle(.secondary)
-                    } else if s.failedChecks == 0 {
-                        Text("\(s.checks.count) ok").foregroundStyle(.green)
-                    } else {
-                        Text("\(s.failedChecks) of \(s.checks.count) failed").foregroundStyle(.orange)
-                    }
-                }
-                .width(110)
-                TableColumn("Finished") { s in
-                    Text(s.finished.map { $0.formatted(.dateTime.month(.abbreviated).day().hour().minute()) } ?? "—")
-                        .foregroundStyle(.secondary)
-                }
-                .width(104)
                 TableColumn("Took") { s in Text(Format.duration(s.duration)).monospacedDigit() }
                     .width(64)
-                TableColumn("Note") { s in
-                    // hs writes `error` on failure; a done stage can also carry a hand-written
-                    // note saying its output was invalidated — show those as warnings, not errors
-                    Text(s.error ?? "")
-                        .foregroundStyle(s.status == .failed ? Color.red : Color.orange)
-                        .lineLimit(1)
-                        .help(s.error ?? "")
-                }
-                .width(min: 160, ideal: 300)
             }
             .frame(height: CGFloat(m.stages.count) * 24 + 32)
         }

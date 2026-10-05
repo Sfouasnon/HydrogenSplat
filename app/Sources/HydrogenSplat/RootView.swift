@@ -12,7 +12,7 @@ struct RootView: View {
             List(selection: $model.selection) {
                 BrandHeader()
                 Section("App") {
-                    Label("Setup", systemImage: model.config.problems.isEmpty ? "checkmark.seal" : "exclamationmark.triangle")
+                    Label("Settings", systemImage: model.config.problems.isEmpty ? "checkmark.seal" : "exclamationmark.triangle")
                         .tag(SidebarItem.setup)
                     Label("New Project", systemImage: "plus.rectangle.on.folder")
                         .tag(SidebarItem.ingest)
@@ -53,7 +53,7 @@ struct RootView: View {
                 case .setup, .none:
                     SetupView()
                 case .ingest:
-                    IngestView()
+                    FootagePage(project: nil)
                 case .replay:
                     ReplayView()
                 case .console:

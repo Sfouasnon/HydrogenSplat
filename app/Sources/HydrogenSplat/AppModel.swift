@@ -74,6 +74,10 @@ final class AppModel: ObservableObject {
     @Published var projectPage: [String: ProjectPage] = [:]
     /// The pipeline rail's selected stage, per project path. Unset means "the next thing to do".
     @Published var pipelineStage: [String: PipelineStage] = [:]
+    /// The subject kind chosen on Footage (HSCore `SubjectKind.rawValue`), per project path, until
+    /// `hs source --subject` stores it in the manifest. Keyed by folder so New Project can set it
+    /// before the project exists.
+    @Published var subjectKind: [String: String] = [:]
     /// The model chosen in the Viewer page, per project path.
     @Published var viewerFile: [String: ViewerModelFile] = [:]
     /// The in-window viewer's scene: one model held at a time, kept loaded while the page is

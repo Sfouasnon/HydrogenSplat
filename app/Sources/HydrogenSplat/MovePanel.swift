@@ -304,6 +304,9 @@ struct MoveInspector: View {
                     Label(String(format: "speed jump at %.2f s (frame %ld) — retime the keys around it", Double(sp) / m.fps, sp + 1),
                           systemImage: "bolt.fill").foregroundStyle(.orange).font(.callout)
                 }
+                Text(coverageSentence(a, fps: m.fps))
+                    .font(.callout).foregroundStyle(coverageGap(a) == nil ? Color.primary : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text("Coverage is the angle, seen from the anchor, to the nearest real camera: green under \(Int(MoveAnalysis.amberDeg))°, amber to \(Int(MoveAnalysis.redDeg))°, red beyond. Nothing is blocked — red is where the model has least to go on.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -641,8 +644,43 @@ private struct Frame2D {
     }
 }
 
+/// The coverage band's colour per frame: green inside what the cameras saw, amber past the
+/// nearest real camera by more than `MoveAnalysis.amberDeg`, red past `redDeg`.
 func coverageColor(_ deg: Double) -> Color {
-    deg <= MoveAnalysis.amberDeg ? .green : (deg <= MoveAnalysis.redDeg ? .yellow : .red)
+    deg <= MoveAnalysis.amberDeg ? .green : (deg <= MoveAnalysis.redDeg ? .orange : .red)
+}
+
+/// The longest amber-or-red stretch of a move, as frame indices (inclusive), or nil when every
+/// frame is inside what the cameras saw.
+func coverageGap(_ a: MoveAnalysis) -> (first: Int, last: Int, worst: Double)? {
+    var best: (first: Int, last: Int, worst: Double)?
+    var start: Int?
+    var worst = 0.0
+    func keep(_ s: Int, _ e: Int) {
+        let longer: Bool
+        if let b = best { longer = (e - s) > (b.last - b.first) } else { longer = true }
+        if longer { best = (first: s, last: e, worst: worst) }
+    }
+    for (i, d) in a.offAngle.enumerated() {
+        if d > MoveAnalysis.amberDeg {
+            if start == nil { start = i; worst = 0 }
+            worst = max(worst, d)
+        } else if let s = start {
+            keep(s, i - 1)
+            start = nil
+        }
+    }
+    if let s = start { keep(s, a.offAngle.count - 1) }
+    return best
+}
+
+/// One sentence on the move's coverage, with the fix when part of it leaves what was filmed.
+func coverageSentence(_ a: MoveAnalysis, fps: Double) -> String {
+    guard let g = coverageGap(a) else { return "Every frame of the move is inside what the cameras saw." }
+    let t0 = Double(g.first) / max(fps, 1), t1 = Double(g.last + 1) / max(fps, 1)
+    let share = Int((a.fraction(over: MoveAnalysis.amberDeg) * 100).rounded())
+    return String(format: "From %.1f s to %.1f s the camera is up to %.0f° off anything filmed (%d%% of the move, amber on the timeline) — lower the end key or shorten the move.",
+                  t0, t1, g.worst, share)
 }
 
 // MARK: - Timeline (under the viewer)

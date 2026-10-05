@@ -1,147 +1,79 @@
 import SwiftUI
 import AppKit
-import Charts
 import HSCore
 
-/// Select frames from the app: the selector's settings, the exact command, a Select Frames
-/// button, and — once it has run — a contact sheet built from select/quality.json that shows
-/// every pick's Laplacian, focus, exposure off the set's median, both eyes and noise, flags the
-/// ones worth a look, and says where a sharper frame sat. Then a Solve button, so a new clip
-/// gets from ingest to trainable without Terminal.
-struct SelectView: View {
-    @EnvironmentObject var model: AppModel
-    @EnvironmentObject var store: ProjectStore
-    let project: ProjectSummary
-    let manifest: Manifest
+/// The pieces of the Frames step (FramesPage): the picker's settings, the strip of picked frames
+/// with its contact sheet, and the frame card, flag chips and thumbnail that other steps reuse.
 
-    @State private var quality: FrameQuality?
-    @State private var sort: QualitySort = .frame
-    @State private var only: String?          // a flag code, or "flagged" / "clean"
-    @State private var showAdvanced = false
-    @State private var confirmRedo = false
-    /// `hs solve --estimate` for the current frames; nil until it answers, or if it cannot.
-    @State private var estimate: SolveEstimate?
-    @State private var estimating = false
-    /// The contact sheet can run to hundreds of stills; closed unless asked for, and remembered.
-    @AppStorage("select.stillsOpen") private var stillsOpen = false
-
-    private var settings: Binding<SelectSettings> {
-        Binding(get: { model.selectSettings[project.path] ?? SelectSettings() },
-                set: { model.selectSettings[project.path] = $0 })
-    }
-    private var queue: RunQueue? { model.selectQueues[project.path] }
-    private var selectStage: StageState? { manifest.stage("select") }
-    private var selectDone: Bool { selectStage?.status == .done }
-    private var solveStage: StageState? { manifest.stage("solve") }
-    private var lockAlive: Bool { project.lock?.alive == true }
-    /// Changes whenever a select run finishes, so the report is re-read.
-    private var reloadKey: String {
-        "\(project.path)|\(selectStage?.status.rawValue ?? "")|\(selectStage?.finished?.timeIntervalSince1970 ?? 0)"
-    }
+/// A label, its control(s), and at most one line under them.
+struct StepSetting<Content: View>: View {
+    let title: String
+    var help: String? = nil
+    @ViewBuilder let content: () -> Content
 
     var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 14) {
-                if manifest.framesOnly {
-                    Text(manifest.sourceKind == "mono"
-                         ? "One camera's frames were ingested as they were given (photographs, or picks made earlier) — every one is used, nothing to select here."
-                         : "An array project has one frame per camera — ingest already did the selecting.")
-                        .foregroundStyle(.secondary)
-                    if let n = frameCount {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Label("\(n) frames", systemImage: "photo.stack").font(.subheadline.weight(.semibold))
-                            estimateCaption
-                        }
-                    }
-                    Divider()
-                    solveSection
-                } else {
-                    handles
-                    commandPreview
-                    startRow
-                    if selectDone {
-                        Divider()
-                        solveSection
-                    }
-                    if let q = quality {
-                        Divider()
-                        summary(q)
-                        charts(q)
-                        stills(q)
-                    } else if selectDone {
-                        Text("This selection was made before the app measured frames. Press Select Frames to redo it with the quality report.")
-                            .foregroundStyle(.secondary)
-                    }
-                }
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 10) {
+                Text(title).frame(width: 130, alignment: .leading)
+                content()
             }
-            .padding(4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            HStack {
-                // an array has nothing to select: this box is its solve
-                Text(manifest.framesOnly ? "Solve" : "Select frames").font(.headline)
-                if let s = manifest.framesOnly ? solveStage : selectStage { StatusBadge(status: s.status) }
+            if let h = help {
+                Text(h).font(.caption).foregroundStyle(.secondary)
+                    .padding(.leading, 140).lineLimit(1)
             }
-        }
-        .task(id: reloadKey) { quality = FrameQuality.load(project: project.path) }
-        .task(id: estimateKey) { await loadEstimate() }
-        .confirmationDialog("Select the frames again?", isPresented: $confirmRedo) {
-            Button("Select again", role: .destructive) { startSelect() }
-        } message: {
-            Text("This replaces the current frames and quality report"
-                 + (solveStage?.status == .done ? ", and marks the solve (and everything after it) stale — it will need solving again." : "."))
         }
     }
+}
 
-    // MARK: settings
+/// How `hs select` picks frames. The defaults are the engine's; only what differs is passed.
+struct SelectSettingsPanel: View {
+    @Binding var settings: SelectSettings
+    @State private var more = false
 
-    private var handles: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Handle(title: "Parallax residual",
-                   help: "Pick a frame once the camera has moved this far (px of parallax at 480 wide, after taking out rotation). Lower = more frames, closer together. 1.5 solved the reference clip 65/65.") {
-                TextField("1.5", value: settings.residual, format: .number)
+            StepSetting(title: "Camera movement", help: "Pick a frame each time the camera has moved this far; lower picks more frames.") {
+                TextField("1.5", value: $settings.residual, format: .number)
                     .textFieldStyle(.roundedBorder).frame(width: 80)
                 Text("px").foregroundStyle(.secondary)
             }
-            Handle(title: "Keyframes",
-                   help: "H.264 I-frames are the frames without accumulated compression artefacts; on a GOP-30 clip that is one frame in 30. Use when the shutter is fast and the codec, not motion, limits sharpness.") {
-                Toggle("Keyframes only", isOn: settings.keyframes)
+            StepSetting(title: "Keyframes", help: "Only the codec's clean frames; for a fast shutter where compression, not motion, limits sharpness.") {
+                Toggle("Keyframes only", isOn: $settings.keyframes)
             }
-            DisclosureGroup("More settings", isExpanded: $showAdvanced) {
+            DisclosureGroup("More", isExpanded: $more) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Handle(title: "Gap between picks",
-                           help: "Never closer than the minimum; always pick by the maximum even if the camera stood still (those picks are flagged).") {
-                        TextField("6", value: settings.minGap, format: .number)
+                    StepSetting(title: "Gap between picks", help: "Never closer than the first; always a pick by the second, even if the camera stood still.") {
+                        TextField("6", value: $settings.minGap, format: .number)
                             .textFieldStyle(.roundedBorder).frame(width: 60)
                         Text("to").foregroundStyle(.secondary)
-                        TextField("90", value: settings.maxGap, format: .number)
+                        TextField("90", value: $settings.maxGap, format: .number)
                             .textFieldStyle(.roundedBorder).frame(width: 60)
                         Text("frames").foregroundStyle(.secondary)
                     }
-                    Handle(title: "Search window",
-                           help: "Once the parallax is reached, take the sharpest of this many frames.") {
-                        TextField("4", value: settings.search, format: .number)
+                    StepSetting(title: "Search window", help: "Once the movement is reached, take the sharpest of this many frames.") {
+                        TextField("4", value: $settings.search, format: .number)
                             .textFieldStyle(.roundedBorder).frame(width: 60)
                         Text("frames").foregroundStyle(.secondary)
                     }
-                    Handle(title: "Max clipped",
-                           help: "Skip a candidate with more than this fraction of pixels at 250+ when a cleaner one is in the window.") {
-                        TextField("0.02", value: settings.maxClip, format: .number)
+                    StepSetting(title: "Max clipped", help: "Skip a frame with more than this share of blown-out pixels when a cleaner one is near.") {
+                        TextField("0.02", value: $settings.maxClip, format: .number)
                             .textFieldStyle(.roundedBorder).frame(width: 80)
                     }
-                    Handle(title: "Highlight knee",
-                           help: "Eases the brightest values of every written frame down from the ceiling, smoothly and in order; nothing below the knee changes. 0.85 takes 255 to 249; 0.9 is gentler. Every later step sees these frames. It is not exposure matching (Exposure) and not a look (Grade).") {
-                        OptionalNumber(value: settings.highlightKnee, placeholder: "off", choices: [0.8, 0.9])
+                    StepSetting(title: "Highlight knee", help: "Eases the brightest values down from the ceiling in every written frame; off by default.") {
+                        TextField("off", value: $settings.highlightKnee, format: .number)
+                            .textFieldStyle(.roundedBorder).frame(width: 80)
+                        if settings.highlightKnee != nil {
+                            Button("Off") { settings.highlightKnee = nil }.controlSize(.small)
+                        }
                     }
-                    Handle(title: "Frame range",
-                           help: "Only look at these source frames. End −1 = to the end of the clip.") {
-                        TextField("0", value: settings.start, format: .number)
+                    StepSetting(title: "Frame range", help: "Only look at these source frames; −1 means to the end.") {
+                        TextField("0", value: $settings.start, format: .number)
                             .textFieldStyle(.roundedBorder).frame(width: 70)
                         Text("to").foregroundStyle(.secondary)
-                        TextField("-1", value: settings.end, format: .number)
+                        TextField("-1", value: $settings.end, format: .number)
                             .textFieldStyle(.roundedBorder).frame(width: 70)
-                        if settings.wrappedValue != SelectSettings.defaults {
-                            Button("Defaults") { settings.wrappedValue = SelectSettings() }.controlSize(.small)
+                        if settings != SelectSettings.defaults {
+                            Button("Defaults") { settings = SelectSettings() }.controlSize(.small)
                         }
                     }
                 }
@@ -149,352 +81,120 @@ struct SelectView: View {
             }
         }
     }
+}
 
-    private var commandPreview: some View {
-        let args = settings.wrappedValue.arguments(project: project.path)
-        let line = (["hs"] + args.map { $0.hasPrefix(project.path) ? "$P" : $0 }).map(shellQuote).joined(separator: " ")
-        return VStack(alignment: .leading, spacing: 4) {
-            Text("Runs (P = this project):").font(.caption).foregroundStyle(.secondary)
-            CopyableCommand(text: line)
-        }
-    }
+/// The picked frames: a strip of thumbnails, a filter, and the contact sheet behind "Details".
+struct PickedFramesStrip: View {
+    let project: String
+    let quality: FrameQuality
+    /// The pick `hs exposure` will match to, for the badge on its card.
+    var referenceRole: (FrameQuality.Frame) -> String? = { _ in nil }
+    var useAsReference: ((FrameQuality.Frame) -> Void)? = nil
 
-    private var startRow: some View {
-        HStack(spacing: 12) {
-            let running = queue?.isRunning ?? false
-            let problem = settings.wrappedValue.problem
-            Button(running && queue?.steps.first?.title == "Select frames" ? "Selecting…" : "Select Frames") {
-                if selectDone { confirmRedo = true } else { startSelect() }
-            }
-            .keyboardShortcut("s", modifiers: [.command, .shift])
-            .disabled(running || lockAlive || problem != nil || !model.config.problems.isEmpty)
+    @State private var only: String?          // a flag code, or "flagged" / "clean"
+    @State private var sort: QualitySort = .frame
+    @AppStorage("select.stillsOpen") private var detailsOpen = false
 
-            if let p = problem {
-                Label(p, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-            } else if lockAlive, let l = project.lock {
-                Label("\(l.stage ?? "a stage") is running", systemImage: "lock.fill").foregroundStyle(.secondary)
-            }
-        }
-    }
+    private var selectDir: String { (project as NSString).appendingPathComponent("select") }
 
-    private var solveLabel: String {
-        switch solveStage?.status {
-        case .done: return "Solve again"
-        case .stale: return "Solve (stale)"
-        default: return "Solve"
-        }
-    }
-
-    private func startSelect() {
-        run([RunQueue.Step(title: "Select frames", arguments: settings.wrappedValue.arguments(project: project.path))])
-    }
-
-    private func startSolve() {
-        run([RunQueue.Step(title: "Solve", arguments: matcher.wrappedValue.solveArguments(project: project.path))])
-    }
-
-    // MARK: solve — matcher and estimate
-
-    private var matcher: Binding<SolveMatcher> {
-        Binding(get: { model.solveMatcher[project.path] ?? .auto },
-                set: { model.solveMatcher[project.path] = $0 })
-    }
-
-    /// The frames the solve will see: what select picked from a clip, or what ingest put in for
-    /// an array or mono set.
-    private var frameCount: Int? {
-        if let n = selectStage?.metrics["frames_selected"]?.int ?? selectStage?.metrics["selected"]?.int { return n }
-        if let q = quality { return q.frames.count }
-        return manifest.framesOnly && !manifest.cameras.isEmpty ? manifest.cameras.count : nil
-    }
-
-    /// Re-estimate on appear, after every select run and whenever the frame count changes.
-    private var estimateKey: String {
-        "\(reloadKey)|\(frameCount ?? -1)|\(model.config.hsPath)"
-    }
-
-    /// `hs solve -p P --estimate`: no lock, no writes, one event. An engine without it, or a
-    /// project with nothing to solve yet, leaves the matcher without times — never an error.
-    private func loadEstimate() async {
-        estimate = nil
-        estimating = false
-        guard manifest.framesOnly || selectDone, model.config.problems.isEmpty else { return }
-        estimating = true
-        let e = await SolveEstimate.load(config: model.config, project: project.path)
-        if Task.isCancelled { return }
-        estimate = e
-        estimating = false
-    }
-
-    /// "→ 300 images, sequential ≈ 35 min" beside a frame count.
-    @ViewBuilder private var estimateCaption: some View {
-        if let c = estimate?.framesCaption {
-            Text("→ \(c)").foregroundStyle(.secondary).monospacedDigit()
-                .help("What the solve will match, and how long sequential matching should take. The Solve row below has both matchers.")
-        }
-    }
-
-    private var solveSection: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Handle(title: "Matching",
-                   help: "Sequential for orbits and walk-arounds; exhaustive when captures revisit the same view from far apart in time and no loop pass would catch it. Auto takes sequential above \(SolveEstimate.autoThreshold) captures.") {
-                Picker("", selection: matcher) {
-                    ForEach(SolveMatcher.allCases) { m in
-                        Text(estimate?.label(m) ?? m.title).tag(m)
-                    }
-                }
-                .labelsHidden().pickerStyle(.segmented).fixedSize()
-            }
-            if estimating && estimate == nil {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.mini)
-                    Text("Estimating how long each matcher takes…")
-                }
-                .font(.caption).foregroundStyle(.secondary).padding(.leading, 140)
-            } else if let d = estimate?.detail {
-                Text(d).font(.caption).foregroundStyle(.secondary).padding(.leading, 140)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            solveCommandPreview
-            HStack(spacing: 12) {
-                let running = queue?.isRunning ?? false
-                Button(running && queue?.steps.first?.title == "Solve" ? "Solving…" : solveLabel) { startSolve() }
-                    .disabled(running || lockAlive || !model.config.problems.isEmpty)
-                    .help("hs solve: COLMAP on the selected frames. Training unlocks when it is done.")
-                if manifest.framesOnly, lockAlive, let l = project.lock {
-                    // a clip project says this beside Select Frames already
-                    Label("\(l.stage ?? "a stage") is running", systemImage: "lock.fill").foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    private var solveCommandPreview: some View {
-        let args = matcher.wrappedValue.solveArguments(project: project.path)
-        let line = (["hs"] + args.map { $0.hasPrefix(project.path) ? "$P" : $0 }).map(shellQuote).joined(separator: " ")
-        return VStack(alignment: .leading, spacing: 4) {
-            Text("Solve runs (P = this project):").font(.caption).foregroundStyle(.secondary)
-            CopyableCommand(text: line)
-        }
-    }
-
-    private func run(_ steps: [RunQueue.Step]) {
-        let q = RunQueue(config: model.config, steps: steps)
-        let path = project.path
-        q.onStep = { s in model.projectRuns[path] = s }
-        q.onFinish = { _ in store.reload() }
-        model.selectQueues[path] = q
-        q.start()
-    }
-
-    // MARK: summary
-
-    private func summary(_ q: FrameQuality) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 14) {
-                Label("\(q.frames.count) frames", systemImage: "photo.stack").font(.subheadline.weight(.semibold))
-                if let t = q.framesTotal { Text("of \(t)").foregroundStyle(.secondary) }
-                estimateCaption
-                if let g = q.medianGap { Text("median gap \(JSONValue.number(g).display)").foregroundStyle(.secondary) }
-                if let s = q.medians.sharp { Text("median Laplacian \(Int(s.rounded()))").foregroundStyle(.secondary) }
-                Text(q.flagged == 0 ? "nothing flagged" : "\(q.flagged) flagged")
-                    .foregroundStyle(q.flagged == 0 ? Color.green : Color.orange)
-                if let c = selectStage?.metrics["frames_selected"], c.int != q.frames.count {
-                    Text("(report is from an older run)").foregroundStyle(.orange)
-                }
-            }
             HStack(spacing: 6) {
-                chip("All", code: nil, count: q.frames.count)
-                chip("Flagged", code: "flagged", count: q.flagged)
-                chip("Clean", code: "clean", count: q.frames.count - q.flagged)
-                ForEach(q.flagsByCount, id: \.0) { item in
+                chip("All", code: nil, count: quality.frames.count)
+                chip("Flagged", code: "flagged", count: quality.flagged)
+                chip("Clean", code: "clean", count: quality.frames.count - quality.flagged)
+                ForEach(quality.flagsByCount, id: \.0) { item in
                     chip(item.0.replacingOccurrences(of: "_", with: " "), code: item.0, count: item.1)
-                        .help(q.flagText[item.0] ?? item.0)
+                        .help(quality.flagText[item.0] ?? item.0)
                 }
                 Spacer()
-                Picker("Sort", selection: $sort) {
-                    ForEach(QualitySort.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .frame(width: 260)
+                Toggle("Details", isOn: $detailsOpen).toggleStyle(.checkbox)
             }
-            ForEach(q.warnings ?? [], id: \.self) { w in
+            ForEach(quality.warnings ?? [], id: \.self) { w in
                 Label(w, systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if !q.measuredEyes {
-                Text("Dry run: left eye only, no thumbnails.").font(.caption).foregroundStyle(.secondary)
+            if detailsOpen {
+                HStack {
+                    Picker("Sort", selection: $sort) {
+                        ForEach(QualitySort.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .frame(width: 260)
+                    Spacer()
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 10, alignment: .top)],
+                          alignment: .leading, spacing: 10) {
+                    ForEach(visible) { f in
+                        FrameCard(project: project, frame: f, quality: quality,
+                                  referenceRole: referenceRole(f),
+                                  useAsReference: reference(f))
+                    }
+                }
+            } else {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    LazyHStack(spacing: 6) {
+                        ForEach(visible) { f in
+                            thumb(f)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(height: 96)
+            }
+        }
+    }
+
+    private func reference(_ f: FrameQuality.Frame) -> (() -> Void)? {
+        guard let use = useAsReference else { return nil }
+        return { use(f) }
+    }
+
+    private var visible: [FrameQuality.Frame] {
+        let f: [FrameQuality.Frame]
+        switch only {
+        case nil: f = quality.frames
+        case "flagged": f = quality.frames.filter { $0.flagged }
+        case "clean": f = quality.frames.filter { !$0.flagged }
+        case let code?: f = quality.frames.filter { $0.flags.contains(code) }
+        }
+        return sort.sorted(f)
+    }
+
+    private func thumb(_ f: FrameQuality.Frame) -> some View {
+        Group {
+            if let t = f.thumb {
+                ThumbImage(path: (selectDir as NSString).appendingPathComponent(t))
+            } else {
+                Rectangle().fill(Color.secondary.opacity(0.12)).aspectRatio(16 / 9, contentMode: .fit)
+            }
+        }
+        .frame(height: 84)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(f.flagged ? Color.orange : Color.clear, lineWidth: 2))
+        .overlay(alignment: .bottomLeading) {
+            Text("#\(f.sel)").font(.caption2.monospacedDigit().weight(.semibold))
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .background(Capsule().fill(.black.opacity(0.6))).foregroundStyle(.white)
+                .padding(3)
+        }
+        .help(f.flags.isEmpty ? "frame \(f.frame)" : "frame \(f.frame): " + f.flags.joined(separator: ", "))
+        .onTapGesture(count: 2) {
+            if let file = f.file {
+                NSWorkspace.shared.open(URL(fileURLWithPath: (selectDir as NSString).appendingPathComponent("frames/\(file)")))
             }
         }
     }
 
     private func chip(_ title: String, code: String?, count: Int) -> some View {
         let on = only == code
-        return Button { only = code; stillsOpen = true } label: {
+        return Button { only = code } label: {
             Text("\(title) \(count)")
                 .font(.caption.weight(on ? .semibold : .regular))
                 .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(Capsule().fill(on ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12)))
+                .background(Capsule().fill(on ? Brand.accent.opacity(0.25) : Color.secondary.opacity(0.12)))
         }
         .buttonStyle(.plain)
-    }
-
-    private func visible(_ q: FrameQuality) -> [FrameQuality.Frame] {
-        let f: [FrameQuality.Frame]
-        switch only {
-        case nil: f = q.frames
-        case "flagged": f = q.frames.filter { $0.flagged }
-        case "clean": f = q.frames.filter { !$0.flagged }
-        case let code?: f = q.frames.filter { $0.flags.contains(code) }
-        }
-        return sort.sorted(f)
-    }
-
-    // MARK: charts
-
-    private struct TracePoint: Identifiable {
-        let id: Int
-        let frame: Int
-        let value: Double
-    }
-
-    private func tracePoints(_ q: FrameQuality, _ series: [Double?], clamp: ClosedRange<Double>) -> [TracePoint] {
-        var out: [TracePoint] = []
-        out.reserveCapacity(series.count)
-        for (k, v) in series.enumerated() where k < q.trace.frame.count {
-            if let v = v { out.append(TracePoint(id: k, frame: q.trace.frame[k], value: min(max(v, clamp.lowerBound), clamp.upperBound))) }
-        }
-        return out
-    }
-
-    /// Focus and exposure along the whole clip, picks on top: whether each pick sits on a peak
-    /// of its neighbourhood, and where the soft or dark stretches are.
-    private func charts(_ q: FrameQuality) -> some View {
-        let focusLine = tracePoints(q, q.trace.focusRel, clamp: 0...2)
-        let evLine = tracePoints(q, q.trace.ev, clamp: -2...2)
-        let soft = q.threshold("soft_rel", 0.6)
-        let evTol = q.threshold("ev_tol", 0.33)
-        return VStack(alignment: .leading, spacing: 10) {
-            Text("Focus along the clip (1 = the picks' median; Laplacian with contrast divided out)")
-                .font(.caption).foregroundStyle(.secondary)
-            Chart {
-                ForEach(focusLine) { p in
-                    LineMark(x: .value("Frame", p.frame), y: .value("Focus", p.value))
-                        .foregroundStyle(Color.secondary.opacity(0.6))
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                }
-                RuleMark(y: .value("Soft", soft))
-                    .foregroundStyle(Color.orange.opacity(0.5))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                ForEach(q.frames) { f in
-                    if let v = f.focusRel {
-                        PointMark(x: .value("Frame", f.frame), y: .value("Focus", min(max(v, 0), 2)))
-                            .foregroundStyle(f.flagged ? Color.orange : Color.green)
-                            .symbolSize(28)
-                    }
-                    if let n = f.sharperNearby, let k = q.trace.frame.firstIndex(of: n.frame),
-                       k < q.trace.focusRel.count, let v = q.trace.focusRel[k] {
-                        PointMark(x: .value("Frame", n.frame), y: .value("Focus", min(max(v, 0), 2)))
-                            .foregroundStyle(Color.blue)
-                            .symbol(.diamond)
-                            .symbolSize(36)
-                    }
-                }
-            }
-            .chartYScale(domain: 0...2)
-            .frame(height: 140)
-
-            Text("Exposure along the clip (stops off the picks' median)").font(.caption).foregroundStyle(.secondary)
-            Chart {
-                ForEach(evLine) { p in
-                    LineMark(x: .value("Frame", p.frame), y: .value("EV", p.value))
-                        .foregroundStyle(Color.secondary.opacity(0.6))
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                }
-                RuleMark(y: .value("+tol", evTol)).foregroundStyle(Color.orange.opacity(0.5))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                RuleMark(y: .value("-tol", -evTol)).foregroundStyle(Color.orange.opacity(0.5))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                ForEach(q.frames) { f in
-                    if let v = f.ev {
-                        PointMark(x: .value("Frame", f.frame), y: .value("EV", min(max(v, -2), 2)))
-                            .foregroundStyle(f.flagged ? Color.orange : Color.green)
-                            .symbolSize(28)
-                    }
-                }
-            }
-            .chartYScale(domain: -2...2)
-            .frame(height: 110)
-            HStack(spacing: 14) {
-                Label("clean pick", systemImage: "circle.fill").foregroundStyle(.green)
-                Label("flagged pick", systemImage: "circle.fill").foregroundStyle(.orange)
-                Label("sharper frame nearby", systemImage: "diamond.fill").foregroundStyle(.blue)
-            }
-            .font(.caption)
-        }
-    }
-
-    // MARK: contact sheet
-
-    private var exposureSettings: ExposureSettings {
-        model.exposureSettings[project.path] ?? ExposureSettings()
-    }
-
-    /// "reference" if this pick is what hs exposure will match to, "suggested" if it is the
-    /// report's best frame but another reference is chosen, else nil.
-    private func referenceRole(_ f: FrameQuality.Frame, _ q: FrameQuality) -> String? {
-        let e = exposureSettings
-        switch e.reference {
-        case .auto: return q.exposureReference?.sel == f.sel ? "exposure reference" : nil
-        case .chosen:
-            if e.chosenCapture == f.sel { return "exposure reference" }
-            return q.exposureReference?.sel == f.sel ? "suggested reference" : nil
-        case .median: return q.exposureReference?.sel == f.sel ? "suggested reference" : nil
-        }
-    }
-
-    private func useAsReference(_ f: FrameQuality.Frame) {
-        var e = exposureSettings
-        e.reference = .chosen
-        e.chosenCapture = f.sel
-        model.exposureSettings[project.path] = e
-    }
-
-    /// A header that opens and closes the contact sheet. Closed, no thumbnail is built or read.
-    private func stills(_ q: FrameQuality) -> some View {
-        let shown = visible(q).count
-        return VStack(alignment: .leading, spacing: 10) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { stillsOpen.toggle() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .rotationEffect(.degrees(stillsOpen ? 90 : 0))
-                        .frame(width: 12)
-                    Text(stillsOpen ? "Hide stills" : "Show stills").font(.subheadline.weight(.semibold))
-                    Text(shown == q.frames.count ? "\(shown)" : "\(shown) of \(q.frames.count)")
-                        .foregroundStyle(.secondary).monospacedDigit()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("The contact sheet: every pick's thumbnail and numbers. The chips above filter it.")
-            if stillsOpen {
-                contactSheet(q)
-            }
-        }
-    }
-
-    private func contactSheet(_ q: FrameQuality) -> some View {
-        let frames = visible(q)
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 10, alignment: .top)],
-                         alignment: .leading, spacing: 10) {
-            ForEach(frames) { f in
-                FrameCard(project: project.path, frame: f, quality: q,
-                          referenceRole: referenceRole(f, q),
-                          useAsReference: { useAsReference(f) })
-            }
-        }
     }
 }
 
@@ -590,7 +290,7 @@ struct FrameCard: View {
                 }
             }
         }
-        .help("Double-click to open the full 2×1 frame")
+        .help("Double-click to open the full frame")
     }
 
     private func nearbyText(_ n: FrameQuality.Nearby) -> String {
