@@ -23,6 +23,12 @@ are low-importance (under the --min-importance-quantile of the splats seen at al
 contributor nowhere AND high-blame (> --max-blame), writing <name>_nofloat.ply and
 <name>_floaters_only.ply; it is a prune run like the geometric one (render goes stale, and its
 output is what render's lineage guard knows as prune's output_ply).
+
+``--clear-path [MM]`` is a third mode, for a walk-through (hs/clearpath.py): it removes the splats
+whose centre lies within MM of the line the real camera walked -- the camera was there, so the
+space was empty -- and writes prune/<name>_clearpath.ply and <name>_path_only.ply (what it took
+out, to look at). Without a number the radius is 1.3 median steps between consecutive placed
+frames. It needs no scores and reads the model in chunks. Like --floaters it is a prune run.
 """
 import json
 import os
@@ -49,6 +55,9 @@ def add_parser(sub):
     p.add_argument("--max-scale", type=float, default=0.2)
     p.add_argument("--center", default=None, help="x,y,z metres; default: SfM median from coverage.json")
     p.add_argument("--report-only", action="store_true")
+    p.add_argument("--clear-path", nargs="?", const="auto", default=None, metavar="MM",
+                   help="walk-throughs: remove splats within MM of the line the real camera walked "
+                        "(default 1.3 median steps between placed frames); writes prune/<name>_clearpath.ply")
     sc = p.add_argument_group("photometric score (hs.splatweights; prune_splats.py is not run)")
     sc.add_argument("--score", action="store_true",
                     help="score every splat (importance, top contributor, views seen, blame) over the training "
@@ -82,6 +91,8 @@ def final_export(pj):
 
 
 def run(a, pj):
+    if getattr(a, "clear_path", None):
+        return run_clear_path(a, pj)
     if getattr(a, "score", False) or getattr(a, "floaters", False):
         return run_score(a, pj)
     pj.require(STAGE)
@@ -378,3 +389,61 @@ def run_score(a, pj):
         st.setdefault("runs", {})[f"{name}_score"] = r
         pj.save()
         pj.release()
+
+
+# --------------------------------------------------------------------------- --clear-path
+def run_clear_path(a, pj):
+    from .. import clearpath
+    from .split import check_name, resolve_ply
+    ply = resolve_ply(pj, a.ply)
+    # a run stopped part-way leaves usable exports; the model on disk is what is asked for
+    pj.require(STAGE, satisfied=("train",))
+    name = check_name((a.name or os.path.splitext(os.path.basename(ply))[0]).strip())
+    try:
+        la, lb, step, tears = clearpath.walked_line(pj.rig_npz, pj.path("select", "quality.json"))
+    except ValueError as e:
+        raise events.StageError(str(e), hint="hs solve first")
+    if a.clear_path == "auto":
+        radius = clearpath.AUTO_STEPS * step
+    else:
+        try:
+            radius = float(a.clear_path)
+        except ValueError:
+            raise events.StageError(f"--clear-path takes millimetres, not {a.clear_path!r}", hint="e.g. --clear-path 300")
+        if radius <= 0:
+            raise events.StageError("--clear-path must be more than 0 mm")
+    pj.begin(STAGE, argv=sys.argv, clean=False)
+    events.start(STAGE, "clear path")
+    t0 = time.time()
+    out = pj.path("prune", f"{name}_clearpath.ply")
+    only = pj.path("prune", f"{name}_path_only.ply")
+    last = [0.0]
+
+    def progress(done, total):
+        if time.time() - last[0] > 2.0 or done == total:
+            last[0] = time.time()
+            events.progress(STAGE, done, total, detail="splats checked against the path")
+    rep = clearpath.clear(ply, out, la, lb, radius, removed_out=only, progress=progress)
+    pj.metric(STAGE, "input_ply", pj.rel(ply) if ply.startswith(pj.root) else ply)
+    pj.metric(STAGE, "input_ply_md5", md5_file(ply))
+    pj.metric(STAGE, "clear_path_radius_mm", round(radius, 1))
+    pj.metric(STAGE, "clear_path_radius_from", "given" if a.clear_path != "auto" else
+              f"{clearpath.AUTO_STEPS:g} x the {step:.0f} mm median step between placed frames")
+    pj.metric(STAGE, "path_segments", int(len(la)))
+    pj.metric(STAGE, "splats_in", rep["splats_in"])
+    pj.metric(STAGE, "splats_out", rep["splats_out"])
+    pj.metric(STAGE, "on_the_path", rep["removed"])
+    pj.metric(STAGE, "kept_fraction", round(rep["splats_out"] / max(rep["splats_in"], 1), 5))
+    pj.metric(STAGE, "opacity_mass_kept", round(rep["opacity_mass_kept"], 5))
+    pj.metric(STAGE, "output_ply", pj.rel(out))
+    share = rep["removed"] / max(rep["splats_in"], 1)
+    pj.check(STAGE, "path_clearing_is_small", share <= 0.05,
+             value=f"{rep['removed']:,} splats within {radius:.0f} mm of the line the camera walked, "
+                   f"{100 * share:.2f} % of the model"
+                   + ("" if share <= 0.05 else " \u2014 more than a twentieth: the radius reaches into the scene"),
+             needs_human=share > 0.05)
+    pj.artifact(STAGE, out, "ply")
+    pj.artifact(STAGE, only, "ply")
+    pj.metric(STAGE, "seconds", round(time.time() - t0, 1))
+    pj.record_run(STAGE, f"{name}_clearpath", ply=pj.rel(ply) if ply.startswith(pj.root) else ply)
+    pj.finish(STAGE, ok=True)

@@ -94,6 +94,7 @@ hs train   -p P --recipe matte|glossy|bright|person|scene --effort quick|standar
 hs move    -p P --preset sweep|boom|custom [--keys ...] [--name N]    move/N.json + move/N_aim_check.jpg
 hs move    -p P --script shot.hsmove [--name N]                      compile a cue sheet against the captured hull (movescript.py)
 hs move    -p P --preset walk [--captures A:B] [--look ahead|as-shot] [--reverse]   a walk-through: move/N.json + move/N_plan.jpg (walk_path.py)
+hs prune   -p P --clear-path [MM] [--ply PLY]                       a walk-through: drop splats on the line the camera walked (clearpath.py)
 hs prune   -p P [--radius 0.3]                                        prune/<export>_pruned_r03.ply
 hs prune   -p P --score [--ply PLY] [--name N] [--cell 8]            prune/N_scores.npz + N_report.json — a report, prunes nothing
 hs prune   -p P --floaters [--name N] [--min-importance-quantile 0.02] [--max-blame 0.25]   prune/N_nofloat.ply + N_floaters_only.ply
@@ -1571,6 +1572,24 @@ path from above, over the sparse points and every placed camera). Metrics `<name
 First used on a 115 s walk into a garden and back (211 picks, 162 placed): one tear (4.4 m in
 1.3 s, 6 times the pace, across a whip pan that left two frames with nothing in common), five
 legs, and the default a 12 m leg of 29 frames, every one placed.
+
+### `hs prune --clear-path` — nothing sits where the camera went
+
+For a walk-through. The cameras travelled a line through the scene, so that space was empty; what a
+trained model has put on the line is what the optimiser used to explain differences between
+neighbouring frames, and a move along the path flies straight through it. `hs prune --clear-path
+[MM]` removes the splats whose centre is within MM of the walked line (consecutive placed frames
+joined inside each run, never across a tear — the same line `walk` follows) and writes
+`prune/<name>_clearpath.ply` plus `<name>_path_only.ply` (what it took out). Default radius: 1.3
+median steps between consecutive placed frames. Reads and writes in chunks; works on a run that
+was stopped part-way (it takes the newest export, or `--ply`).
+
+Measured once, on the first garden walk (8.2 million splats at 20,000 steps, coarse numpy renders
+of the walk's own frames, `hs/splatweights.py` at 8 px cells): the splats within 0.3 m of the line
+were 1.0 % of the model and 72 % of the weight drawn from less than half way to the surface in a
+frame 2 s in; without them that weight fell from 16.8 % of the picture to 6.9 % (0.5 m: 3.9 %) and
+the picture stayed as opaque (0.993 → 0.991). Mid-walk the gain was smaller (11.7 % → 8.8 %). Not
+scored against hold-outs, and a plant that really did brush the lens goes with the rest.
 
 ### `.hsmove` and `hs move --script`
 
