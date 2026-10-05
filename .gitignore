@@ -6,6 +6,7 @@ __pycache__/
 .DS_Store
 fixtures/*.h4v
 fixtures/*.mp4
+fixtures/scans/
 Projects/
 *.ply
 *.png
