@@ -30,6 +30,12 @@ placed frames, which is what the app's Clean up asks for) -- the camera was ther
 was empty -- and writes prune/<name>_clearpath.ply and <name>_path_only.ply (what it took
 out, to look at). Without a number the radius is 1.3 median steps between consecutive placed
 frames. It needs no scores and reads the model in chunks. Like --floaters it is a prune run.
+
+``--erase FILE.json`` is the fourth: the boxes a person dragged round floaters in the app's Clean up
+tab. Each box is the viewer's own projection, a rectangle on its screen and how far from that
+camera it reaches; a splat whose centre falls inside any of them goes. It writes
+prune/<name>_erased.ply and <name>_erased_only.ply; the output may be the input (the app keeps one
+hand-cleaned copy per model and adds to it).
 """
 import json
 import os
@@ -59,6 +65,9 @@ def add_parser(sub):
     p.add_argument("--clear-path", nargs="?", const="auto", default=None, metavar="MM|Nx",
                    help="remove splats within MM of the line the real camera walked, or within N median steps "
                         "between placed frames (2.4x); default 1.3x. Writes prune/<name>_clearpath.ply")
+    p.add_argument("--erase", default=None, metavar="FILE.json",
+                   help="remove the splats inside the boxes drawn in the app's Clean up tab (the file it writes); "
+                        "writes prune/<name>_erased.ply, which may be the --ply itself")
     sc = p.add_argument_group("photometric score (hs.splatweights; prune_splats.py is not run)")
     sc.add_argument("--score", action="store_true",
                     help="score every splat (importance, top contributor, views seen, blame) over the training "
@@ -94,6 +103,8 @@ def final_export(pj):
 def run(a, pj):
     if getattr(a, "clear_path", None):
         return run_clear_path(a, pj)
+    if getattr(a, "erase", None):
+        return run_erase(a, pj)
     if getattr(a, "score", False) or getattr(a, "floaters", False):
         return run_score(a, pj)
     pj.require(STAGE)
@@ -451,4 +462,59 @@ def run_clear_path(a, pj):
     pj.artifact(STAGE, only, "ply")
     pj.metric(STAGE, "seconds", round(time.time() - t0, 1))
     pj.record_run(STAGE, f"{name}_clearpath", ply=pj.rel(ply) if ply.startswith(pj.root) else ply)
+    pj.finish(STAGE, ok=True)
+
+
+# --------------------------------------------------------------------------- --erase
+def run_erase(a, pj):
+    from .. import clearpath
+    from .merge import read_header
+    from .split import check_name, resolve_ply
+    ply = resolve_ply(pj, a.ply)
+    pj.require(STAGE, satisfied=("train",))
+    name = check_name((a.name or os.path.splitext(os.path.basename(ply))[0]).strip())
+    spec_path = a.erase if os.path.isabs(a.erase) else (
+        pj.path(a.erase) if os.path.exists(pj.path(a.erase)) else os.path.abspath(a.erase))
+    try:
+        with open(spec_path) as f:
+            spec = json.load(f)
+        boxes = clearpath.boxes_from(spec)
+    except (OSError, ValueError) as e:
+        raise events.StageError(f"--erase: {e}", hint="the file is written by the app's Clean up tab")
+    n = read_header(ply)[1]
+    if spec.get("splats") is not None and int(spec["splats"]) != n:
+        raise events.StageError(f"the boxes were drawn on a model of {int(spec['splats']):,} splats and this one has {n:,}",
+                                hint="draw them again on the model being cleaned")
+    pj.begin(STAGE, argv=sys.argv, clean=False)
+    events.start(STAGE, "erase")
+    t0 = time.time()
+    out = pj.path("prune", f"{name}_erased.ply")
+    only = pj.path("prune", f"{name}_erased_only.ply")
+    digest = md5_file(ply)                              # before the write: the output may replace the input
+    last = [0.0]
+
+    def progress(done, total):
+        if time.time() - last[0] > 2.0 or done == total:
+            last[0] = time.time()
+            events.progress(STAGE, done, total, detail="splats checked against the boxes")
+    rep = clearpath.rewrite(ply, out, lambda xyz: clearpath.inside_boxes(xyz, boxes), removed_out=only, progress=progress)
+    pj.metric(STAGE, "input_ply", pj.rel(ply) if ply.startswith(pj.root) else ply)
+    pj.metric(STAGE, "input_ply_md5", digest)
+    pj.metric(STAGE, "boxes", len(boxes))
+    pj.metric(STAGE, "splats_in", rep["splats_in"])
+    pj.metric(STAGE, "splats_out", rep["splats_out"])
+    pj.metric(STAGE, "erased", rep["removed"])
+    pj.metric(STAGE, "kept_fraction", round(rep["splats_out"] / max(rep["splats_in"], 1), 5))
+    pj.metric(STAGE, "opacity_mass_kept", round(rep["opacity_mass_kept"], 5))
+    pj.metric(STAGE, "output_ply", pj.rel(out))
+    share = rep["removed"] / max(rep["splats_in"], 1)
+    pj.check(STAGE, "hand_erase_is_small", share <= 0.05,
+             value=f"{rep['removed']:,} splats inside {len(boxes)} box{'es' if len(boxes) != 1 else ''}, "
+                   f"{100 * share:.2f} % of the model"
+                   + ("" if share <= 0.05 else " \u2014 more than a twentieth: a box reaches into the scene"),
+             needs_human=share > 0.05)
+    pj.artifact(STAGE, out, "ply")
+    pj.artifact(STAGE, only, "ply")
+    pj.metric(STAGE, "seconds", round(time.time() - t0, 1))
+    pj.record_run(STAGE, f"{name}_erased", ply=pj.rel(ply) if ply.startswith(pj.root) else ply, boxes=len(boxes))
     pj.finish(STAGE, ok=True)

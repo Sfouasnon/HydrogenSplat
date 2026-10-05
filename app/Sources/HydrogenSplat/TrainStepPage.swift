@@ -166,7 +166,10 @@ private struct TrainStepBody: View {
     }
 
     private var steps: [RunQueue.Step] {
-        settings.wrappedValue.steps(project: project.path, in: captureSet)
+        var s = settings.wrappedValue.steps(project: project.path, in: captureSet)
+        // switched on in Shot › Clean up; last, so a failure there cannot cost the scores
+        if CleanAfterTraining.isOn { s.append(CleanAfterTraining.step(project: project.path)) }
+        return s
     }
 
     private var nameBlocked: Bool {

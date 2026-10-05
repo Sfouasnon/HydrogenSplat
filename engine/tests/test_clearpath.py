@@ -145,5 +145,95 @@ class Clear(unittest.TestCase):
         self.assertTrue(checks["path_clearing_is_small"]["needs_human"])
 
 
+def viewer_vp(eye, target, up=(0.0, -1.0, 0.0), fovy_deg=50.0, aspect=16 / 9, near=0.01, far=1000.0):
+    """projection x view exactly as the app's viewer builds them (HSCore/Viewer.swift: lookAt, a
+    camera looking down -z with y up, and a perspective whose clip w is the distance in front)."""
+    eye, target, up = (np.array(v, float) for v in (eye, target, up))
+    fwd = (target - eye) / np.linalg.norm(target - eye)
+    right = np.cross(fwd, up); right /= np.linalg.norm(right)
+    u = np.cross(right, fwd)
+    V = np.eye(4)
+    V[0, :3], V[1, :3], V[2, :3] = right, u, -fwd
+    V[:3, 3] = -V[:3, :3] @ eye
+    ys = 1.0 / np.tan(np.radians(fovy_deg) / 2)
+    zs = far / (near - far)
+    P = np.array([[ys / aspect, 0, 0, 0], [0, ys, 0, 0], [0, 0, zs, zs * near], [0, 0, -1, 0]])
+    return P @ V
+
+
+class Erase(unittest.TestCase):
+    """hs prune --erase: the boxes a person dragged round floaters in the app's Clean up tab."""
+
+    def setUp(self):
+        self.t = tempfile.TemporaryDirectory()
+        self.addCleanup(self.t.cleanup)
+        rng = np.random.default_rng(5)
+        # a camera at the origin looking down +x: a floater 1 m out, dead ahead; a wall 6 m out behind
+        # it; and a second floater 1 m out but well off to the side
+        self.floater = np.array([1.0, 0.0, 0.0]) + rng.normal(0, 0.02, (200, 3))
+        self.wall = np.column_stack([np.full(2000, 6.0), rng.uniform(-3, 3, 2000), rng.uniform(-3, 3, 2000)])
+        self.aside = np.array([1.0, 0.0, 1.2]) + rng.normal(0, 0.02, (100, 3))
+        self.xyz = np.concatenate([self.floater, self.wall, self.aside])
+        self.label = np.r_[np.zeros(200), np.ones(2000), np.full(100, 2)]
+        self.vp = viewer_vp((0, 0, 0), (1, 0, 0))
+        self.box = {"vp": self.vp.tolist(), "x0": -0.15, "x1": 0.15, "y0": -0.2, "y1": 0.2, "near": 0.0, "far": 2.0}
+
+    def test_a_box_takes_what_is_in_it_as_far_as_it_reaches_and_no_further(self):
+        boxes = clearpath.boxes_from({"boxes": [self.box]})
+        hit = clearpath.inside_boxes(self.xyz, boxes)
+        self.assertTrue(hit[self.label == 0].all())            # the floater in the box
+        self.assertFalse(hit[self.label == 1].any())           # the wall behind it is past the reach
+        self.assertFalse(hit[self.label == 2].any())           # the one to the side is outside the rectangle
+        deep = clearpath.boxes_from({"boxes": [dict(self.box, far=10.0)]})
+        behind = clearpath.inside_boxes(self.xyz, deep)[self.label == 1]
+        self.assertTrue(0 < behind.sum() < 200)                # reach right through and the wall inside the box goes too
+        back = clearpath.boxes_from({"boxes": [dict(self.box, vp=viewer_vp((0, 0, 0), (-1, 0, 0)).tolist())]})
+        self.assertFalse(clearpath.inside_boxes(self.xyz, back).any())   # nothing behind the camera is ever taken
+
+    def test_a_file_that_is_not_boxes_says_which_box(self):
+        for bad, why in (({"boxes": []}, "no boxes"), ({"boxes": [dict(self.box, x1=-0.5)]}, "box 1 of the erase file is empty"),
+                         ({"boxes": [self.box, {"vp": [[1, 2]], "x0": 0, "x1": 1, "y0": 0, "y1": 1, "far": 1}]}, "box 2")):
+            with self.assertRaisesRegex(ValueError, why):
+                clearpath.boxes_from(bad)
+
+    def test_through_hs_prune_twice_into_the_same_hand_cleaned_copy(self):
+        root = os.path.join(self.t.name, "proj")
+        for d in ("train/dataset", "select", "solve", "train/exports", "prune"):
+            os.makedirs(os.path.join(root, d))
+        rig, q, _f = garden(self.t.name)
+        os.replace(rig, os.path.join(root, "train", "dataset", "rig.npz"))
+        ply = os.path.join(root, "train", "exports", "export_20000.ply")
+        write_model(ply, self.xyz, np.full(len(self.xyz), 1.0))
+        with open(os.path.join(root, "manifest.json"), "w") as f:
+            json.dump({"version": 1, "name": "g", "stages": {k: {"status": "done"} for k in ("ingest", "select", "solve", "train")}}, f)
+        spec = os.path.join(root, "prune", "export_20000_hand_erase.json")
+        with open(spec, "w") as f:
+            json.dump({"splats": len(self.xyz), "boxes": [self.box]}, f)
+
+        def hs(*args):
+            r = subprocess.run([sys.executable, "-m", "hs", "-p", root, "prune", *args], cwd=ENGINE, capture_output=True, text=True)
+            return r, [json.loads(l) for l in r.stdout.splitlines() if l.startswith("{")]
+        r, evs = hs("--erase", spec, "--ply", ply, "--name", "export_20000_hand")
+        self.assertEqual(r.returncode, 0, r.stdout[-1500:] + r.stderr[-1500:])
+        copy = os.path.join(root, "prune", "export_20000_hand_erased.ply")
+        kept, _h = read_model(copy)
+        self.assertEqual(len(kept), 2100)
+        self.assertEqual({e["name"]: e["value"] for e in evs if e.get("ev") == "metric"}["erased"], 200)
+        self.assertEqual(len(read_model(ply)[0]), 2300)                 # the trained model is as it was
+        # a second pass on the copy itself, with a box round the floater off to the side, lands in the same file
+        side = dict(self.box, vp=viewer_vp((0, 0, 0), (1, 0, 1.2)).tolist())
+        with open(spec, "w") as f:
+            json.dump({"splats": 2100, "boxes": [side]}, f)
+        r, evs = hs("--erase", spec, "--ply", copy, "--name", "export_20000_hand")
+        self.assertEqual(r.returncode, 0, r.stdout[-1500:] + r.stderr[-1500:])
+        kept, _h = read_model(copy)
+        self.assertEqual(len(kept), 2000)
+        self.assertTrue(np.all(self.label[kept[:, 11].astype(int)] == 1))   # only the wall is left
+        # boxes drawn on another model are refused
+        r, _evs = hs("--erase", spec, "--ply", ply, "--name", "x")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("drawn on a model of 2,100 splats and this one has 2,300", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

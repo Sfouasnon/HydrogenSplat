@@ -1,7 +1,8 @@
 import SwiftUI
 import HSCore
 
-/// Step 6, Shot: two halves under one header. Move is the viewer with the keyframe editor beside
+/// Step 7, Shot: three tabs under one header. Clean up is the viewer with the floater tools beside
+/// it (CleanUpView.swift). Move is the viewer with the keyframe editor beside
 /// it (presets, keys, anchor, lens, play) and the coverage band on its timeline; Render & grade
 /// is the check chips, the graded preview and filmstrip, and the Frame / Grade / Export cards
 /// (`GradeView`), which carry the whole `hs grade` scope.
@@ -11,9 +12,15 @@ struct ShotStepPage: View {
     let project: ProjectSummary
 
     enum Half: String, CaseIterable, Identifiable {
-        case move, render
+        case clean, move, render
         var id: String { rawValue }
-        var title: String { self == .move ? "1  Move" : "2  Render & grade" }
+        var title: String {
+            switch self {
+            case .clean: return "1  Clean up"
+            case .move: return "2  Move"
+            case .render: return "3  Render & grade"
+            }
+        }
     }
 
     @AppStorage("shot.half") private var halfRaw = Half.move.rawValue
@@ -30,11 +37,12 @@ struct ShotStepPage: View {
                 Picker("", selection: half) {
                     ForEach(Half.allCases) { h in Text(h.title).tag(h) }
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 360)
+                .pickerStyle(.segmented).labelsHidden().frame(width: 520)
             }
             .padding(.horizontal, 40).padding(.top, 32).padding(.bottom, 14)
             Divider()
             switch half.wrappedValue {
+            case .clean: cleanHalf
             case .move: moveHalf
             case .render: renderHalf
             }
@@ -42,7 +50,23 @@ struct ShotStepPage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    // MARK: 1 Move
+    // MARK: 1 Clean up
+
+    /// The viewer with the clean-up panel beside it: floaters taken off the camera's path, or
+    /// boxed and erased by hand, each into a copy (CleanUpView.swift).
+    @ViewBuilder private var cleanHalf: some View {
+        if project.manifest == nil || models.isEmpty {
+            StepPage {
+                VerdictCard(.blocked, headline: "There is no model to clean yet.",
+                            detail: "Train one on the Train step; it appears here.")
+            }
+        } else {
+            ModelViewerPane(scene: model.viewerScene, project: project, cleaning: true)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    // MARK: 2 Move
 
     @ViewBuilder private var moveHalf: some View {
         if project.manifest == nil || models.isEmpty {
@@ -61,7 +85,7 @@ struct ShotStepPage: View {
         }
     }
 
-    // MARK: 2 Render & grade
+    // MARK: 3 Render & grade
 
     private var renderHalf: some View {
         StepPage {

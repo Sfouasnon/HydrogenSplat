@@ -1592,6 +1592,24 @@ frame 2 s in; without them that weight fell from 16.8 % of the picture to 6.9 % 
 the picture stayed as opaque (0.993 → 0.991). Mid-walk the gain was smaller (11.7 % → 8.8 %). Not
 scored against hold-outs, and a plant that really did brush the lens goes with the rest.
 
+### `hs prune --erase` — floaters boxed by hand
+
+The app's Shot › Clean up tab lets a person drag a box round a floater in the viewer and set how
+deep the box reaches. It writes the boxes as JSON and runs `hs prune --erase FILE.json --ply MODEL
+--name NAME`, which removes every splat whose centre is inside any box and writes
+`prune/NAME_erased.ply` (and `NAME_erased_only.ply`, what went). The output may be the input: the
+app keeps one hand-cleaned copy per model and adds to it.
+
+    {"splats": 8241441,
+     "boxes": [{"vp": [[..4..], [..4..], [..4..], [..4..]],     projection x view, world metres -> clip, as rows
+                "x0": -0.2, "x1": 0.1, "y0": -0.3, "y1": 0.2,    the rectangle, normalised device coordinates (y up)
+                "near": 0, "far": 1.3}]}                         metres in front of that camera (clip w)
+
+A splat is inside when `w > 0`, `x0 <= x/w <= x1`, `y0 <= y/w <= y1` and `near <= w <= far`
+(`hs/clearpath.py`, `inside_boxes`) — the test the viewer ran to draw its dots. `splats` is the
+model the boxes were drawn on; a model of another size is refused. Check `hand_erase_is_small`
+asks for a look above 5 % of the model.
+
 ### `.hsmove` and `hs move --script`
 
 Presets build a path through real camera *indices*. A script describes the shot the way it is

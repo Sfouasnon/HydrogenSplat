@@ -83,6 +83,9 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var splatCount = 0
+    /// Every splat's centre (metres) of the loaded model: what the Clean up tab's boxes are tested
+    /// against. Empty until the model is ready.
+    private(set) var centres: [SIMD3<Float>] = []
     @Published private(set) var loadSeconds: Double = 0
     @Published var mode: CameraMode = .orbit
     @Published private(set) var cameras: CameraSet?
@@ -251,6 +254,7 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
     func load(model: ViewerModelFile, config: EngineConfig) {
         loadTask?.cancel()
         renderer = nil
+        centres = []
         splatCount = 0
         cameras = nil
         capture = ""
@@ -272,15 +276,17 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
                                           sampleCount: 1, maxViewCount: 1, maxSimultaneousRenders: SplatScene.maxRenders,
                                           clearColor: MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1))
                 let url = URL(fileURLWithPath: model.ply)
-                let chunk = try await Task.detached(priority: .userInitiated) { () async throws -> SplatChunk in
+                let (chunk, centres) = try await Task.detached(priority: .userInitiated) { () async throws -> (SplatChunk, [SIMD3<Float>]) in
                     let points = try await AutodetectSceneReader(url).readAll()
-                    return try SplatChunk(device: device, from: points)
+                    let made = try SplatChunk(device: device, from: points)
+                    return (made, points.map { $0.position })
                 }.value
                 guard !Task.isCancelled else { return }
                 self.phase = .loading("sorting \(chunk.splatCount.formatted()) splats…")
                 _ = await r.addChunk(chunk)
                 guard !Task.isCancelled else { return }
                 self.renderer = r
+                self.centres = centres
                 self.splatCount = chunk.splatCount
                 self.loadSeconds = Date().timeIntervalSince(t0)
                 self.phase = .ready
@@ -295,6 +301,7 @@ final class SplatScene: NSObject, ObservableObject, MTKViewDelegate {
         playback.clear()
         loadTask?.cancel()
         renderer = nil
+        centres = []
         splatCount = 0
         cameras = nil
         capture = ""

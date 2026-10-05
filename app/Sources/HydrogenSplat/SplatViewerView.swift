@@ -222,6 +222,9 @@ struct ModelViewerPane: View {
     @ObservedObject var scene: SplatScene
     @Environment(\.openWindow) private var openWindow
     let project: ProjectSummary
+    /// Shot › Clean up: the same viewer with the clean-up panel beside it instead of the move
+    /// panel, and boxes drawn over the picture.
+    var cleaning = false
     @AppStorage("viewer.showMovePanel") private var showMovePanel = true
     /// Listed on appear and on Reload, not in body: the scene publishes on every drag and every
     /// played frame, and this view observes it.
@@ -252,10 +255,6 @@ struct ModelViewerPane: View {
                 .frame(maxWidth: 360)
                 .disabled(fs.isEmpty)
                 Spacer()
-                CleanUpButton(project: project, chosen: chosen) { out in
-                    files = ViewerModelFile.list(project: project.path)
-                    if let f = files.first(where: { $0.ply == out }) { model.viewerFile[project.path] = f }
-                }
                 if let f = chosen {
                     Button("Reload") {
                         files = ViewerModelFile.list(project: project.path)
@@ -268,16 +267,25 @@ struct ModelViewerPane: View {
                 Button("Unload") { scene.unload() }
                     .disabled(scene.loaded == nil)
                     .help("Free the model's memory (1–2 GB for a large head)")
-                Toggle(isOn: $showMovePanel) { Label("Move", systemImage: "sidebar.right") }
-                    .toggleStyle(.button)
-                    .help("The move panel: write, preview, build and render a camera move")
+                if !cleaning {
+                    Toggle(isOn: $showMovePanel) { Label("Move", systemImage: "sidebar.right") }
+                        .toggleStyle(.button)
+                        .help("The move panel: write, preview, build and render a camera move")
+                }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
             Divider()
             HStack(spacing: 0) {
                 viewerArea
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if showMovePanel {
+                if cleaning {
+                    Divider()
+                    CleanUpPanel(project: project, scene: scene, tool: model.eraser, chosen: chosen) { out in
+                        files = ViewerModelFile.list(project: project.path)
+                        if let f = files.first(where: { $0.ply == out }) { model.viewerFile[project.path] = f }
+                    }
+                    .frame(width: 380)
+                } else if showMovePanel {
                     Divider()
                     MoveInspector(project: project, editor: model.moveEditor(project: project.path), scene: scene)
                         .frame(width: 380)
@@ -304,7 +312,8 @@ struct ModelViewerPane: View {
             } else if let f = chosen {
                 if scene.loaded == f {
                     SplatViewerPanel(file: f, scene: scene,
-                                     editor: showMovePanel ? model.moveEditor(project: project.path) : nil)
+                                     editor: (showMovePanel && !cleaning) ? model.moveEditor(project: project.path) : nil,
+                                     eraser: cleaning ? model.eraser : nil)
                 } else {
                     ContentUnavailableView {
                         Label(f.name, systemImage: "cube.transparent")
@@ -352,6 +361,8 @@ struct SplatViewerPanel: View {
     let file: ViewerModelFile
     @ObservedObject var scene: SplatScene
     var editor: MoveEditor? = nil
+    /// Set in Shot › Clean up: boxes are drawn over the picture.
+    var eraser: EraserTool? = nil
 
 
     var body: some View {
@@ -364,6 +375,7 @@ struct SplatViewerPanel: View {
                     .overlay { LookFrame(look: scene.look) }
                 if let e = editor { EditorOverlayHost(editor: e) }
                 overlay
+                if let t = eraser, scene.phase == .ready { EraserOverlay(tool: t, scene: scene) }
             }
             if let e = editor { EditorTimelineHost(editor: e, keys: keys) }
             Divider()

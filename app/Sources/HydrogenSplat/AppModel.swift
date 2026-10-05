@@ -109,8 +109,10 @@ final class AppModel: ObservableObject {
     /// The in-window viewer's scene: one model held at a time, kept loaded while the page is
     /// switched away so coming back is instant. Separate model windows own their own scenes.
     let viewerScene = SplatScene()
-    /// The viewer's Clean Up run (hs prune --clear-path) per project path; nil again once it ends.
+    /// The Clean up tab's run (hs prune --clear-path / --erase) per project path; nil again once it ends.
     @Published var cleanQueues: [String: RunQueue] = [:]
+    /// The Clean up tab's boxes over the in-window viewer (cleared whenever its model changes).
+    let eraser = EraserTool()
     /// The move panel's build / render run per project path, and the script it has open.
     @Published var moveQueues: [String: RunQueue] = [:]
     @Published var moveSelection: [String: String] = [:]

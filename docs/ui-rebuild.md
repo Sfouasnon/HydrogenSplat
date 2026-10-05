@@ -101,10 +101,20 @@ Workers never commit; commits happen per phase after the build is clean.
 ## Added after approval
 
 - **Scan** is step 3 (optional, after Frames); Look, Subject, Train, Shot are 4–7. Calibrate keeps the lens.
-- **Shot › Move › Clean Up** (2026-10-05, `CleanUpView.swift`): a button in the viewer's bar. Two
-  choices, Gentle and Strong, and one action, "Clean a Copy". It runs `hs prune --clear-path 1.3x`
-  (or `2.4x`) on the model the viewer shows, writes the result beside it (`prune/<model>_<strength>_clearpath.ply`),
-  shows it, and says how many splats went, from the run's own metrics. The trained model is never
-  changed; the picker lists the copy as "cleaned, gentle · <model>" so the two can be compared.
-  The reach is in the capture's own steps between frames, so the two choices mean the same on a
-  table-top orbit and on a walk-through.
+- **Shot › Clean up** (2026-10-05, `CleanUpView.swift`) is the first of Shot's three tabs
+  (1 Clean up · 2 Move · 3 Render & grade). The viewer is the Move tab's, with a clean-up panel
+  beside it instead of the move panel. Everything writes a copy; the trained model is never changed,
+  and the model picker names the copies ("path cleaned · export_20000", "erased by hand · …").
+  - **On the camera's path.** Gentle or Strong, one action, "Clean a Copy": `hs prune --clear-path
+    1.3x|2.4x` on the model showing. A switch, "Do this at the end of every training run" (off
+    until turned on; `CleanAfterTraining`), makes the Train step finish with the gentle clean and
+    keep both models, so the two can be compared after a run.
+  - **By hand.** Look Around | Select. In Select a drag draws a box over the picture; the app
+    counts the splats inside it and marks, with red dots, the ones less than half way to the middle
+    of what the box holds. "How deep" moves that limit. Look Around turns the view with the dots
+    still on, to check they sit on the floater. "Erase What Is Marked" writes the boxes to
+    `prune/<model>_hand_erase.json` and runs `hs prune --erase`; the result is one hand-cleaned copy
+    per model (`prune/<model>_hand_erased.ply`) that later erases add to in place.
+  - A box is the viewer's projection × view, a rectangle in its screen and a reach in metres from
+    that camera; the engine runs the same test on splat centres (`clearpath.inside_boxes`), so
+    what the dots show is what goes.
