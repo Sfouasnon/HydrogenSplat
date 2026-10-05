@@ -25,8 +25,9 @@ contributor nowhere AND high-blame (> --max-blame), writing <name>_nofloat.ply a
 output is what render's lineage guard knows as prune's output_ply).
 
 ``--clear-path [MM]`` is a third mode, for a walk-through (hs/clearpath.py): it removes the splats
-whose centre lies within MM of the line the real camera walked -- the camera was there, so the
-space was empty -- and writes prune/<name>_clearpath.ply and <name>_path_only.ply (what it took
+whose centre lies within MM of the line the real camera walked (or ``Nx``: N median steps between
+placed frames, which is what the app's Clean up asks for) -- the camera was there, so the space
+was empty -- and writes prune/<name>_clearpath.ply and <name>_path_only.ply (what it took
 out, to look at). Without a number the radius is 1.3 median steps between consecutive placed
 frames. It needs no scores and reads the model in chunks. Like --floaters it is a prune run.
 """
@@ -55,9 +56,9 @@ def add_parser(sub):
     p.add_argument("--max-scale", type=float, default=0.2)
     p.add_argument("--center", default=None, help="x,y,z metres; default: SfM median from coverage.json")
     p.add_argument("--report-only", action="store_true")
-    p.add_argument("--clear-path", nargs="?", const="auto", default=None, metavar="MM",
-                   help="walk-throughs: remove splats within MM of the line the real camera walked "
-                        "(default 1.3 median steps between placed frames); writes prune/<name>_clearpath.ply")
+    p.add_argument("--clear-path", nargs="?", const="auto", default=None, metavar="MM|Nx",
+                   help="remove splats within MM of the line the real camera walked, or within N median steps "
+                        "between placed frames (2.4x); default 1.3x. Writes prune/<name>_clearpath.ply")
     sc = p.add_argument_group("photometric score (hs.splatweights; prune_splats.py is not run)")
     sc.add_argument("--score", action="store_true",
                     help="score every splat (importance, top contributor, views seen, blame) over the training "
@@ -403,15 +404,20 @@ def run_clear_path(a, pj):
         la, lb, step, tears = clearpath.walked_line(pj.rig_npz, pj.path("select", "quality.json"))
     except ValueError as e:
         raise events.StageError(str(e), hint="hs solve first")
-    if a.clear_path == "auto":
-        radius = clearpath.AUTO_STEPS * step
-    else:
-        try:
-            radius = float(a.clear_path)
-        except ValueError:
-            raise events.StageError(f"--clear-path takes millimetres, not {a.clear_path!r}", hint="e.g. --clear-path 300")
-        if radius <= 0:
-            raise events.StageError("--clear-path must be more than 0 mm")
+    given = str(a.clear_path).strip().lower()
+    try:
+        if given == "auto":
+            radius, said = clearpath.AUTO_STEPS * step, f"{clearpath.AUTO_STEPS:g} x the {step:.0f} mm median step between placed frames"
+        elif given.endswith("x"):                 # in the capture's own steps, as the app asks: 1.3x, 2.4x
+            k = float(given[:-1])
+            radius, said = k * step, f"{k:g} x the {step:.0f} mm median step between placed frames"
+        else:
+            radius, said = float(given), "given"
+    except ValueError:
+        raise events.StageError(f"--clear-path takes millimetres or a number of steps, not {a.clear_path!r}",
+                                hint="e.g. --clear-path 300, or --clear-path 2.4x for 2.4 median steps between frames")
+    if not radius > 0:
+        raise events.StageError("--clear-path must be more than 0")
     pj.begin(STAGE, argv=sys.argv, clean=False)
     events.start(STAGE, "clear path")
     t0 = time.time()
@@ -427,8 +433,7 @@ def run_clear_path(a, pj):
     pj.metric(STAGE, "input_ply", pj.rel(ply) if ply.startswith(pj.root) else ply)
     pj.metric(STAGE, "input_ply_md5", md5_file(ply))
     pj.metric(STAGE, "clear_path_radius_mm", round(radius, 1))
-    pj.metric(STAGE, "clear_path_radius_from", "given" if a.clear_path != "auto" else
-              f"{clearpath.AUTO_STEPS:g} x the {step:.0f} mm median step between placed frames")
+    pj.metric(STAGE, "clear_path_radius_from", said)
     pj.metric(STAGE, "path_segments", int(len(la)))
     pj.metric(STAGE, "splats_in", rep["splats_in"])
     pj.metric(STAGE, "splats_out", rep["splats_out"])

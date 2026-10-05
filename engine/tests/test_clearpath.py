@@ -125,6 +125,20 @@ class Clear(unittest.TestCase):
         kept, _h = read_model(os.path.join(root, "prune", "export_20000_clearpath.ply"))
         self.assertEqual(len(kept), 3050)
         self.assertTrue(os.path.exists(os.path.join(root, "prune", "export_20000_path_only.ply")))
+        # the app asks in the capture's own steps, and names the copy so two strengths sit side by side
+        r2 = subprocess.run([sys.executable, "-m", "hs", "-p", root, "prune", "--clear-path", "0.2x", "--name", "export_20000_gentle"],
+                            cwd=ENGINE, capture_output=True, text=True)
+        self.assertEqual(r2.returncode, 0, r2.stdout[-1500:] + r2.stderr[-1500:])
+        with open(os.path.join(root, "manifest.json")) as f:
+            m2 = json.load(f)["stages"]["prune"]["metrics"]
+        self.assertAlmostEqual(m2["clear_path_radius_mm"], 0.2 * 500.0, delta=15.0)
+        self.assertIn("0.2 x the", m2["clear_path_radius_from"])
+        self.assertEqual(m2["output_ply"], "prune/export_20000_gentle_clearpath.ply")
+        self.assertTrue(os.path.exists(os.path.join(root, "prune", "export_20000_clearpath.ply")))   # the first copy is still there
+        bad = subprocess.run([sys.executable, "-m", "hs", "-p", root, "prune", "--clear-path", "lots"],
+                             cwd=ENGINE, capture_output=True, text=True)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("millimetres or a number of steps", bad.stdout)
         checks = {json.loads(l)["name"]: json.loads(l) for l in r.stdout.splitlines()
                   if l.startswith("{") and json.loads(l).get("ev") == "check"}
         self.assertFalse(checks["path_clearing_is_small"]["ok"])           # 400 of 3,450 is 11.6 %: it asks to be looked at

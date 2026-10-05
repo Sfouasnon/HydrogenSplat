@@ -1581,7 +1581,8 @@ neighbouring frames, and a move along the path flies straight through it. `hs pr
 [MM]` removes the splats whose centre is within MM of the walked line (consecutive placed frames
 joined inside each run, never across a tear — the same line `walk` follows) and writes
 `prune/<name>_clearpath.ply` plus `<name>_path_only.ply` (what it took out). Default radius: 1.3
-median steps between consecutive placed frames. Reads and writes in chunks; works on a run that
+median steps between consecutive placed frames; `--clear-path 2.4x` asks in those steps instead of
+millimetres, which is what the app's Clean Up does (Gentle 1.3x, Strong 2.4x). Reads and writes in chunks; works on a run that
 was stopped part-way (it takes the newest export, or `--ply`).
 
 Measured once, on the first garden walk (8.2 million splats at 20,000 steps, coarse numpy renders

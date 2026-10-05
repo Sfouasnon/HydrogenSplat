@@ -109,6 +109,8 @@ final class AppModel: ObservableObject {
     /// The in-window viewer's scene: one model held at a time, kept loaded while the page is
     /// switched away so coming back is instant. Separate model windows own their own scenes.
     let viewerScene = SplatScene()
+    /// The viewer's Clean Up run (hs prune --clear-path) per project path; nil again once it ends.
+    @Published var cleanQueues: [String: RunQueue] = [:]
     /// The move panel's build / render run per project path, and the script it has open.
     @Published var moveQueues: [String: RunQueue] = [:]
     @Published var moveSelection: [String: String] = [:]
@@ -194,7 +196,7 @@ final class AppModel: ObservableObject {
     /// One of the app's queues is running on `path` — between its steps too, when the session in
     /// `projectRuns` has finished and the next has not been created yet.
     private func appQueueRunning(_ path: String) -> Bool {
-        [trainQueues, selectQueues, exposureQueues, maskQueues, moveQueues, scaleQueues].contains { $0[path]?.isRunning == true }
+        [trainQueues, selectQueues, exposureQueues, maskQueues, moveQueues, scaleQueues, cleanQueues].contains { $0[path]?.isRunning == true }
     }
 
     // MARK: live status — window title and Dock badge

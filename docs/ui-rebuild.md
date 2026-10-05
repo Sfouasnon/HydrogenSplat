@@ -97,3 +97,14 @@ Swift is built on the Mac only: after each phase Stephen runs
 `cd ~/Desktop/Apps/HydrogenSplat/app && swift build 2>&1 | grep -E "error|warning: unused" | head -40`
 and pastes the output; the engine's tests run anywhere (`cd engine && python3 -m unittest`).
 Workers never commit; commits happen per phase after the build is clean.
+
+## Added after approval
+
+- **Scan** is step 3 (optional, after Frames); Look, Subject, Train, Shot are 4–7. Calibrate keeps the lens.
+- **Shot › Move › Clean Up** (2026-10-05, `CleanUpView.swift`): a button in the viewer's bar. Two
+  choices, Gentle and Strong, and one action, "Clean a Copy". It runs `hs prune --clear-path 1.3x`
+  (or `2.4x`) on the model the viewer shows, writes the result beside it (`prune/<model>_<strength>_clearpath.ply`),
+  shows it, and says how many splats went, from the run's own metrics. The trained model is never
+  changed; the picker lists the copy as "cleaned, gentle · <model>" so the two can be compared.
+  The reach is in the capture's own steps between frames, so the two choices mean the same on a
+  table-top orbit and on a walk-through.

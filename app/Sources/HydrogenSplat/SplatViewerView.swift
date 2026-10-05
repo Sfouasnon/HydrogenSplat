@@ -246,12 +246,16 @@ struct ModelViewerPane: View {
             HStack(spacing: 12) {
                 Picker("Model", selection: selection) {
                     ForEach(fs) { f in
-                        Text("\(f.name)  ·  \(f.sizeLabel)").tag(Optional(f))
+                        Text("\(f.pickerName)  ·  \(f.sizeLabel)").tag(Optional(f))
                     }
                 }
                 .frame(maxWidth: 360)
                 .disabled(fs.isEmpty)
                 Spacer()
+                CleanUpButton(project: project, chosen: chosen) { out in
+                    files = ViewerModelFile.list(project: project.path)
+                    if let f = files.first(where: { $0.ply == out }) { model.viewerFile[project.path] = f }
+                }
                 if let f = chosen {
                     Button("Reload") {
                         files = ViewerModelFile.list(project: project.path)
