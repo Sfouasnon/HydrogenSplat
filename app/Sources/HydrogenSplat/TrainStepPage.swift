@@ -234,9 +234,13 @@ private struct TrainStepBody: View {
             }
         } else if let q = queue, q.isRunning || q.state == .failed || q.state == .cancelled {
             let s = settings.wrappedValue
-            VerdictCard(q.isRunning ? .attention : .blocked,
-                        headline: q.isRunning ? "Training is running." : (q.state == .cancelled ? "Training was stopped." : "Training failed."),
-                        detail: q.isRunning ? "Keep the Mac awake and plugged in; the page follows the run." : "The run's last words are below. Fix what it names and start again.") {
+            // a run the user stopped is not a failure: its exports are on disk and open in Shot
+            let stopped = q.state == .cancelled
+            VerdictCard(q.isRunning || stopped ? .attention : .blocked,
+                        headline: q.isRunning ? "Training is running." : (stopped ? "Training was stopped." : "Training failed."),
+                        detail: q.isRunning ? "Keep the Mac awake and plugged in; the page follows the run."
+                            : (stopped ? "The last model it saved is kept and opens in Shot. Training again starts from the beginning."
+                                       : "The run's last words are below. Fix what it names and start again.")) {
                 QueueView(queue: q, totalIters: s.totalIters, growthStopIter: s.growthStopIter,
                           depthHeld: s.depthWeight > 0, spreadOn: s.depthSpreadWeight > 0)
             }
