@@ -597,17 +597,32 @@ def _reference(a, pj, views, med, M):
             raise events.StageError("--reference auto needs select/quality.json",
                                     hint="re-run hs select (it writes the quality report), or name a capture")
         q = json.load(open(qp))
+        frames = q.get("frames", [])
+        mono = q.get("eyes", 2) == 1
         n_caps = sum(1 for e, _ in views if e == "L")
         # one camera's picks are named after their files, so a pick finds its view by name even
-        # when the solve placed only some of them; a stereo pick is capture N by position
-        if q.get("eyes", 2) != 1 and n_caps != len(q.get("frames", [])):
-            raise events.StageError(f"the quality report has {len(q.get('frames', []))} picks but the dataset "
-                                    f"has {n_caps} captures, so pick N is not capture N",
-                                    hint="re-run hs select and hs solve, or name a capture")
-        pick = q.get("exposure_reference") or frame_quality.pick_reference(q["frames"], mono=q.get("eyes", 2) == 1)
+        # when the solve placed only some of them; a stereo pick is capture N by position. A solve
+        # that placed only some captures exports those under their own numbers (cap020, cap031 …),
+        # so pick N is still capture N: the report lines up when it has a pick for every capture
+        # the solve was GIVEN, placed or not. (Until 2026-10-05 this compared against the dataset,
+        # and every project that went on from a partial solve was refused here.)
+        lost = set() if mono else {str(c) for c in (pj.stage("solve").get("metrics") or {}).get("unregistered_captures") or []}
+        if not mono and n_caps + len(lost) != len(frames):
+            raise events.StageError(f"the quality report has {len(frames)} picks but the solve was given "
+                                    f"{n_caps + len(lost)} captures, so pick N is not capture N",
+                                    hint="the frames were picked again after the cameras were placed: "
+                                         "re-run hs solve, or name a capture")
+        pick = q.get("exposure_reference")
+        note = ""
+        if lost and (pick is None or pick.get("cap") in lost):
+            # the report's own choice was among the captures the solve lost: choose again from the rest
+            placed = [f for f in frames if f"cap{f['sel']:03d}" not in lost]
+            pick = frame_quality.pick_reference(placed)
+            note = f"; chosen among the {len(placed)} captures the solve placed"
+        pick = pick or frame_quality.pick_reference(frames, mono=mono)
         if not pick:
             raise events.StageError("no pick in the quality report has an exposure measurement")
-        cap, why = pick["cap"], f"auto: {pick['why']} (source frame {pick['frame']})"
+        cap, why = pick["cap"], f"auto: {pick['why']} (source frame {pick['frame']}){note}"
     elif _view_for(views, r) is not None:        # a view by its own name: sel012-00345
         cap, why = r, "chosen by hand"
     else:

@@ -330,6 +330,41 @@ class ExposureDryRun(Base):
         with self.assertRaises(events.StageError):
             exposure.run(self.args(reference="cap007", dry_run=True), pj)
 
+    def test_auto_reference_after_a_partial_solve(self):
+        """2026-10-05, a garden walk: 211 picks, 162 placed, the user went on with the 162 — and
+        Look refused, because the report had more picks than the dataset had captures. A partial
+        solve exports the captures it placed under their own numbers, so pick N is still capture N;
+        the report lines up when it has a pick for every capture the solve was given."""
+        pj = self.reference_project()                                     # cap000 and cap001 in the dataset
+        pj.stage("solve").setdefault("metrics", {})["unregistered_captures"] = ["cap002", "cap003"]
+        pj.save()
+        os.makedirs(pj.path("select"), exist_ok=True)
+        frames = [{"sel": 0, "frame": 0, "ev": -0.1, "clip": 0.010, "flags": []},
+                  {"sel": 1, "frame": 9, "ev": 0.1, "clip": 0.004, "flags": []},
+                  {"sel": 2, "frame": 20, "ev": 0.0, "clip": 0.0, "flags": []},      # the cleanest, and not placed
+                  {"sel": 3, "frame": 31, "ev": 0.0, "clip": 0.002, "flags": []}]
+        from hs import frame_quality
+        report = {"frames": frames, "exposure_reference": frame_quality.pick_reference(frames)}
+        self.assertEqual(report["exposure_reference"]["cap"], "cap002", "the report's own choice is a lost capture")
+        json.dump(report, open(pj.path("select", "quality.json"), "w"))
+        exposure.run(self.args(reference="auto", dry_run=True), pj)
+        m = pj.stage("exposure")["dry_run"]["metrics"]
+        self.assertEqual(m["reference"], "cap001", "the least clipped of the two that were placed")
+        self.assertIn("chosen among the 2 captures the solve placed", m["reference_why"])
+        # the report's choice stands when it was placed
+        report["exposure_reference"] = dict(report["exposure_reference"], sel=0, cap="cap000", frame=0)
+        json.dump(report, open(pj.path("select", "quality.json"), "w"))
+        pj.release()
+        exposure.run(self.args(reference="auto", dry_run=True), pj)
+        self.assertEqual(pj.stage("exposure")["dry_run"]["metrics"]["reference"], "cap000")
+        # and a report from another selection is still refused: 5 picks, 4 captures solved
+        frames.append({"sel": 4, "frame": 40, "ev": 0.0, "clip": 0.0, "flags": []})
+        json.dump(report, open(pj.path("select", "quality.json"), "w"))
+        pj.release()
+        with self.assertRaises(events.StageError) as e:
+            exposure.run(self.args(reference="auto", dry_run=True), pj)
+        self.assertIn("5 picks but the solve was given 4 captures", str(e.exception))
+
     def test_dry_run_and_restore_together_is_an_error(self):
         pj = self.solved_project()
         with self.assertRaises(events.StageError):

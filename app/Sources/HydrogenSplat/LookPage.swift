@@ -130,7 +130,8 @@ struct LookPage: View {
                 }
             }
         } else if stage?.status == .failed {
-            VerdictCard(.blocked, headline: "The frames could not be measured.", detail: stage?.error ?? "Open Details for the engine's reason.")
+            VerdictCard(.blocked, headline: "The last exposure step did not finish.",
+                        detail: (stage?.error ?? "Open Details for the engine's reason.") + " The frames are as they were; measure them again to carry on.")
         } else {
             VerdictCard(.info, headline: "Not measured yet.",
                         detail: "Measuring gives the drift in stops across the orbit, the share of the subject that is blown out, and one recommendation.")
