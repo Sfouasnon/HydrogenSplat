@@ -27,7 +27,7 @@ import time
 
 import numpy as np
 
-from .. import calib, coverage, events, pairs, runner, timing
+from .. import calib, coverage, events, lens, pairs, runner, timing
 
 STAGE = "solve"
 
@@ -105,6 +105,10 @@ def add_parser(sub):
                    help="staged: hold the camera at --focal-px while mapping, refine it once at the end "
                         "(use when the solve registers only a handful of images and the focal/distortion "
                         "it prints are absurd)")
+    g.add_argument("--lens", default="auto", metavar="auto|PROFILE.json|none",
+                   help="lens profile from `hs calibrate` to seed the camera with (K and distortion, OPENCV): "
+                        "auto (default) takes the stored profile whose camera and recording size match the source, "
+                        "none seeds nothing (today's behaviour); refined by COLMAP unless --fix-intrinsics")
     g.add_argument("--board", default=None, metavar="SX,SY,SQUARE_MM,MARKER_MM[,DICT]",
                    help="after the solve, run `hs scale --board` with this ChArUco board (on a Hydrogen "
                         "clip: `hs scale --dry-run`, which measures the baseline instead)")
@@ -168,6 +172,41 @@ def _matcher_argv(a, n_caps, pj):
                                         hint="hs tools --fetch-vocab-tree, or --loop stride (the default)")
             argv += ["--vocab-tree", tree, "--vocab-neighbors", a.vocab_neighbors]
     return matcher, argv
+
+
+def _lens_prior(a, pj):
+    """`--lens`: the monocolmap.py argv that seeds the shared camera from a lens profile, and what
+    the `lens_profile` metric records. auto looks the profile up by the source's camera make,
+    model, lens and recording size (hs/lens.py); a file is used as given, but only for its own
+    image size. An explicit --focal-px wins over auto (not over a named file). -> (argv, info)."""
+    mode = getattr(a, "lens", "auto") or "auto"
+    if mode == "none":
+        pj.metric(STAGE, "lens_profile", "none")
+        return [], "none"
+    meta = lens.meta_from_project(pj) or {}
+    size = (int(meta.get("width") or 0), int(meta.get("height") or 0))
+    if mode == "auto":
+        if getattr(a, "focal_px", None):
+            pj.metric(STAGE, "lens_profile", "none")
+            return [], "none"
+        found = lens.find(meta) if size[0] and size[1] else None
+        if not found:
+            pj.metric(STAGE, "lens_profile", "none")
+            pj.metric(STAGE, "lens_profile_key_wanted", lens.key_for(meta) if size[0] else None)
+            return [], "none"
+        path, prof = found
+    else:
+        try:
+            path, prof = os.path.abspath(os.path.expanduser(mode)), lens.load(mode)
+        except ValueError as e:
+            raise events.StageError(str(e), hint="--lens auto|none, or a profile written by hs calibrate")
+        psize = tuple(int(v) for v in prof["image_size"])
+        if size[0] and size[1] and psize != size:
+            raise events.StageError(f"--lens {os.path.basename(path)} is for {psize[0]}x{psize[1]} frames; this source is "
+                                    f"{size[0]}x{size[1]}", hint="calibrate with the recording setting the shoot used")
+    info = lens.summary(path, prof)
+    pj.metric(STAGE, "lens_profile", info)
+    return ["--camera-params", lens.colmap_params(prof)], info
 
 
 class SfmParser:
@@ -509,6 +548,7 @@ def _run_stereo(a, pj):
     pj.check(STAGE, "rig_constraint_held", dev < 0.01,
              value=f"L–R separation {seps.min():.3f}–{seps.max():.3f} mm vs profile {baseline:.3f} mm")
     _outlier_check(pj, G)
+    subject_share(pj, G)
     # the stage completed; a failed quality check stays visible in the manifest and the
     # event stream rather than blocking (partial registration raised above — that one blocks)
     pj.finish(STAGE, ok=True)
@@ -634,6 +674,7 @@ def run_array(a, pj):
                               "--peak-threshold", a.peak_threshold, "--features", a.features, *m_argv)
     if a.masks:
         argv += ["--masks", a.masks]
+    argv += _lens_prior(a, pj)[0]                 # --lens: K and distortion from a lens profile, if one applies
     if a.focal_px:
         argv += ["--focal-px", a.focal_px]
     if a.fix_intrinsics:
@@ -731,6 +772,7 @@ def run_array(a, pj):
     pj.metric(STAGE, "azimuth_range_deg", cov["azimuth_range_deg"])
     pj.metric(STAGE, "elevation_range_deg", cov["elevation_range_deg"])
     pj.metric(STAGE, "distance_range_mm", cov["distance_range_mm"])
+    subject_share(pj, G)
     pj.finish(STAGE, ok=True)
     _append_timing(pj, parser, len(caps), n_img, ex.elapsed, reused)
 
@@ -759,3 +801,75 @@ def per_image_table(recon_dir):
                      "mean_reproj_px": round(float(e.mean()), 4), "median_reproj_px": round(float(np.median(e)), 4)})
     rows.sort(key=lambda r: r["name"])
     return {"images": rows}
+
+
+# ------------------------------------------------------------------ is masking worth it? (the Subject step)
+
+SUBJECT_SHARE_MASKS_OPTIONAL = 0.5     # the subject over this share of the frame: the room is the smaller part
+
+
+def subject_share_of_frame(G):
+    """Per view, the convex hull of the subject's sparse points as a share of the frame; the subject
+    is the same selection hs masks' geometric prior makes: the SfM points within the radius fitted to
+    the camera orbit (masks.auto_radius) of the cloud's median. -> (median share, per-view list).
+    Points are clipped to the frame before the hull, so a subject that runs off the edge counts the
+    part in view. Sparse points sit on texture, not on the silhouette, so this is a floor on the
+    subject's true share, not its value."""
+    import cv2
+    from .masks import auto_radius
+    pts = np.asarray(G["pts"], np.float64)
+    if len(pts) < 4:
+        return None, []
+    subject = np.median(pts, axis=0)
+    r = auto_radius(G, subject)
+    P = pts[np.linalg.norm(pts - subject, axis=1) <= r]
+    if len(P) < 4:
+        return None, []
+    K, R, t = (np.asarray(G[k], np.float64) for k in ("K", "R", "t"))
+    wh = G["wh"] if "wh" in G.files else None
+    shares = []
+    for v in range(len(K)):
+        w, h = (int(wh[v][0]), int(wh[v][1])) if wh is not None else (int(G["w"]), int(G["h"]))
+        Xc = (R[v] @ P.T).T + t[v]
+        z = Xc[:, 2]
+        front = z > 1e-6
+        if front.sum() < 3:
+            continue
+        uv = (K[v] @ Xc[front].T).T
+        uv = uv[:, :2] / uv[:, 2:3]
+        uv[:, 0] = np.clip(uv[:, 0], 0, w)
+        uv[:, 1] = np.clip(uv[:, 1], 0, h)
+        hull = cv2.convexHull(uv.astype(np.float32))
+        shares.append(float(cv2.contourArea(hull) / (w * h)))
+    if not shares:
+        return None, []
+    return float(np.median(shares)), shares
+
+
+def subject_share(pj, G):
+    """Metrics subject_share_of_frame / room_share_estimate and the masking_worth_it verdict. Advisory:
+    a failure here never fails a solve that is otherwise done."""
+    try:
+        share, per_view = subject_share_of_frame(G)
+    except Exception as e:  # noqa: BLE001 — a verdict, not a result
+        events.log(STAGE, f"[hs] subject share not measured: {e!r}")
+        return None
+    if share is None:
+        return None
+    room = 1.0 - share
+    pj.metric(STAGE, "subject_share_of_frame", round(share, 4))
+    pj.metric(STAGE, "room_share_estimate", round(room, 4))
+    pj.metric(STAGE, "subject_share_views", len(per_view))
+    tenths = int(round(10 * room))
+    # the hull of the sparse points is the subject's textured part, so the share is a floor and
+    # the room's an upper bound (Stormtrooper: 18% here against 41% under the finished masks)
+    if share < SUBJECT_SHARE_MASKS_OPTIONAL:
+        value = (f"The subject fills at least {100 * share:.0f}% of the frame; modelled whole, the room would take "
+                 f"about {tenths} of 10 splats — masking recommended (the share of pixels stands in for the share "
+                 f"of splats, and the sparse points see only the textured part of the subject)")
+    else:
+        value = (f"The subject fills at least {100 * share:.0f}% of the frame, most of it; masks optional (the share "
+                 f"of pixels stands in for the share of splats)")
+    pj.check(STAGE, "masking_worth_it", True, needs_human=True, value=value)
+    return share
+

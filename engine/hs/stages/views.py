@@ -38,6 +38,16 @@ spread over 18° of elevation, against 9 within an 8° band at az −42°.
 The displaced fraction is diluted by whatever background falls inside the crop, so compare it
 between views of one capture, and between captures shot the same way — not against a number
 from a differently framed run.
+
+Two metrics for the Train step's results page (docs/ui-rebuild.md): ``summary``, plain-language
+lines built from the numbers above — the interior (or whole-crop) PSNR against the previous run of
+the same ``--name`` (its report is read before this run's folder is cleared; "the same within noise"
+is within PSNR_NOISE_DB), the edge PSNR with "the weak part" when it sits over EDGE_WEAK_DB under the
+interior, the sharpness as a share of the photograph's, the displaced share — and ``next_steps``,
+one line per check that is not ok (here, in the solve's and in hs exposure --analyze's) saying what
+to do: shoot the missing angles, match the exposure, calibrate the lens, tighten the outlines. The
+solve's ``coverage_gaps`` metric, when a solve writes one, becomes "shoot from" lines too. Every
+other metric is as it was.
 """
 import json
 import os
@@ -53,6 +63,9 @@ from .render import DEFAULT_RENDER, RE_FRAME, RE_LOADED, RE_PATH
 
 STAGE = "views"
 PATCH, PATCH_STEP, PATCH_MIN_STD, PATCH_MIN_RESP = 64, 32, 12.0, 0.25
+PSNR_NOISE_DB = 0.3       # summary: two runs this close are "the same within noise"
+EDGE_WEAK_DB = 10.0       # summary: an edge this far under the interior is "the weak part"
+LOW_ELEVATION_DEG = 20.0  # next_steps: a highest view under this is "shoot from above"
 # a view under this much of its grain ceiling is soft enough to look at; 0.45 sits below every
 # view of the three 2026-09-17 baselines except the head's two worst (0.39, 0.44)
 SOFT_VIEW_NORM = 0.45
@@ -487,6 +500,9 @@ def run(a, pj):
     cov = json.load(open(cov_path))
     by_cap = {c["capture"]: c for c in cov["captures"]}
 
+    # the last run of this name, for the summary's "better / worse / the same": read before
+    # begin() clears the folder
+    prev = previous_report(pj, a.name)
     # A named pass (the R eye, or any --name) must not wipe the folder: both eyes are the
     # same stage, and eL - eR cannot be computed if running R deletes L's report.
     pj.begin(STAGE, argv=sys.argv, clean=(a.name == "views"))
@@ -678,6 +694,131 @@ def run(a, pj):
              value=f"subject {100 * float(np.median(core)):.0f}% vs surroundings "
                    f"{100 * float(np.median(surround)):.0f}% displaced (medians over {len(report)} views); "
                    f"the other way round means the model is failing on the subject itself")
+    S = summarize(pj.stage(STAGE).get("metrics", {}), pj.stage(STAGE).get("checks", []), prev=prev,
+                  solve_metrics=pj.stage("solve").get("metrics", {}), solve_checks=pj.stage("solve").get("checks", []),
+                  exposure_metrics=pj.stage("exposure").get("metrics", {}),
+                  exposure_checks=pj.stage("exposure").get("checks", []))
+    pj.metric(STAGE, "summary", S["summary"])
+    pj.metric(STAGE, "next_steps", S["next_steps"])
     if not a.keep_frames:
         shutil.rmtree(out_dir, ignore_errors=True)
     pj.finish(STAGE, ok=True)
+
+
+# ------------------------------------------------------------------ the results page: words from the numbers
+
+def report_medians(rows):
+    """The medians `summary` compares between runs, from a report's view rows."""
+    def med(key):
+        vals = [r.get(key) for r in rows if isinstance(r.get(key), (int, float))]
+        return round(float(np.median(vals)), 3) if vals else None
+    return {"psnr_median": med("psnr_db"), "psnr_interior_median": med("psnr_interior_db"),
+            "psnr_edge_median": med("psnr_edge_db"), "retained_edge_energy_norm_median": med("retained_edge_energy_norm"),
+            "displaced_fraction_median": med("displaced_fraction"), "views": len(rows)}
+
+
+def previous_report(pj, name):
+    """views/<name>_report.json from the last run of this name, reduced to its medians; None without one."""
+    rp = pj.path("views", f"{name}_report.json")
+    if not os.path.exists(rp):
+        return None
+    try:
+        rows = (json.load(open(rp)) or {}).get("views") or []
+    except (OSError, ValueError):
+        return None
+    return report_medians(rows) if rows else None
+
+
+def _db(x):
+    return f"{x:.1f} dB"
+
+
+def summarize(metrics, checks, prev=None, solve_metrics=None, solve_checks=None, exposure_metrics=None,
+              exposure_checks=None):
+    """-> {"summary": [lines], "next_steps": [lines]} (module docstring). Pure: everything it says
+    comes from the numbers handed in, so a page never shows a number the engine did not produce."""
+    m, prev = metrics or {}, prev or {}
+    solve_metrics, exposure_metrics = solve_metrics or {}, exposure_metrics or {}
+    failed = {c["name"]: c for c in (checks or []) if not c.get("ok")}
+    solve_failed = {c["name"]: c for c in (solve_checks or []) if not c.get("ok")}
+    exposure_failed = {c["name"]: c for c in (exposure_checks or []) if not c.get("ok")}
+    summary, steps = [], []
+
+    # 1. agreement, against the last run of the same name
+    key = "psnr_interior_median" if m.get("psnr_interior_median") is not None else "psnr_median"
+    psnr = m.get(key)
+    if psnr is not None:
+        where = " inside the outline" if key == "psnr_interior_median" else ""
+        line = f"The model matches the photographs at {_db(psnr)}{where}"
+        was = prev.get(key)
+        if was is not None:
+            d = psnr - was
+            if abs(d) <= PSNR_NOISE_DB:
+                line += f", the same as the last run within noise ({_db(was)})"
+            elif d > 0:
+                line += f", better than the last run ({_db(was)}, up {d:.1f} dB)"
+            else:
+                line += f", worse than the last run ({_db(was)}, down {-d:.1f} dB)"
+        summary.append(line + ".")
+    # 2. the edge of the outline
+    edge, interior = m.get("psnr_edge_median"), m.get("psnr_interior_median")
+    edge_weak = edge is not None and interior is not None and interior - edge > EDGE_WEAK_DB
+    if edge is not None and interior is not None:
+        if edge_weak:
+            summary.append(f"The edge of the outline scores {_db(edge)}, {interior - edge:.0f} dB under the interior: the weak part.")
+        else:
+            summary.append(f"The edge of the outline scores {_db(edge)}, close to the interior.")
+    # 3. sharpness as a share of the photograph's
+    norm = m.get("retained_edge_energy_norm_median")
+    if norm is not None:
+        if norm > 1.0:
+            summary.append("The model is sharper than the photographs: the frames carry motion blur.")
+        else:
+            summary.append(f"The model keeps {100 * norm:.0f}% of the photograph's sharpness.")
+    # 4. displaced
+    disp, worst = m.get("displaced_fraction_median"), m.get("displaced_fraction_worst")
+    if disp is not None:
+        line = f"{100 * disp:.1f}% of the model sits out of place in the typical view"
+        if worst is not None:
+            line += f" (worst view {100 * worst:.0f}%)"
+        summary.append(line + ".")
+
+    # next steps, one per thing that is not ok
+    bands = m.get("by_azimuth") or []
+    if "model_registers_to_photographs" in failed or "every_azimuth_band_registers" in failed:
+        if bands:
+            b = max(bands, key=lambda b: b.get("displaced_median") or 0)
+            lo, hi = b["azimuth_deg"]
+            steps.append(f"Shoot more frames around azimuth {lo:+.0f}° to {hi:+.0f}° ({100 * (b.get('displaced_median') or 0):.0f}% "
+                         f"out of place there, the weakest side) and solve again.")
+        else:
+            steps.append("Shoot more frames where the model is out of place and solve again.")
+        el = solve_metrics.get("elevation_range_deg")
+        if isinstance(el, (list, tuple)) and len(el) == 2 and el[1] < LOW_ELEVATION_DEG:
+            steps.append(f"Shoot from above: the highest frame looks from only {el[1]:.0f}° up, so the top of the subject has no view.")
+    gaps = solve_metrics.get("coverage_gaps")
+    if isinstance(gaps, (list, tuple)):
+        for g in gaps[:4]:
+            name = g.get("name") or g.get("label") if isinstance(g, dict) else g
+            if name:
+                steps.append(f"Shoot from {name}: no frame covers it.")
+    if "exposure_consistent" in exposure_failed:
+        steps.append(f"Match the exposure in the Look step: {exposure_failed['exposure_consistent'].get('value') or 'the frames differ in brightness'}")
+    elif isinstance(exposure_metrics.get("drift_stops"), (int, float)) and exposure_metrics["drift_stops"] >= 0.5:
+        steps.append(f"Match the exposure in the Look step: the frames swing {exposure_metrics['drift_stops']:.1f} stops.")
+    if "mean_reproj_ok" in solve_failed or "no_image_over_3px" in solve_failed:
+        c = solve_failed.get("mean_reproj_ok") or solve_failed.get("no_image_over_3px")
+        steps.append(f"Calibrate the lens: the cameras agree to {c.get('value') or 'more than wanted'}; film the board, "
+                     f"then solve again with the profile.")
+    if edge_weak:
+        steps.append("Tighten the outlines in the Subject step (snap the edges, review the flagged frames): "
+                     "the edge of the outline is where the score is lost.")
+    if "no_view_much_softer_than_achievable" in failed:
+        soft = m.get("views_soft") or []
+        steps.append("Leave the blurred frames out (hs train --exclude) or shoot again more slowly: "
+                     + (", ".join(soft[:4]) + (" …" if len(soft) > 4 else "") if soft else "some views are much softer than the photographs allow")
+                     + ".")
+    if "subject_registers_better_than_its_surroundings" in failed:
+        steps.append("The subject itself is out of place more than its surroundings: check the placed frames in "
+                     "the Frames step before training longer.")
+    return {"summary": summary, "next_steps": steps}

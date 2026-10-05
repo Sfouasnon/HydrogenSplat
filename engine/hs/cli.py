@@ -2,6 +2,7 @@
 
     hs <stage> --project DIR [stage options]
     hs cameras -p DIR | hs movepreview -p DIR --script F | hs tools | hs calib ... | hs selftest [--clip CLIP] | hs phone | hs replay EVENTS.jsonl
+    hs calibrate --board-image OUT.png | [-p DIR] --clip BOARD.mov    a ChArUco board to print or show; a lens profile from a clip of it
     hs source PATH                 what a file or folder would be ingested as
     hs stability --frames DIR | --video MP4 [-p DIR]
 
@@ -18,7 +19,7 @@ import traceback
 
 from . import __version__, events, keepawake
 from .project import Project
-from .stages import archive, calibrate, cameras, export, exposure, grade, ingest, masks, merge, move, movepreview, phone, prune, render, replay, scale, select, selftest, solve, source, split, stability, tools, train, views
+from .stages import archive, calib, calibrate, cameras, export, exposure, grade, ingest, masks, merge, move, movepreview, phone, prune, render, replay, scale, select, selftest, solve, source, split, stability, tools, train, views
 
 PROJECT_STAGES = {
     "ingest": ingest, "select": select, "solve": solve, "scale": scale, "train": train,
@@ -26,14 +27,14 @@ PROJECT_STAGES = {
     "exposure": exposure, "masks": masks, "merge": merge, "archive": archive, "grade": grade,
     "split": split, "export": export,
 }
-FREE_STAGES = {"cameras": cameras, "movepreview": movepreview, "tools": tools, "calib": calibrate, "selftest": selftest, "phone": phone, "replay": replay, "stability": stability, "source": source}
+FREE_STAGES = {"cameras": cameras, "movepreview": movepreview, "tools": tools, "calib": calib, "calibrate": calibrate, "selftest": selftest, "phone": phone, "replay": replay, "stability": stability, "source": source}
 
 
 # --project and --verbose are accepted on either side of the stage name: `hs -p DIR solve`
 # and `hs solve -p DIR` both work. argparse hands everything after the stage name to the
 # subparser, so the flags have to exist on both; SUPPRESS on the subparser's copy means an
 # omitted flag leaves the top-level value in place instead of overwriting it with None.
-GLOBAL_ON_SUBPARSER = set(PROJECT_STAGES) | {"tools", "selftest", "cameras", "movepreview", "stability"}
+GLOBAL_ON_SUBPARSER = set(PROJECT_STAGES) | {"tools", "selftest", "cameras", "movepreview", "stability", "calibrate"}
 
 
 def build_parser():
@@ -42,7 +43,7 @@ def build_parser():
     ap.add_argument("-p", "--project", default=None, help="project folder (created by ingest)")
     ap.add_argument("-v", "--verbose", action="store_true", help="also emit child output as {\"ev\":\"log\"} events")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<stage>")
-    for mod in (ingest, select, solve, scale, exposure, masks, train, archive, export, merge, split, move, prune, render, grade, views, cameras, movepreview, stability, tools, calibrate, selftest, phone, replay, source):
+    for mod in (ingest, select, solve, scale, exposure, masks, train, archive, export, merge, split, move, prune, render, grade, views, cameras, movepreview, stability, tools, calib, calibrate, selftest, phone, replay, source):
         mod.add_parser(sub)
     seen = set()
     for name, sp in sub.choices.items():
@@ -87,8 +88,11 @@ def main(argv=None):
             events.open_file_log(pj.path("logs", f"{ev_stage}.events.jsonl"))
             mod.run(a, pj)
             code = 0
-        elif stage_name == "tools":
+        elif stage_name in ("tools", "calibrate"):
+            # the project is optional: tools reports into it, calibrate records the lens profile in it
             pj = Project(a.project) if a.project and os.path.exists(os.path.join(a.project, "manifest.json")) else None
+            if pj is not None and stage_name == "calibrate":
+                events.open_file_log(pj.path("logs", f"{ev_stage}.events.jsonl"))
             mod.run(a, pj)
             code = 0
         elif stage_name == "selftest":

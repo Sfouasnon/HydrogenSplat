@@ -91,7 +91,10 @@ def cmd_sfm(a):
         fe.sift.peak_threshold = a.peak_threshold
         ro = pycolmap.ImageReaderOptions()
         ro.camera_model = "OPENCV"
-        if a.focal_px:
+        if a.camera_params:
+            # a lens profile (hs calibrate): the whole OPENCV camera "fx,fy,cx,cy,k1,k2,p1,p2"
+            ro.camera_params = a.camera_params
+        elif a.focal_px:
             # pycolmap takes the prior as "fx,fy,cx,cy,k1,k2,p1,p2"; only the focal matters
             cap = json.load(open(os.path.join(work, "captures.json")))
             w, h = cap["eye_size"]
@@ -116,10 +119,12 @@ def cmd_sfm(a):
     else:
         print(f"reusing features/matches in {db}")
     mode = "fixed" if a.fix_intrinsics else (a.intrinsics or "refine")
-    if mode == "staged" and not a.focal_px:
+    if mode == "staged" and not (a.focal_px or a.camera_params):
         sys.exit("--intrinsics staged maps with the camera held at a prior: give --focal-px "
                  "(an iPhone main camera in 4K video is ~0.87 x the long side, e.g. 3340 for 3840)")
-    if a.focal_px:
+    if a.camera_params:
+        set_camera_prior(db, None, params=[float(x) for x in a.camera_params.split(",")])
+    elif a.focal_px:
         # the prior goes into the database camera too, so a reused database (--reuse-matches) takes it:
         # extraction is the only other place it is set
         set_camera_prior(db, a.focal_px)
@@ -195,26 +200,36 @@ def match(db, work, n_img, a):
     print(f"timing: matching {time.monotonic() - t0:.1f} s")
 
 
-def set_camera_prior(db, focal_px):
+def set_camera_prior(db, focal_px, params=None):
     """Every camera in the database: fx = fy = focal_px, principal point at the centre, no
-    distortion, has_prior_focal_length. Returns the number of cameras changed."""
+    distortion, has_prior_focal_length — or, with `params` (a lens profile's fx fy cx cy k1 k2
+    p1 p2 for the OPENCV model), exactly those. Returns the number of cameras changed."""
     dbh = pycolmap.Database.open(db)
     n = 0
     try:
         for cam in dbh.read_all_cameras():
-            params = np.zeros(len(cam.params))
-            params[0] = focal_px
-            if cam.model.name in ("OPENCV", "PINHOLE", "FULL_OPENCV", "OPENCV_FISHEYE"):
-                params[1], params[2], params[3] = focal_px, cam.width / 2, cam.height / 2
-            else:                               # SIMPLE_* / RADIAL: f, cx, cy, ...
-                params[1], params[2] = cam.width / 2, cam.height / 2
-            cam.params = params
+            if params is not None:
+                if len(params) != len(cam.params):
+                    sys.exit(f"--camera-params has {len(params)} values; the {cam.model.name} camera takes {len(cam.params)}")
+                cam.params = np.asarray(params, float)
+            else:
+                p = np.zeros(len(cam.params))
+                p[0] = focal_px
+                if cam.model.name in ("OPENCV", "PINHOLE", "FULL_OPENCV", "OPENCV_FISHEYE"):
+                    p[1], p[2], p[3] = focal_px, cam.width / 2, cam.height / 2
+                else:                               # SIMPLE_* / RADIAL: f, cx, cy, ...
+                    p[1], p[2] = cam.width / 2, cam.height / 2
+                cam.params = p
             cam.has_prior_focal_length = True
             dbh.update_camera(cam)
             n += 1
     finally:
         dbh.close()
-    print(f"camera prior: f {focal_px:g} px, principal point at the centre, no distortion ({n} camera)")
+    if params is not None:
+        print(f"camera prior from a lens profile: fx {params[0]:g} fy {params[1]:g} cx {params[2]:g} cy {params[3]:g}, "
+              f"dist {[round(float(x), 5) for x in params[4:]]} ({n} camera)")
+    else:
+        print(f"camera prior: f {focal_px:g} px, principal point at the centre, no distortion ({n} camera)")
     return n
 
 
@@ -365,6 +380,8 @@ def main():
     p.add_argument("--masks", default=None, help="directory of <image>.png masks mirroring images/")
     p.add_argument("--focal-px", type=float, default=None,
                    help="focal length prior in pixels (lens mm / sensor width mm x image width)")
+    p.add_argument("--camera-params", default=None, metavar="fx,fy,cx,cy,k1,k2,p1,p2",
+                   help="the whole OPENCV camera as a prior (a lens profile from hs calibrate); beats --focal-px")
     p.add_argument("--fix-intrinsics", action="store_true", help="keep the prior; do not refine focal/distortion")
     p.add_argument("--intrinsics", choices=("refine", "fixed", "staged"), default=None,
                    help="refine (default): focal/distortion refined in every bundle adjustment from the first "

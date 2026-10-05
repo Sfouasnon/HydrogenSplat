@@ -82,6 +82,20 @@ apps/brush-cli/src/lib.rs) — the "still open" items of strategy §9:
   thinnest with the new surface gone, so from step 0 the term can stop a surface from forming.
   The lines before that step are the model without the term (``depth_rel_spread_before``).
 
+* Recipes (docs/ui-rebuild.md, the Train step's three choices): ``--recipe KIND`` (matte | glossy |
+  bright | person | scene, the word ``hs source --subject`` stored) and ``--effort quick | standard |
+  final`` set the flags the table in that page gives — RECIPES / EFFORTS below — and nothing more:
+  masks on with ``--alpha-mode transparent`` (``--layer subject``) for everything but ``scene``, which is
+  the full layer; ``--init lidar`` and ``--depth-weight 0.2 --depth-spread-weight 0.2`` only when the scan
+  init exists (``glossy`` keeps the spread term without a scan); the iterations, growth stop and refine
+  step from the effort; the resolution as ``--max-resolution N`` merged into ``--brush-args`` (quick and
+  standard 1920; final the source's long edge, at most 3840: run H showed 1920 scoring the same as 3840
+  on the helmet in half the time). A flag given explicitly keeps its value over the recipe, so
+  ``--recipe glossy --effort quick --total-train-iters 5000`` is a 5,000-step quick run. A recipe that
+  wants masks on a project without them trains the full layer and says so in ``recipe_masks_missing``.
+  ``recipe`` and ``effort`` land in the metrics and in ``brush_config``; ``recipe_settings`` says what
+  each flag was set to and which ones the command line overrode.
+
 Keep-awake: cli.py holds ``caffeinate -d -i -m -s`` for the whole ``hs`` process (keepawake.py);
 runner.py notices sleeps anyway (lid closed, Apple menu > Sleep) and train records ``slept_s``.
 
@@ -121,21 +135,49 @@ SPLATS_PER_FRAME_MIN, SPLATS_PER_FRAME_MAX = 500, 40000
 HEARTBEAT_S = 15.0   # re-emit progress if the trainer has printed nothing for this long
 DEPTH_COVERAGE_OK = 0.7   # depth_reference_coverage: the scan should see this share of the layer's pixels
 DEPTH_ERROR_OK = 2.0      # depth_error_held: the final mean relative depth error, in tolerances
+# what the flags are when neither the command line nor a recipe says (the values the parser used to carry)
+DEFAULTS = {"total_train_iters": 40000, "growth_stop_iter": 30000, "refine_every": 130, "init": "sparse",
+            "depth_weight": 0.0, "depth_spread_weight": 0.0}
+# the recipe table of docs/ui-rebuild.md. depth / spread are the weights, used only when the scan init
+# exists (spread_without_scan: the glossy row keeps the spread term anyway); sh is Brush's default and
+# is recorded, passed only when the binary lists --sh-degree. "glints kept" and "--snap-edge off" are
+# hs masks' business and are the note here.
+RECIPES = {
+    "matte": {"masks": True, "alpha": "transparent", "depth": 0.2, "spread": 0.2, "spread_without_scan": False, "sh": 3,
+              "note": "glints kept"},
+    "glossy": {"masks": True, "alpha": "transparent", "depth": 0.2, "spread": 0.2, "spread_without_scan": True, "sh": 3,
+               "note": "glints kept; the spread term stays on without a scan"},
+    "bright": {"masks": True, "alpha": "transparent", "depth": 0.2, "spread": 0.2, "spread_without_scan": False, "sh": 3,
+               "note": "glints kept; Look recommends the softer shoulder"},
+    "person": {"masks": True, "alpha": "transparent", "depth": 0.2, "spread": 0.2, "spread_without_scan": False, "sh": 3,
+               "note": "masks with --snap-edge off (hair)"},
+    "scene": {"masks": False, "alpha": None, "depth": 0.0, "spread": 0.0, "spread_without_scan": False, "sh": 3,
+              "note": "full-scene layer"},
+}
+# effort -> (max resolution or None for the source's long edge, total iters, growth stop, refine every)
+EFFORTS = {"quick": (1920, 20000, 15000, 130), "standard": (1920, 40000, 30000, 130), "final": (None, 40000, 30000, 130)}
+FINAL_RES_CAP = 3840
 
 
 def add_parser(sub):
     p = sub.add_parser("train", help="train a splat with Brush (wraps the brush binary)")
     p.add_argument("--brush", default=os.environ.get("HS_BRUSH", DEFAULT_BRUSH))
-    p.add_argument("--total-train-iters", type=int, default=40000)
-    p.add_argument("--growth-stop-iter", type=int, default=30000)
-    p.add_argument("--refine-every", type=int, default=130)
+    p.add_argument("--total-train-iters", type=int, default=None, help=f"default {DEFAULTS['total_train_iters']}, or the --effort's")
+    p.add_argument("--growth-stop-iter", type=int, default=None, help=f"default {DEFAULTS['growth_stop_iter']}, or the --effort's")
+    p.add_argument("--refine-every", type=int, default=None, help=f"default {DEFAULTS['refine_every']}, or the --effort's")
+    p.add_argument("--recipe", choices=tuple(RECIPES), default=None,
+                   help="what is in the shot (the word hs source --subject stored): sets masks, alpha mode, init and "
+                        "the depth terms as docs/ui-rebuild.md's table says; an explicit flag still wins")
+    p.add_argument("--effort", choices=tuple(EFFORTS), default=None,
+                   help="how long: quick (1920 px, 20k steps), standard (1920 px, 40k), final (the source's long "
+                        "edge up to 3840, 40k); sets --max-resolution in --brush-args and the iteration flags")
     p.add_argument("--split-at-screen-size", type=float, default=None, help="Brush default 0.5")
     p.add_argument("--min-scale-factor", type=float, default=None,
                    help="Mip-Splatting 3D-filter strength (Brush >= #541 default 0.1; 0 = off, the pre-#541 behaviour). "
                         "Always passed explicitly when the binary supports it, so the manifest records it")
     p.add_argument("--export-every", type=int, default=2500)
     p.add_argument("--resume-from", default=None, help="an export_NNNNN.ply to continue from (experimental)")
-    p.add_argument("--init", choices=("sparse", "lidar"), default="sparse",
+    p.add_argument("--init", choices=("sparse", "lidar"), default=None,
                    help="the initial splats. sparse (default): Brush's own start, the solve's sparse points. "
                         "lidar: scale/lidar_init.ply, the LiDAR scan in the training set's frame "
                         "(`hs scale --lidar SCAN --init-points`); not with --resume-from")
@@ -160,7 +202,7 @@ def add_parser(sub):
                         "left out of the loss, so outside the silhouette is unsupervised, not empty. "
                         "transparent: the ground truth is premultiplied and an L1 on rendered alpha "
                         "(--match-alpha-weight, default 0.1) pushes the model to be empty out there")
-    p.add_argument("--depth-weight", type=float, default=0.0,
+    p.add_argument("--depth-weight", type=float, default=None,
                    help="weight of Brush's depth loss against the registered LiDAR scan "
                         "(hs scale --lidar SCAN --init-points); 0 (default) = off. The loss is the mean over "
                         "the measured pixels of max(0, |ln(rendered depth / scan depth)| - tolerance)")
@@ -173,7 +215,7 @@ def add_parser(sub):
     p.add_argument("--depth-every", type=int, default=1,
                    help="--depth-weight / --depth-spread-weight: apply them every Nth step (the pass costs a "
                         "second, small render)")
-    p.add_argument("--depth-spread-weight", type=float, default=0.0,
+    p.add_argument("--depth-spread-weight", type=float, default=None,
                    help="weight of Brush's depth spread term: per ray, std(depth) / mean depth over the blend "
                         "weights, above the tolerance. Thins a smoky surface; needs no scan and reaches every "
                         "view. 0 (default) = off")
@@ -402,8 +444,117 @@ def build_depth(pj, scan_ply, rec, layer, use_masks, exclude, res):
     return rep
 
 
+def source_long_edge(pj):
+    """The long edge of the views Brush trains on: the solve's view_size_L, else the first dataset
+    image, else the manifest's source cameras; FINAL_RES_CAP when nothing says."""
+    vs = (pj.stage("solve").get("metrics") or {}).get("view_size_L")
+    if isinstance(vs, (list, tuple)) and len(vs) == 2:
+        return int(max(vs))
+    d = os.path.join(pj.dataset_dir, "images", "L")
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            if f.lower().endswith((".jpg", ".jpeg", ".png")):
+                try:
+                    import cv2
+                    im = cv2.imread(os.path.join(d, f))
+                    if im is not None:
+                        return int(max(im.shape[:2]))
+                except ImportError:
+                    break
+                break
+    cams = (pj.m.get("source") or {}).get("cameras") or []
+    sizes = [max(int(c.get("width") or 0), int(c.get("height") or 0)) for c in cams if isinstance(c, dict)]
+    return max(sizes) if sizes and max(sizes) > 0 else FINAL_RES_CAP
+
+
+def brush_args_value(brush_args, flag):
+    """The value given to `flag` in a --brush-args string, or None."""
+    toks = (brush_args or "").split()
+    for i, t in enumerate(toks):
+        if t == flag and i + 1 < len(toks):
+            return toks[i + 1]
+        if t.startswith(flag + "="):
+            return t.split("=", 1)[1]
+    return None
+
+
+def resolve_recipe(a, pj, have_masks=None, have_scan=None, long_edge=None):
+    """--recipe / --effort -> the flags on `a` that the command line left unset, then DEFAULTS for
+    whatever is still unset. -> the record for the metrics: every setting, its source (recipe |
+    effort | flag | default) and the notes. Pure apart from reading the project for what exists."""
+    kind = getattr(a, "recipe", None)
+    effort = getattr(a, "effort", None)
+    if kind is not None and kind not in RECIPES:
+        raise events.StageError(f"--recipe {kind!r}: one of {', '.join(RECIPES)}")
+    if effort is not None and effort not in EFFORTS:
+        raise events.StageError(f"--effort {effort!r}: one of {', '.join(EFFORTS)}")
+    if have_masks is None:
+        have_masks = os.path.isdir(os.path.join(pj.dataset_dir, "masks"))
+    if have_scan is None:
+        try:
+            lidar_init_ply(pj, what="--recipe")
+            have_scan = True
+        except events.StageError:
+            have_scan = False
+    rec = {"recipe": kind, "effort": effort, "have_masks": bool(have_masks), "have_scan": bool(have_scan),
+           "settings": {}, "overridden": [], "notes": []}
+
+    def put(name, value, source):
+        if name in rec["settings"]:          # settled by an earlier row (the recipe before the defaults)
+            return
+        given = getattr(a, name, None)
+        if given is None or (name == "no_masks" and given is False):
+            setattr(a, name, value)
+            rec["settings"][name] = {"value": value, "source": source}
+        else:
+            rec["settings"][name] = {"value": given, "source": "flag"}
+            if source != "default" and given != value:
+                rec["overridden"].append(name)
+
+    if kind:
+        R = RECIPES[kind]
+        rec["notes"].append(R["note"])
+        if R["masks"] and have_masks and not getattr(a, "no_masks", False):
+            put("layer", "subject", "recipe")
+            put("alpha_mode", R["alpha"], "recipe")
+        else:
+            if R["masks"] and not have_masks:
+                rec["notes"].append("the recipe wants masks and train/dataset/masks is not there: full layer")
+                rec["masks_missing"] = True
+            put("layer", "full", "recipe")
+        # a resume names the initial splats already; the recipe does not fight it
+        put("init", "lidar" if (have_scan and not getattr(a, "resume_from", None)) else "sparse", "recipe")
+        put("depth_weight", R["depth"] if have_scan else 0.0, "recipe")
+        put("depth_spread_weight", R["spread"] if (have_scan or R["spread_without_scan"]) else 0.0, "recipe")
+        rec["sh_degree"] = R["sh"]
+    if effort:
+        res, iters, growth, refine = EFFORTS[effort]
+        if res is None:
+            res = min(int(long_edge if long_edge is not None else source_long_edge(pj)), FINAL_RES_CAP)
+        put("total_train_iters", iters, "effort")
+        put("growth_stop_iter", growth, "effort")
+        put("refine_every", refine, "effort")
+        given = brush_args_value(getattr(a, "brush_args", ""), "--max-resolution")
+        if given is None:
+            a.brush_args = (getattr(a, "brush_args", "") or "").strip()
+            a.brush_args = (a.brush_args + " " if a.brush_args else "") + f"--max-resolution {res}"
+            rec["settings"]["max_resolution"] = {"value": res, "source": "effort"}
+        else:
+            rec["settings"]["max_resolution"] = {"value": int(given), "source": "flag"}
+            if int(given) != res:
+                rec["overridden"].append("max_resolution")
+    else:
+        given = brush_args_value(getattr(a, "brush_args", ""), "--max-resolution")
+        rec["settings"]["max_resolution"] = {"value": int(given) if given else None, "source": "flag" if given else "brush"}
+    for name, value in DEFAULTS.items():
+        put(name, value, "default")
+    rec["max_resolution"] = rec["settings"]["max_resolution"]["value"]
+    return rec
+
+
 def run(a, pj):
     pj.require(STAGE)
+    recipe = resolve_recipe(a, pj)
     init_mode = getattr(a, "init", None) or "sparse"
     if init_mode == "lidar" and a.resume_from:
         raise events.StageError("--init lidar and --resume-from both name the initial splats: give one",
@@ -507,6 +658,13 @@ def run(a, pj):
 
     # train/ holds the dataset written by solve; wipe only exports + our own files
     pj.begin(STAGE, argv=sys.argv, clean=False)
+    pj.metric(STAGE, "recipe", recipe["recipe"])
+    pj.metric(STAGE, "effort", recipe["effort"])
+    pj.metric(STAGE, "recipe_settings", recipe)
+    if recipe.get("masks_missing"):
+        pj.check(STAGE, "recipe_masks_missing", False, needs_human=True,
+                 value=f"the {recipe['recipe']} recipe trains with masks and this project has none, so this is the "
+                       f"full scene; make the outlines (hs masks) and train again for the subject alone")
     exports = pj.exports_dir
     view = pj.path("train", "view")
     view_counts = None
@@ -660,8 +818,13 @@ def run(a, pj):
     for flag, value in depth_flags:
         if flag not in a.brush_args:
             argv += [flag, f"{value:g}"]
+    if recipe.get("sh_degree") is not None and flags is not None and "--sh-degree" in flags \
+            and "--sh-degree" not in a.brush_args:
+        argv += ["--sh-degree", str(recipe["sh_degree"])]
     pj.metric(STAGE, "brush_config", {"min_scale_factor": msf, "commit": binfo.get("git_commit"),
                                       "branch": binfo.get("git_branch"), "dirty": binfo.get("git_dirty"),
+                                      "recipe": recipe["recipe"], "effort": recipe["effort"],
+                                      "max_resolution": recipe["max_resolution"],
                                       "layer": layer, "alpha_mode": effective_alpha,
                                       "invert_masks": invert_masks,
                                       "depth_loss_weight": depth_w,

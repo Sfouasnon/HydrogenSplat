@@ -47,6 +47,23 @@ a second run always starts from the untouched export.
 writes nothing: not a pixel, not the stage's status. It records what it measured under
 stages.exposure.dry_run so the numbers are kept, but `exposure` stays whatever it was and
 `train` is not marked stale, because nothing it trained on changed.
+
+`--analyze` is the Look step's verdict (docs/ui-rebuild.md): per left-eye view, the subject's
+mean linear luma — inside train/dataset/masks/<eye>/<view>.png when it exists, else the central
+box spanning half the width and half the height — and the share of subject pixels with a channel
+at or above 250. From those: `drift_stops` = log2(p95 / p5) of the per-view means, `clipped_share`
+(median), `clipped_where` ∈ none | highlights (small blobs, under 5 %) | whole (15 % or more, or one
+blob over 5 % of the subject), one `recommendation` ∈ match | global_drop | shoulder | none, the
+`brightness_by_frame` table for the chart, and the check `exposure_consistent`. It measures the
+images as they are now (so after an --apply the numbers say what training will see), writes
+exposure/analysis.json, takes no lock and changes no status. Every --apply run ends by analysing
+its result the same way.
+
+`--apply STEP[,STEP]` names what to do, in order: `match` (the reference matching above, the
+default), `global_drop` (every view down by --stops, default 0.5, in linear light), `shoulder` (a
+soft knee on sRGB code above --knee, default 0.85 of the code range: x -> k + (1-k)(1 - exp(-(x-k)/
+(1-k))), identity below). All three go through one rewrite from the originals: the gains fold the
+drop in, the shoulder composes onto the per-channel table, so one run never stacks on another.
 """
 import json
 import os
@@ -61,6 +78,14 @@ from ..project import now_iso
 STAGE = "exposure"
 GAIN_MIN, GAIN_MAX = 0.35, 3.0
 STRIDE = 3                      # subsample for the statistic; medians are stable under it
+APPLY_STEPS = ("match", "global_drop", "shoulder")
+DROP_STOPS = 0.5                # --apply global_drop default
+SHOULDER_KNEE = 0.85            # --apply shoulder: knee as a share of the sRGB code range
+SUBJECT_KINDS = ("matte", "glossy", "bright", "person", "scene")
+DRIFT_STOPS_OK = 0.5            # exposure_consistent: p95/p5 of the per-view subject luma under this
+CLIP_CODE = 250                 # a channel at or above this is clipped
+CLIP_NONE, CLIP_HIGHLIGHTS, CLIP_WHOLE = 0.001, 0.05, 0.15   # clipped share of the subject: the three verdicts
+CLIP_BLOB_WHOLE = 0.05          # ... or one connected clipped area over this share of the subject
 
 
 def add_parser(sub):
@@ -82,6 +107,22 @@ def add_parser(sub):
     p.add_argument("--dry-run", action="store_true", help="measure and report, write nothing")
     p.add_argument("--force", action="store_true",
                    help="run on an array project anyway (see the warning in run(); measure first with --dry-run)")
+    an = p.add_argument_group("the Look step's verdict and its remedies")
+    an.add_argument("--analyze", action="store_true",
+                    help="measure the subject's brightness per view (inside the masks when they exist) -> drift_stops, "
+                         "clipped_share, clipped_where, recommendation, brightness_by_frame and the exposure_consistent "
+                         "check; writes exposure/analysis.json, changes no pixel and no status")
+    an.add_argument("--apply", default=None, metavar="STEP[,STEP]",
+                    help="what to do to the frames: match (the reference matching, the default), global_drop "
+                         "(every view down by --stops), shoulder (a soft knee on the highlights above --knee); "
+                         "e.g. --apply match,shoulder. Each run starts from the originals")
+    an.add_argument("--stops", type=float, default=DROP_STOPS,
+                    help=f"--apply global_drop: stops to drop every view by (default {DROP_STOPS})")
+    an.add_argument("--knee", type=float, default=SHOULDER_KNEE,
+                    help=f"--apply shoulder: the knee, as a share of the sRGB code range (default {SHOULDER_KNEE})")
+    an.add_argument("--subject", choices=SUBJECT_KINDS, default=None,
+                    help="--analyze: the subject kind for the recommendation (default: the manifest's project.subject_kind, "
+                         "set by hs source --subject)")
     return p
 
 
@@ -154,6 +195,13 @@ def run(a, pj):
     report_path = os.path.join(pj.dataset_dir, "exposure.json")
     if a.dry_run and a.restore:
         raise events.StageError("--dry-run and --restore together: a dry run writes nothing, so there is nothing to restore")
+    steps = apply_steps(a)
+    _extras(a, steps)                    # a bad --stops / --knee is refused before the lock is taken
+    if target and steps != ["match"]:
+        raise events.StageError(f"--reference {target} matches on a shared target; --apply {','.join(steps)} is for "
+                                "the median path", hint="drop --apply, or drop --reference and match on the medians")
+    if getattr(a, "analyze", False):
+        return _analyze_cmd(a, pj, images)
     if a.dry_run:
         return _dry_run(a, pj, images, backup)
     pj.acquire(STAGE)
@@ -190,7 +238,11 @@ def run(a, pj):
     lut = _srgb_to_linear_lut()
     if target:
         return _run_target(a, pj, target, images, backup, report_path, views, lut)
+    if "match" not in steps:
+        return _run_plain(a, pj, steps, images, backup, report_path, views, lut)
     views, med, clip, M, ref, gains, luma, ref_label, ref_why = _measure_set(a, images, views, lut, pj)
+    drop, knee = _extras(a, steps)
+    pj.metric(STAGE, "applied", steps)
     pj.metric(STAGE, "views", len(views))
     pj.metric(STAGE, "reference", ref_label)
     pj.metric(STAGE, "reference_why", ref_why)
@@ -200,7 +252,7 @@ def run(a, pj):
     pj.metric(STAGE, "clipped_fraction_max", round(float(max(clip.values())), 4))
     events.metric(STAGE, "reference_linear_bgr", [round(float(x), 5) for x in ref])
 
-    after = _apply(images, views, gains, lut)
+    after = _apply(images, views, gains, lut, drop_stops=drop, shoulder=knee)
     spread = float(after.max() / max(after.min(), 1e-9))
     pj.metric(STAGE, "luma_spread_after", round(spread, 3))
     pj.check(STAGE, "views_share_one_exposure", spread <= 1.10,
@@ -223,18 +275,24 @@ def run(a, pj):
     pj.artifact(STAGE, report_path, "json")
     pj.m["exposure"] = {"mode": a.mode, "views": len(views), "reference": ref_label,
                         "luma_spread_before": round(float(luma.max() / max(luma.min(), 1e-9)), 3),
-                        "luma_spread_after": round(spread, 3),
+                        "luma_spread_after": round(spread, 3), "applied": steps,
+                        "global_drop_stops": drop or None, "shoulder_knee": knee,
                         "argv": list(sys.argv)}
     _mark_stale(pj)
+    _record_analysis(a, pj, analyze_views(pj, images, lut, _views(images)), images)
     _done(pj)
 
 
-def _apply(images, views, gains, lut, after_fn=None):
+def _apply(images, views, gains, lut, after_fn=None, drop_stops=0.0, shoulder=None):
     """Write every view with its per-channel linear gain. -> per-view median linear luma after
-    (and, with after_fn(i, corrected_bgr), whatever that returns, collected in a second list)."""
+    (and, with after_fn(i, corrected_bgr), whatever that returns, collected in a second list).
+    `drop_stops` folds --apply global_drop into the gains; `shoulder` (a knee share) composes
+    shoulder_lut onto every table, so the three steps are one rewrite of the originals."""
     import cv2
     events.start(STAGE, "apply")
     after, extra = [], []
+    gains = np.asarray(gains, np.float64) * (2.0 ** -float(drop_stops or 0.0))
+    sh = shoulder_lut(shoulder) if shoulder else None
     for i, ((eye, f), g) in enumerate(zip(views, gains)):
         p = os.path.join(images, eye, f)
         bgr = cv2.imread(p)
@@ -242,6 +300,8 @@ def _apply(images, views, gains, lut, after_fn=None):
         # channel: decode sRGB, scale in linear light, re-encode. Same arithmetic as doing it
         # per pixel, ~100x faster.
         tbl = np.stack([_linear_to_srgb(lut * g[ch]) for ch in range(3)], axis=1)
+        if sh is not None:
+            tbl = sh[tbl]
         out = cv2.LUT(bgr, tbl.reshape(1, 256, 3))
         cv2.imwrite(p, out, [cv2.IMWRITE_JPEG_QUALITY, 95])
         if after_fn is not None:
@@ -626,6 +686,214 @@ def _dry_run(a, pj, images, backup):
     pj.stage(STAGE)["dry_run"] = {"at": now_iso(), "mode": a.mode, "argv": list(sys.argv), "metrics": metrics,
                                   "checks": [{"name": "gains_within_range", "ok": ok}]}
     pj.save()
+
+
+# ------------------------------------------------------------------ the Look step: analyze and its remedies
+
+def apply_steps(a):
+    """--apply as an ordered list; nothing given is the reference matching, as it always was."""
+    raw = getattr(a, "apply", None)
+    if not raw:
+        return ["match"]
+    steps = [t.strip().lower() for t in str(raw).split(",") if t.strip()]
+    bad = [t for t in steps if t not in APPLY_STEPS]
+    if bad or not steps:
+        raise events.StageError(f"--apply {raw!r}: steps are {', '.join(APPLY_STEPS)}, comma separated")
+    return list(dict.fromkeys(steps))
+
+
+def _extras(a, steps):
+    """(stops to drop, shoulder knee or None) for the steps beyond match."""
+    drop = float(getattr(a, "stops", DROP_STOPS) or DROP_STOPS) if "global_drop" in steps else 0.0
+    knee = float(getattr(a, "knee", SHOULDER_KNEE) or SHOULDER_KNEE) if "shoulder" in steps else None
+    if drop < 0:
+        raise events.StageError(f"--stops {drop}: a drop is positive stops")
+    if knee is not None and not 0.0 < knee < 1.0:
+        raise events.StageError(f"--knee {knee}: a share of the code range, between 0 and 1")
+    return drop, knee
+
+
+def shoulder_lut(k=SHOULDER_KNEE):
+    """256-entry sRGB code -> code table: identity up to k of the code range, above it a soft knee
+    x -> k + (1-k)(1 - exp(-(x-k)/(1-k))) that meets the line with slope 1 and never reaches 1, so
+    order is kept and a clipped 255 lands near k + 0.63 (1-k): 241 for k = 0.85. Code space, not
+    linear, because the question it answers is "does the paint still clip in the JPEG"."""
+    x = np.arange(256, dtype=np.float64) / 255.0
+    hi = x > k
+    y = x.copy()
+    y[hi] = k + (1.0 - k) * (1.0 - np.exp(-(x[hi] - k) / (1.0 - k)))
+    out = np.clip(np.round(y * 255.0), 0, 255).astype(np.uint8)
+    out[~hi] = np.arange(256, dtype=np.uint8)[~hi]
+    return out
+
+
+def _run_plain(a, pj, steps, images, backup, report_path, views, lut):
+    """--apply without match: gain 1.0 everywhere, the drop and/or the shoulder on every view."""
+    drop, knee = _extras(a, steps)
+    before = np.array([float(measure(os.path.join(images, e, f), lut)[0] @ LUMA_BGR) for e, f in views])
+    gains = np.ones((len(views), 3))
+    after = _apply(images, views, gains, lut, drop_stops=drop, shoulder=knee)
+    pj.metric(STAGE, "views", len(views))
+    pj.metric(STAGE, "applied", steps)
+    pj.metric(STAGE, "reference", "none")
+    pj.metric(STAGE, "global_drop_stops", drop or None)
+    pj.metric(STAGE, "shoulder_knee", knee)
+    pj.metric(STAGE, "luma_spread_before", round(float(before.max() / max(before.min(), 1e-9)), 3))
+    pj.metric(STAGE, "luma_spread_after", round(float(after.max() / max(after.min(), 1e-9)), 3))
+    if drop:
+        got = float(np.median(np.log2(np.maximum(before, 1e-9) / np.maximum(after, 1e-9))))
+        pj.metric(STAGE, "global_drop_measured_stops", round(got, 3))
+        pj.check(STAGE, "global_drop_landed", abs(got - drop) <= 0.15,
+                 value=f"median view {got:.2f} stops darker (asked {drop:g}); a view that was clipping stays "
+                       f"flat where it clipped, the drop cannot bring that detail back")
+    json.dump({"note": "hs exposure --apply " + ",".join(steps) + ": the same table on every view, from the originals",
+               "applied": steps, "global_drop_stops": drop or None, "shoulder_knee": knee,
+               "backup": pj.rel(backup),
+               "views": [{"eye": e, "image": f, "linear_luma_before": round(float(b), 5), "linear_luma_after": round(float(x), 5)}
+                         for (e, f), b, x in zip(views, before, after)]},
+              open(report_path, "w"), indent=1)
+    pj.artifact(STAGE, report_path, "json")
+    pj.m["exposure"] = {"mode": a.mode, "views": len(views), "reference": "none", "applied": steps,
+                        "global_drop_stops": drop or None, "shoulder_knee": knee, "argv": list(sys.argv)}
+    _mark_stale(pj)
+    _record_analysis(a, pj, analyze_views(pj, images, lut, views), images)
+    _done(pj)
+
+
+def _subject_kind(a, pj):
+    return getattr(a, "subject", None) or (pj.m.get("project") or {}).get("subject_kind")
+
+
+def _subject_region(pj, eye, f, shape):
+    """Where the subject is in this view: the mask (>= 128) when hs masks wrote one, else the
+    central box spanning half the width and half the height. -> (bool array at STRIDE, how)."""
+    import cv2
+    h, w = shape
+    mp = os.path.join(pj.dataset_dir, "masks", eye, os.path.splitext(f)[0] + ".png")
+    if os.path.exists(mp):
+        m = cv2.imread(mp, cv2.IMREAD_GRAYSCALE)
+        if m is not None and m.any():
+            if m.shape != (h, w):
+                m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+            sel = m[::STRIDE, ::STRIDE] >= 128
+            if sel.sum() >= 16:
+                return sel, "mask"
+    sel = np.zeros(((h + STRIDE - 1) // STRIDE, (w + STRIDE - 1) // STRIDE), bool)
+    sel[sel.shape[0] // 4: 3 * sel.shape[0] // 4, sel.shape[1] // 4: 3 * sel.shape[1] // 4] = True
+    return sel, "centre"
+
+
+def analyze_views(pj, images, lut, views, subject_kind=None):
+    """The Look step's numbers (module docstring). Left-eye views when there are any: the right eye
+    shares the left's exposure on a Hydrogen, and an array has one per camera anyway."""
+    import cv2
+    left = [v for v in views if v[0] == "L"]
+    views = left or list(views)
+    if not views:
+        raise events.StageError(f"no images in {pj.rel(images)}")
+    events.start(STAGE, "analyze")
+    rows, lumas, shares, blobs = [], [], [], []
+    for i, (eye, f) in enumerate(views):
+        bgr = cv2.imread(os.path.join(images, eye, f))
+        if bgr is None:
+            raise events.StageError(f"cannot read {eye}/{f}")
+        sel, how = _subject_region(pj, eye, f, bgr.shape[:2])
+        sub = bgr[::STRIDE, ::STRIDE, :]
+        if sel.shape != sub.shape[:2]:
+            sel = sel[:sub.shape[0], :sub.shape[1]]
+        lin = lut[sub]
+        y = float((lin[sel] @ LUMA_BGR).mean()) if sel.any() else 0.0
+        hot = (sub.max(axis=2) >= CLIP_CODE) & sel
+        n_sub = int(sel.sum())
+        share = float(hot.sum() / n_sub) if n_sub else 0.0
+        blob = 0.0
+        if hot.any():
+            nlab, _lab, stats, _c = cv2.connectedComponentsWithStats(hot.astype(np.uint8), 8)
+            if nlab > 1:
+                blob = float(stats[1:, cv2.CC_STAT_AREA].max() / max(n_sub, 1))
+        rows.append({"view": f"{eye}/{os.path.splitext(f)[0]}", "luma": round(y, 5), "clipped_share": round(share, 4),
+                     "largest_clipped_blob": round(blob, 4), "region": how})
+        lumas.append(y); shares.append(share); blobs.append(blob)
+        events.progress(STAGE, i + 1, len(views), step="analyze")
+    L = np.maximum(np.array(lumas), 1e-6)
+    med = float(np.median(L))
+    for r, y in zip(rows, L):
+        r["stops"] = round(float(np.log2(y / med)), 3)          # relative to the median view, for the chart
+    drift = float(np.log2(np.percentile(L, 95) / np.percentile(L, 5))) if len(L) > 1 else 0.0
+    share = float(np.median(shares))
+    blob = float(np.median(blobs))
+    if share < CLIP_NONE:
+        where = "none"
+    elif share >= CLIP_WHOLE or blob >= CLIP_BLOB_WHOLE:
+        where = "whole"
+    else:
+        where = "highlights"
+    kind = subject_kind
+    if drift >= DRIFT_STOPS_OK:
+        rec, why = "match", f"the subject's brightness swings {drift:.1f} stops between the darkest and brightest frames"
+    elif where == "whole":
+        rec, why = "global_drop", f"{100 * share:.0f}% of the subject is blown out in the typical frame, in large areas"
+    elif where == "highlights" and kind in ("bright", "glossy"):
+        rec, why = "shoulder", f"only the highlights clip ({100 * share:.1f}% of a {kind} subject): a softer shoulder keeps them"
+    else:
+        rec, why = "none", ("the brightness holds and nothing is blown out" if where == "none" else
+                            f"the brightness holds; {100 * share:.1f}% of the subject clips in small highlights only")
+    ok = drift < DRIFT_STOPS_OK and where != "whole"
+    if not ok and rec == "match":
+        sentence = (f"The subject's brightness swings {drift:.1f} stops across the frames; match every frame to one "
+                    f"reference before training.")
+        if where == "whole":
+            sentence = sentence[:-1] + f", and {100 * share:.0f}% of it is blown out: drop the exposure by {DROP_STOPS:g} stops too."
+    elif not ok:
+        sentence = (f"{100 * share:.0f}% of the subject is blown out across the frames; drop the exposure by "
+                    f"{DROP_STOPS:g} stops before training.")
+    elif rec == "shoulder":
+        sentence = (f"The subject's brightness holds within {drift:.1f} stops; {100 * share:.1f}% of it clips in the "
+                    f"highlights, so soften them with a shoulder before training.")
+    else:
+        sentence = (f"The subject's brightness holds within {drift:.1f} stops across the frames and "
+                    + ("nothing is blown out" if where == "none" else f"only {100 * share:.1f}% of it clips in small highlights")
+                    + "; no exposure work needed.")
+    return {"views": len(views), "eye": views[0][0], "drift_stops": round(drift, 3), "clipped_share": round(share, 4),
+            "largest_clipped_blob": round(blob, 4), "clipped_where": where, "recommendation": rec,
+            "recommendation_why": why, "subject_kind": kind, "consistent": ok, "sentence": sentence,
+            "regions": {"mask": sum(1 for r in rows if r["region"] == "mask"),
+                        "centre": sum(1 for r in rows if r["region"] == "centre")},
+            "brightness_by_frame": rows}
+
+
+def _record_analysis(a, pj, A, images):
+    """The analysis into the stage's metrics and check (replacing an earlier exposure_consistent),
+    the table to exposure/analysis.json. Status untouched: this is a measurement."""
+    A = dict(A, subject_kind=A.get("subject_kind") or _subject_kind(a, pj))
+    for k in ("drift_stops", "clipped_share", "clipped_where", "recommendation", "recommendation_why",
+              "brightness_by_frame"):
+        pj.metric(STAGE, k, A[k])
+    pj.metric(STAGE, "analysis", {**{k: A[k] for k in ("views", "eye", "largest_clipped_blob", "subject_kind", "regions")},
+                                  "measured": pj.rel(images), "at": now_iso()})
+    st = pj.stage(STAGE)
+    st["checks"] = [c for c in st.get("checks", []) if c.get("name") != "exposure_consistent"]
+    pj.check(STAGE, "exposure_consistent", A["consistent"], value=A["sentence"], needs_human=not A["consistent"])
+    out = pj.path("exposure", "analysis.json")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    json.dump({"note": "hs exposure --analyze: the subject's brightness per view (inside the masks when they exist, "
+                       "else the central box), its drift in stops and where it clips",
+               "measured": pj.rel(images), "at": now_iso(), **A}, open(out, "w"), indent=1)
+    pj.artifact(STAGE, out, "json")
+    pj.save()
+    return A
+
+
+def _analyze_cmd(a, pj, images):
+    """hs exposure --analyze: measure the images as they are, record, write nothing else."""
+    views = _views(images)
+    if not views:
+        raise events.StageError("no images in train/dataset/images", hint="hs solve first")
+    A = analyze_views(pj, images, _srgb_to_linear_lut(), views, subject_kind=_subject_kind(a, pj))
+    st = pj.stage(STAGE)
+    # a stale exposure's artifacts list may be gone with the dataset; the analysis replaces its own entry only
+    st["artifacts"] = [x for x in st.get("artifacts", []) if not str(x.get("path", "")).endswith("exposure/analysis.json")]
+    return _record_analysis(a, pj, A, images)
 
 
 def _done(pj):

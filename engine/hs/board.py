@@ -66,9 +66,29 @@ def parse_spec(s, legacy=False):
     return spec
 
 
+def aruco_api():
+    """"new" (>= 4.7: CharucoBoard(...), CharucoDetector), "legacy" (CharucoBoard_create,
+    interpolateCornersCharuco) or None when cv2 has no aruco module at all (an opencv-python build
+    without contrib). Everything here runs on either API; the caller decides what None means."""
+    import cv2
+    ar = getattr(cv2, "aruco", None)
+    if ar is None:
+        return None
+    if hasattr(ar, "CharucoDetector"):
+        return "new"
+    if hasattr(ar, "CharucoBoard_create") and hasattr(ar, "interpolateCornersCharuco"):
+        return "legacy"
+    return None
+
+
 def make_board(spec):
     import cv2
+    api = aruco_api()
+    if api is None:
+        raise ValueError("this OpenCV has no cv2.aruco (install opencv-contrib-python)")
     d = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, spec.dictionary))
+    if api == "legacy":         # the old generator's layout is the only one it has; see the module doc
+        return cv2.aruco.CharucoBoard_create(spec.sx, spec.sy, float(spec.square_mm), float(spec.marker_mm), d)
     b = cv2.aruco.CharucoBoard((spec.sx, spec.sy), float(spec.square_mm), float(spec.marker_mm), d)
     if spec.legacy:
         if not hasattr(b, "setLegacyPattern"):
@@ -79,23 +99,48 @@ def make_board(spec):
 
 def corner_points(spec):
     """(N, 3) board-plane coordinates in mm of every interior corner, indexed by corner id."""
-    return np.asarray(make_board(spec).getChessboardCorners(), np.float64).reshape(-1, 3)
+    b = make_board(spec)
+    pts = b.getChessboardCorners() if hasattr(b, "getChessboardCorners") else b.chessboardCorners
+    return np.asarray(pts, np.float64).reshape(-1, 3)
+
+
+def generate_image(spec, size, margin=0):
+    """The board drawn into a (width, height) grey image with `margin` px of white around it, on
+    either aruco API. With size = (sx * s, sy * s) + 2 * margin the squares are exactly s px."""
+    b = make_board(spec)
+    if hasattr(b, "generateImage"):
+        return b.generateImage((int(size[0]), int(size[1])), marginSize=int(margin), borderBits=1)
+    return b.draw((int(size[0]), int(size[1])), marginSize=int(margin), borderBits=1)
 
 
 class Detector:
-    """One CharucoDetector per board, reused across views (construction is not free)."""
+    """One CharucoDetector per board, reused across views (construction is not free). On an
+    OpenCV before 4.7 the same two calls go through detectMarkers + interpolateCornersCharuco."""
 
     def __init__(self, spec):
         import cv2
         self.spec = spec
         self.board = make_board(spec)
-        self.det = cv2.aruco.CharucoDetector(self.board)
+        self.api = aruco_api()
+        if self.api == "new":
+            self.det = cv2.aruco.CharucoDetector(self.board)
+        else:
+            self.dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, spec.dictionary))
+            self.params = cv2.aruco.DetectorParameters_create()
 
     def detect(self, img, min_corners=4):
         """-> (ids (n,), xy (n, 2) float64 pixels). Empty arrays when fewer than min_corners."""
         import cv2
         gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        cc, ids = self.det.detectBoard(gray)[:2]
+        if self.api == "new":
+            cc, ids = self.det.detectBoard(gray)[:2]
+        else:
+            mc, mids, _rej = cv2.aruco.detectMarkers(gray, self.dict, parameters=self.params)
+            cc, ids = None, None
+            if mids is not None and len(mids):
+                n, cc, ids = cv2.aruco.interpolateCornersCharuco(mc, mids, gray, self.board)[:3]
+                if not n:
+                    cc, ids = None, None
         if ids is None or cc is None or len(np.asarray(ids).ravel()) < min_corners:
             return np.zeros(0, int), np.zeros((0, 2))
         return np.asarray(ids, int).ravel(), np.asarray(cc, np.float64).reshape(-1, 2)
@@ -230,7 +275,8 @@ def white_cells(spec, inset=0.2):
     half_sq, half_mk = spec.square_mm / 2.0, spec.marker_mm / 2.0
     w = half_sq - half_mk
     lo, hi = half_mk + inset * w, half_sq - inset * w
-    return [(np.asarray(c, np.float64).reshape(-1, 3)[:, :2].mean(axis=0), lo, hi) for c in b.getObjPoints()]
+    obj = b.getObjPoints() if hasattr(b, "getObjPoints") else b.objPoints
+    return [(np.asarray(c, np.float64).reshape(-1, 3)[:, :2].mean(axis=0), lo, hi) for c in obj]
 
 
 def white_mask(spec, H, shape, inset=0.2):

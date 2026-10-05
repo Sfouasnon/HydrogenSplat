@@ -10,21 +10,31 @@ Hydrogen 3D clip, ``video`` one ordinary camera's clip, ``stills`` a folder of p
 ``hs ingest`` would accept it and why not, and the ``hs ingest`` arguments that bring it in. The
 app's New Project page shows exactly this; ``hs/sourceprobe.py`` has the rules, and ``hs ingest``
 applies the same ones.
+
+``hs source -p P --subject KIND`` (matte | glossy | bright | person | scene) is the Footage step's
+one choice about the subject, kept in the manifest as ``project.subject_kind``. ``hs exposure
+--analyze`` reads it for its recommendation and ``hs train --recipe`` is normally given the same
+word; nothing else in the project changes, so no stage goes stale.
 """
+import argparse
 import os
 
 from .. import calib, events, sourceprobe
 from . import ingest
 
 STAGE = "source"
+SUBJECT_KINDS = ("matte", "glossy", "bright", "person", "scene")
 TITLES = {"stereo": "Hydrogen One 3D clip", "video": "Video from one camera", "stills": "Photographs",
           "r3d": "RED camera array", "unknown": "Not a source"}
 
 
 def add_parser(sub):
     p = sub.add_parser("source", help="say what a file or folder would be ingested as (no project needed)")
-    p.add_argument("path", help="a video file, a folder of photographs, or a RED media folder")
+    p.add_argument("path", nargs="?", default=None, help="a video file, a folder of photographs, or a RED media folder")
     p.add_argument("--ffprobe", default=os.environ.get("HS_FFPROBE", "ffprobe"))
+    p.add_argument("--subject", choices=SUBJECT_KINDS, default=None,
+                   help="record what the subject is in the project's manifest (project.subject_kind); needs -p")
+    p.add_argument("-p", "--project", default=argparse.SUPPRESS, help="project folder, for --subject")
     return p
 
 
@@ -170,8 +180,36 @@ def probe(path, ffprobe_bin="ffprobe"):
     return probe_video(p, ffprobe_bin)
 
 
+def set_subject(pj, kind):
+    """project.subject_kind in the manifest; -> the previous value (None when unset)."""
+    if kind not in SUBJECT_KINDS:
+        raise events.StageError(f"--subject {kind!r}: one of {', '.join(SUBJECT_KINDS)}")
+    sect = pj.m.setdefault("project", {})
+    prev = sect.get("subject_kind")
+    pj.acquire(STAGE)
+    try:
+        sect["subject_kind"] = kind
+        pj.save()
+    finally:
+        pj.release()
+    events.metric(STAGE, "subject_kind", kind, previous=prev)
+    return prev
+
+
 def run(a):
+    kind = getattr(a, "subject", None)
+    path = getattr(a, "path", None)
+    if kind:
+        from ..project import Project
+        root = getattr(a, "project", None)
+        if not root:
+            raise events.StageError("hs source --subject KIND needs --project DIR: the kind is kept in that manifest")
+        set_subject(Project(root), kind)
+    if path is None:
+        if not kind:
+            raise events.StageError("hs source needs a PATH to look at, or --subject KIND with -p DIR")
+        return
     events.start(STAGE, "probe")
-    r = probe(a.path, a.ffprobe)
+    r = probe(path, a.ffprobe)
     events.metric(STAGE, "source", r)
     events.check(STAGE, "source_accepted", r["accepted"], value=r["summary"] if r["accepted"] else "; ".join(r["problems"]) or r["summary"])

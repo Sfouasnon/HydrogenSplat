@@ -43,7 +43,8 @@ hs/
   events.py     the one JSON-lines emitter (start/progress/metric/artifact/check/done/error)
   runner.py     subprocess runner: streams lines split on \r and \n, tees to logs/<stage>.log
   project.py    project folder + manifest.json (status per stage, argv, metrics, checks; stale propagation)
-  calib.py      profile JSON <-> the stereocal npz rigcolmap.py reads; match keys
+  calib.py      profile JSON <-> the stereocal npz rigcolmap.py reads; match keys (the Hydrogen's stereo profile)
+  lens.py       lens profiles (one camera + lens + recording size -> K, distortion): the store `hs calibrate` writes and `hs solve --lens` reads
   coverage.py   azimuth / elevation / distance per capture from rig.npz; sweep-window and boom-key presets
   movescript.py the .hsmove cue language: boom / arc / dolly / hold in capture coordinates, clamped to the hull
   board.py      ChArUco detection, DLT triangulation from rig.npz, pair-median scale, board plane, white-paper samples
@@ -51,7 +52,7 @@ hs/
   splatweights.py the renderer's forward weights w = alpha*T per (splat, view, cell), in numpy — under split and prune --score
   overlay.py    sparse points on photograph + render; global / per-quadrant phase-correlation shift
   shotsheet.py  the delivery shot sheet: manifest dicts -> Markdown + HTML (pure; hs export writes it)
-  stages/       ingest select solve scale exposure masks train move prune render views stability split export tools calibrate selftest
+  stages/       ingest select solve scale exposure masks train move prune render views stability split export tools calib calibrate selftest
   <six vendored scripts>
 ```
 
@@ -59,26 +60,35 @@ hs/
 
 ```
 hs source  PATH                                                       what a file or folder would be ingested as: stereo | video | stills | r3d (no project, writes nothing)
+hs source  -p P --subject matte|glossy|bright|person|scene             what the subject is -> manifest project.subject_kind (read by exposure --analyze; the word train --recipe takes)
 hs ingest  -p P --clip VID_..._2x1.h4v [--link]                       copy, MD5, ffprobe, validate 2x1 video, match the calibration profile
 hs ingest  -p P --clip IMG_2525.MOV [--link]                          any other camera's video: one camera (source.kind mono); hs select picks its frames
 hs ingest  -p P --frames DIR | --r3d RDM_DIR --take 067 [--res 1]     frames source, select is marked done: array (one frame per camera; REDline renders the R3Ds)
            [--kind auto|mono|array]                                   or mono (one camera's frames, e.g. select_frames.py --mono picks) — see below
 hs select  -p P [--residual 1.5 --max-gap 90 --end N --dry-run]      frames + selection.json + quality.json + thumbs/ + contact.jpg
            [--keyframes [--search-keyframes 2 --min-sharp-rel 0.6]] [--highlight-knee 0.85]   I-frames only; soft highlight knee on the written frames
-hs solve   -p P [--matcher auto|sequential|exhaustive] [--overlap 15 --loop-stride 8]   prep → sfm --float-rig → export; per_image.json, coverage.json
+hs solve   -p P [--matcher auto|sequential|exhaustive] [--overlap 15 --loop-stride 8]   prep → sfm --float-rig → export; per_image.json, coverage.json; ends with subject_share_of_frame / masking_worth_it
 hs solve   -p P --estimate | --estimate --captures N [--eyes 1|2]     one `estimate` event: pairs and seconds per phase for both matchers (no lock, no writes)
 hs solve   -p P --scale-pair GA,GB,700 [--focal-px F] [--board B]     array/mono project: monocolmap.py, one shared camera, metric scale from a measured spacing (or --board: hs scale after)
+hs solve   -p P [--lens auto|PROFILE.json|none]                       array/mono: seed the camera with the lens profile that matches the source (auto, default); `lens_profile` metric says which
+hs calibrate --board-image OUT.png [--board-pdf OUT.pdf] [--squares 7x5 --square-mm 35 --marker-mm 26 --dict DICT_5X5_100]   the ChArUco board to print (300 dpi PNG tagged with its dpi; Letter + A4 PDF)
+hs calibrate --board-screen OUT.png --screen-in 15 --screen-px 1728x1117   the board sized so a square is --square-mm on that screen (shown full screen, pixel for pixel)
+hs calibrate [-p P] --clip BOARD.mov [--every 10 --max-frames 60] | --frames DIR [--make M --model M --lens-name L] [--out PROFILE.json]
+                                                                      lens profile (K, k1 k2 p1 p2 k3, rms, coverage) keyed by camera + lens + recording size -> ~/Library/Application Support/HydrogenSplat/lenses/
 hs scale   -p P --board SX,SY,SQ_MM,MK_MM[,DICT] [--min-views 3] [--eye L] [--dry-run]   metric scale from a ChArUco board in the views, applied to the solve; board plane vs up
 hs scale   -p P --lidar SCAN.ply [--units m|mm|cm] [--scan-up auto|y|z] [--pairs 'sx,sy,sz=px,py,pz;…'] [--init auto|pairs] [--apply|--dry-run] [--trust-scan]
                                                                       a phone LiDAR scan aligned to the solve: mono/array scale applied, stereo scale checked (applied with --trust-scan); up, ground
 hs scale   -p P --factor F [--note '…'] [--trust-scan]                 apply a scale factor you already have (solve units x F = mm)
 hs exposure -p P [--reference median|auto|capNNN|board|checker] [--reference-view V] [--mode rgb|luma] [--restore] [--dry-run]   match every view to one reference (board/checker: a shared target, fine on an array)
+hs exposure -p P --analyze [--subject KIND]                           the Look step's verdict: drift_stops, clipped_share, clipped_where, recommendation, brightness_by_frame, exposure_consistent -> exposure/analysis.json (writes nothing else)
+hs exposure -p P --apply match|global_drop|shoulder[,…] [--stops 0.5] [--knee 0.85]   the remedy: match (as above), every view down by --stops, a soft knee on the highlights; one rewrite from the originals, then --analyze again
 hs masks   -p P [--radius 0.10] [--margin-mm 5] [--min-opacity 0.2]   per-view subject silhouettes for Brush's mask channel; ends with the check below
            [--exclude-highlights [240] --highlight-grow-px N]          glossy subjects: cut the specular glints out of the subject mask
            [--snap-edge [--snap-fallback-px 3] [--snap-max-px 8]]      vision: move each boundary onto the photograph's colour edge (Vision's 50 % level sat 2-8 px outside the helmet) -> masks_snap.json
 hs masks   -p P --check-only                                          check the masks on disk against each other -> masks_review/ (builds nothing)
 hs masks   -p P --decide L/cap012=repair,@undecided=exclude            repair | exclude | keep | undo a flagged view; hs train refuses until every one is decided
 hs train   -p P [--brush PATH]                                        brush → train/exports/export_NNNNN.ply   (Mac only)
+hs train   -p P --recipe matte|glossy|bright|person|scene --effort quick|standard|final   the Train step's choices -> the flags of docs/ui-rebuild.md's table (explicit flags still win); recipe, effort in the metrics and brush_config
 hs move    -p P --preset sweep|boom|custom [--keys ...] [--name N]    move/N.json + move/N_aim_check.jpg
 hs move    -p P --script shot.hsmove [--name N]                      compile a cue sheet against the captured hull (movescript.py)
 hs prune   -p P [--radius 0.3]                                        prune/<export>_pruned_r03.ply
@@ -87,12 +97,12 @@ hs prune   -p P --floaters [--name N] [--min-importance-quantile 0.02] [--max-bl
 hs split   -p P [--ply PLY] [--masks vision|region|DIR] [--exclude L/cap064,…|@holdout] [--name N] [--cell 8] [--refine knn|none]
                                                                       split/N/{full_labelled,subject,background}.ply + report.json
 hs render  -p P --move N [--ply PATH] [--width 2400] [--keep-frames] [--stability]  render/N_1920.mp4, N_1080x1350.mp4  (Mac only)
-hs views   -p P [--captures 5,15,55|holdout] [--ply PATH]                     grade the model against the photographs  (Mac only)
+hs views   -p P [--captures 5,15,55|holdout] [--ply PATH]                     grade the model against the photographs  (Mac only); summary + next_steps in words, against the last run of the same --name
 hs cameras -p P --holdout N [--method fps|interval|azimuth] [--write]  choose hold-out captures by camera position -> solve/holdout.json
 hs stability --frames DIR | --video MP4 [--k 1,7] [--backend dis|raft]  flow-warped temporal stability of a rendered move (no project needed)
 hs export -p P [--ply PLY|--archive NAME] [--formats ply,spz,sog,html] [--min-opacity X] [--subject PLY] [--shot-sheet]   deliver/NAME/: PLY + web formats + shot sheet
 hs tools   [--fetch-vocab-tree]                                       versions of python packages, brush, brush-path-render, ffmpeg, adb, node, splat-transform, vocab tree
-hs calib   --photos 'board/*.jpg' | --video board.h4v -o cal.npz      stereocal.py + a profile JSON
+hs calib   --photos 'board/*.jpg' | --video board.h4v -o cal.npz      stereocal.py + a Hydrogen stereo profile JSON (stages/calib.py)
 hs selftest [--clip CLIP] [--project DIR] [--resume|--fresh]          golden test (below)
 ```
 
@@ -105,6 +115,179 @@ metrics, checks and artifacts in `manifest.json`. `-v` also streams the child's 
 `{"ev":"log"}` events. Opening a project reconciles it first: a stage the manifest still calls
 `running` whose recorded pid is gone becomes `failed — interrupted`, so a ^C'd or crashed run
 reports that instead of blocking the next stage with "solve is running".
+
+## Lens calibration: `hs calibrate` and `hs solve --lens` (2026-10-05)
+
+```
+hs calibrate --board-image board.png --board-pdf board.pdf          # 7x5 ChArUco, 35 mm squares, 26 mm markers, DICT_5X5_100 (defaults)
+hs calibrate --board-screen screen.png --screen-in 15 --screen-px 1728x1117   # the same board sized for a 15" 1728x1117 screen
+hs calibrate -p P --clip IMG_2601.MOV                               # film the board with the shoot's camera and setting -> a lens profile
+hs calibrate --frames board_stills/ --make RED --model KOMODO-X --lens-name "Sigma 24mm"   # stills instead; name the camera yourself
+hs solve     -p P                                                   # --lens auto: the matching profile seeds COLMAP's camera, if there is one
+hs solve     -p P --lens none                                       # exactly the solve as before
+```
+
+**The board.** `--board-image` writes the board at print size: squares of a whole number of
+pixels at ~300 dpi, the file's dpi nudged so a square prints at exactly `--square-mm` (413 px at
+299.72 dpi = 35.00 mm), a 10 mm white border, and the board's name and sizes in the margin.
+`--board-pdf` is the same picture on a Letter page and an A4 page (landscape when wider than
+tall; the checks `board_fits_letter` / `board_fits_a4` say the largest square each page takes:
+37.1 and 36.6 mm for 7x5). `--board-screen` takes the screen's diagonal and pixel size, so the
+app can show the picture full screen and a square measures `--square-mm` on glass (`screen_square_px`,
+`screen_square_mm`; `board_fits_screen` says when it had to be smaller). It is OpenCV's own
+`CharucoBoard` — the same `hs/board.py` definition `hs scale --board 7,5,35,26` measures with, so
+one print serves both. The board's physical size does not enter the intrinsics (only the poses),
+so a screen calibrates as well as a print: what matters is flat and sharp.
+
+**The clip.** Every `--every`'th frame is decoded with ffmpeg (grey, autorotated — the size
+ingest records), the corners are found in each, and `cv2.calibrateCamera` fits one OPENCV camera
+(fx fy cx cy, k1 k2 p1 p2 k3; no higher orders) over the frames with ≥ `--min-corners` (20)
+corners. A second pass drops the frames whose own error is over 3x the median and over 1 px (a
+pan, a half-seen board) — `frames_dropped`. Metrics: `frames_decoded`, `frames_with_board`,
+`frames_used`, `corners_total`, `rms_px`, `coverage_share`, `fx_px fy_px cx_px cy_px`, `k1 k2 p1 p2
+k3`, `hfov_deg`, `fx_std_px`, `image_size`, `camera` (make / model / lens / software from the
+clip's tags: `com.apple.quicktime.make` and friends; `--make --model --lens-name` fill or override),
+`profile_key`, `profile_path`. Checks, each saying what to do: `board_seen_in_enough_frames`
+(≥ 15 frames: film longer, whole board in view), `calibration_covers_the_frame` (corners in ≥ 70 %
+of a 6x4 grid of cells: take the board to the edges and corners, where the distortion is),
+`reprojection_rms_small` (≤ 0.5 px, needs a human above: hold it still and flat, keep it sharp,
+record with the shoot's setting). With `-p` the fit also leaves `P/calibrate/profile.json`,
+`detections.json` (per frame: corners, used, err_px) and `coverage.jpg` (every used corner over the
+grid), records the verdict in the manifest and `manifest.lens_profile`; the decoded frames are
+removed unless `--keep-frames`.
+
+**The profile** (`hs/lens.py`) lives at `~/Library/Application Support/HydrogenSplat/lenses/<key>.json`
+(`~/.hydrogensplat/lenses/` elsewhere, `$HS_LENSES` overrides), key = `make_model_lens_WxH`
+made safe, e.g. `apple_iphone-15-pro_default_3840x2160`; an unknown camera is
+`unknown_unknown_default_WxH`. Same body, lens and recording size is what makes a calibration
+transferable, so the size is in the key and never rescaled. Shape: `{"version": 1, "key",
+"camera": {make, model, lens, software}, "image_size": [w, h], "model": "OPENCV", "K": 3x3,
+"dist": [k1, k2, p1, p2, k3], "rms_px", "frames_used", "frames_seen", "corners_total",
+"coverage": {"cells": [6, 4], "share"}, "board", "source", "std_intrinsics", "ok", "hs_version", "date"}`.
+
+**The solve.** On an array/mono project `hs solve --lens auto` (the default) builds the same key
+from the source (the mono clip's `source/probe.json` tags and the displayed size; an array's size
+with whatever camera ingest recorded) and, when a profile is there, passes
+`--camera-params fx,fy,cx,cy,k1,k2,p1,p2` to monocolmap.py: the OPENCV camera is created with
+those values at extraction and written into the database as the prior (k3 has no slot in COLMAP's
+OPENCV model and is left to the refinement), then refined by bundle adjustment as before —
+`--fix-intrinsics` holds it, `--intrinsics staged` is satisfied by it. The metric `lens_profile`
+records path, key, rms_px, date, frames_used, coverage_share and fx_px, or `"none"` (then
+`lens_profile_key_wanted` says which key would have matched). `--lens PROFILE.json` uses that file
+and refuses one made at another recording size; `--lens none` adds nothing. An explicit
+`--focal-px` wins over auto. The Hydrogen's stereo route has its own calibration and ignores
+`--lens`. Synthetic test (`tests/test_calibrate.py`): a 1280x720 camera with k1 −0.22 photographs
+the generated board at 25 poses through its lens model; the fit returns fx within 0.2 %, k1 within
+2 %, rms 0.28 px, and the store finds the profile back by key.
+
+## Engine verdicts for the six-step UI (2026-10-05)
+
+The rebuilt app (docs/ui-rebuild.md) states one verdict per step in the user's words, and a page
+never shows a number the engine did not produce. These are the numbers.
+
+```
+hs source   -p P --subject glossy                    # Footage: what the subject is -> manifest project.subject_kind
+hs exposure -p P --analyze                           # Look: the drift, the clipping, ONE recommendation
+hs exposure -p P --apply match                       # ... and the remedy it named (global_drop --stops 0.5 | shoulder --knee 0.85)
+hs solve    -p P                                     # Subject: ends with subject_share_of_frame and masking_worth_it
+hs train    -p P --recipe glossy --effort quick      # Train: the table below, as flags
+hs views    -p P --inside-masks                      # Results: summary and next_steps, in words
+```
+
+**`hs source --subject KIND`** (matte | glossy | bright | person | scene) writes `project.subject_kind`
+into the manifest and nothing else — no stage goes stale. `hs exposure --analyze` reads it; the app
+hands the same word to `hs train --recipe`. With a PATH as well it still probes the path.
+
+**`hs exposure --analyze`** measures the images Brush will train on (train/dataset/images as they
+are now, left eye), per view: the subject's mean linear luma inside `train/dataset/masks/<eye>/<view>.png`
+when hs masks wrote one, else inside the central box (half the width, half the height); and the
+share of subject pixels with a channel at or above 250. Metrics: `drift_stops` = log2(p95 / p5) of the
+per-view means; `clipped_share` (median over views); `clipped_where` — `none` under 0.1 %,
+`whole` at 15 % or more or when one connected clipped area is over 5 % of the subject, `highlights`
+between (small blobs); `recommendation` — `match` when the drift is 0.5 stops or more, else
+`global_drop` when the whole subject clips, else `shoulder` when only highlights clip on a `bright` or
+`glossy` subject, else `none`; `recommendation_why`; `brightness_by_frame`, a list of `{view, luma,
+stops (relative to the median view), clipped_share, largest_clipped_blob, region (mask | centre)}` for
+the chart; `analysis` (views, eye, regions used, what was measured, when). The check
+`exposure_consistent` is ok when the drift is under 0.5 stops and the clipping is not `whole`; its
+value is one sentence to act on ("The subject's brightness swings 1.2 stops across the frames; match
+every frame to one reference before training."). The table goes to `exposure/analysis.json`. It takes
+no lock, changes no pixel and no status; a second analysis replaces its own check. On the
+Stormtrooper (30 views, masks): 0.18 stops, 0.2 % clipped in highlights, `none` — and `shoulder` once
+the subject is `glossy`.
+
+**`hs exposure --apply STEP[,STEP]`** runs the remedy: `match` is the reference matching as before
+(the default when `--apply` is absent, so old invocations are unchanged); `global_drop` scales every
+view by 2^−`--stops` (default 0.5) in linear light — a view that was clipping stays flat where it
+clipped, which `global_drop_landed` says; `shoulder` composes a soft knee on the sRGB code above
+`--knee` (0.85 of the code range: x → k + (1−k)(1 − exp(−(x−k)/(1−k))), identity below, 255 → 241)
+onto every view's table. The steps are one rewrite of the originals (the gains fold the drop in,
+the knee is composed onto the per-channel LUT), so a run never stacks on an earlier one:
+`--apply global_drop` twice is one drop, `--apply match,shoulder` is both at once, and `--restore`
+puts the originals back as always. Metrics `applied`, `global_drop_stops`, `shoulder_knee` (plus the
+match metrics when match is in the list); train goes stale; every apply ends with the analysis of
+its result, so `drift_stops` and `exposure_consistent` always describe what training will see.
+`--apply` is for the median path; `--reference board | checker` is its own run.
+
+**`hs solve`** ends with the Subject step's first verdict: the sparse points within the radius hs
+masks' geometric prior fits (`masks.auto_radius`: the subject spans 0.7 of the half-width at the
+median camera distance) are projected into every view, the convex hull's area is taken as a share of
+the frame (points clipped to the frame first), and the median over views is `subject_share_of_frame`;
+`room_share_estimate` = 1 − that; `subject_share_views` the views counted. The check
+`masking_worth_it` (always ok, needs a human) reads "The subject fills at least 18% of the frame;
+modelled whole, the room would take about 8 of 10 splats — masking recommended" under 50 %, and
+"masks optional" above. It is a floor: sparse points sit on texture, so the hull is the subject's
+textured part (Stormtrooper: 18 % here, 41 % under the finished masks — the white dome has no
+features), and the share of pixels stands in for the share of splats, which it says. Advisory: a
+failure in this measurement is logged and never fails the solve.
+
+**`hs train --recipe KIND --effort quick|standard|final`.** The recipe table of docs/ui-rebuild.md,
+as flags; every flag the command line gives explicitly keeps its value (`--total-train-iters 5000`
+over the effort's, `--init sparse` over the recipe's lidar, `--no-masks` or `--layer full` over the
+recipe's masks, a `--max-resolution` already in `--brush-args` over the effort's).
+
+| recipe | layer / masks | alpha | init | depth / spread | SH | note |
+|---|---|---|---|---|---|---|
+| matte, bright, person | subject (full when there are no masks) | transparent | lidar when the scan init exists | 0.2 / 0.2 when the scan exists, else 0 / 0 | 3 | person: masks with `--snap-edge` off (hair); bright: Look recommends the shoulder |
+| glossy | subject | transparent | lidar when the scan exists | 0.2 / 0.2; the spread term stays 0.2 without a scan | 3 | glints kept (no `--exclude-highlights`) |
+| scene | full | — | lidar when the scan exists | 0 / 0 | 3 | |
+
+| effort | `--max-resolution` | total iters | growth stop | refine every |
+|---|---|---|---|---|
+| quick | 1920 | 20,000 | 15,000 | 130 |
+| standard | 1920 | 40,000 | 30,000 | 130 |
+| final | the source's long edge (`view_size_L` from the solve, else the first dataset image), at most 3840 | 40,000 | 30,000 | 130 |
+
+"The scan exists" is `lidar_init_ply()` finding a valid `scale/lidar_init.ply` for the current
+rig.npz; a `--resume-from` keeps its own initial splats. `--max-resolution N` is appended to
+`--brush-args` (the user's are kept as given). `--sh-degree 3` is passed only when the binary lists
+the flag (it is Brush's default). A masked recipe on a project without masks trains the full layer
+and fails `recipe_masks_missing` (needs a human). Without `--recipe`/`--effort` the flags are what
+they always were (40,000 / 30,000 / 130, sparse, no depth terms): the parser now carries `None` for
+those and `resolve_recipe()` fills the defaults. Metrics: `recipe`, `effort`, `recipe_settings` (every
+setting with its source — recipe | effort | flag | default — and `overridden`, the flags the command
+line won), and `brush_config.recipe`, `.effort`, `.max_resolution`.
+
+**`hs views`** adds two metrics and changes none: `summary`, plain-language lines from its own
+numbers — the interior PSNR (the whole-crop PSNR without a mask region) against the last run of the
+same `--name` ("the same as the last run within noise" within 0.3 dB, else "better" / "worse" with
+the difference; the previous `views/<name>_report.json` is read before this run's folder is
+cleared), the edge PSNR with "the weak part" when it sits more than 10 dB under the interior, the
+sharpness as "keeps 83% of the photograph's sharpness" (`retained_edge_energy_norm_median`; "sharper
+than the photographs" above 1), the displaced share with the worst view — and `next_steps`, one line
+per check that is not ok naming what to do: a failed registration check → shoot more frames around
+the weakest azimuth band (and "shoot from above" when the solve's highest elevation is under 20°);
+the solve's `coverage_gaps` metric, when a solve writes one, → "Shoot from …"; a failed
+`exposure_consistent` (or `drift_stops` ≥ 0.5) → match the exposure; a failed `mean_reproj_ok` →
+calibrate the lens; a weak edge → tighten the outlines; soft views → leave them out or shoot again;
+the subject worse than its surroundings → check the placed frames. `summarize()` is pure and tested
+on the Stormtrooper's A-holdout numbers (`tests/test_views_summary.py`).
+
+Tests: `tests/test_exposure_analyze.py` (synthetic views with a known walk in stops and clipped
+blobs of a known size; the drop lands within 0.06 stops, the knee leaves the paint and rolls off the
+blob), `tests/test_subject_share.py` (a sphere on a camera ring: the share within 10 % of
+π r² / (W H)), `tests/test_recipe.py` (every row of both tables, the overrides, a run through the
+fake Brush), `tests/test_views_summary.py`.
 
 ## Any source through one door (2026-10-04)
 
@@ -1209,6 +1392,9 @@ Three additions, each from a measured failure on `Projects/2026-09-13_coins` (70
 four challenge coins in a clear plastic case, shot against a backlit sliding door).
 
 ### `hs exposure`
+
+(2026-10-05: `--analyze` and `--apply match|global_drop|shoulder` are described under "Engine
+verdicts for the six-step UI" above; the matching below is `--apply match`, the default.)
 
 The phone's auto-exposure walks during a capture, and the walk tracks camera position: on this
 set the 140 undistorted views spanned **2.49x in linear luma**, 2.74x in contrast and 8% in
