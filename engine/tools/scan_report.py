@@ -31,7 +31,8 @@ def e57(path, max_points):
     major, minor, flen, xml_at, xml_len, page = struct.unpack_from("<IIQQQQ", bytes(buf[8:48]))
     xml, _ = F._read(buf, xml_at, xml_len)
     root = ET.fromstring(xml)
-    scans = [s for s in (F._child(root, "data3D") or []) if F._child(s, "points") is not None]
+    d3 = F._child(root, "data3D")
+    scans = [s for s in (d3 if d3 is not None else []) if F._child(s, "points") is not None]
     total = sum(int(F._child(s, "points").get("recordCount", 0)) for s in scans)
     stride = max(1, -(-total // max_points))
     print(f"  E57 {major}.{minor}, file length in header {flen:,} (on disk {len(buf):,}), "

@@ -16,7 +16,15 @@ once, by hand, against the reference libraries (pye57 0.4.19 / libE57, laspy 2.7
     spherical; packets cut mid-record; page checksums) to the points this reader gets;
   * this reader and laspy agreed to the last bit on LAS 1.2 formats 0, 2, 3 and 1.4 formats 6, 7,
     8, and on a LAZ of the same points.
-No file from a real scanner has been through it.
+And on 2026-10-05 three files from survey scanners (libE57's example data) went through both, unthinned,
+and came out the same record for record, colour included:
+  * pump.e57 — Leica ScanStation, 5 scans each with its own pose, 24- and 32-bit ScaledIntegers,
+    1,664,974 of 2,878,964 returns marked invalid: 1,213,990 points, largest difference 1.3e-15 m;
+  * Station018.e57 — Leica C10, 4,067,815 points at 30 bits, 813 m from its origin: 2.3e-13 m;
+  * gargage.e57 — Faro Focus 3D, 27,802,731 points at 29 bits, a tilted pose: 2.8e-14 m.
+engine/tools/scan_report.py repeats the cheaper half of that check (decoded points against the bounds
+each scan declares) on any file. Not yet seen from a real scanner: spherical coordinates, Float
+coordinates, a file of several scans from a Faro, LAS or LAZ.
 """
 import os
 import sys
