@@ -642,6 +642,22 @@ extension ViewerModelFile {
             }
         }
         if words.isEmpty { return name }
-        return words.reversed().joined(separator: " + ") + " · " + stem
+        return words.reversed().joined(separator: " + ") + " · " + stem + (isFromEarlierRun ? " (earlier training run)" : "")
+    }
+
+    /// A cleaned copy of a model in train/exports that has since been trained again: exports keep
+    /// their names from run to run (export_20000.ply), so a copy made before the last training run
+    /// would otherwise read as a copy of the new model.
+    var isFromEarlierRun: Bool {
+        guard isCleanUpOutput else { return false }
+        let file = (ply as NSString).lastPathComponent
+        guard let r = file.range(of: #"^export_\d+"#, options: .regularExpression) else { return false }
+        let source = ((project as NSString).appendingPathComponent("train/exports") as NSString)
+            .appendingPathComponent(String(file[r]) + ".ply")
+        let fm = FileManager.default
+        func changed(_ path: String) -> Date? { (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date }
+        guard let mine = changed(ply) else { return false }
+        guard let theirs = changed(source) else { return true }     // that export is gone
+        return mine < theirs
     }
 }
