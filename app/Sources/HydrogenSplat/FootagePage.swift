@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import HSCore
 
-/// Step 1 — Footage. One page in two states: with no project (New Project in the sidebar) it takes
+/// Step 1 — Footage. One page in two states: with no project (File › New Project…) it takes
 /// footage and makes the project; on an existing project it states what the footage is. Both show
 /// the four facts later steps turn on — kind, useful size, exposure, lens — and the subject tiles.
 struct FootagePage: View {

@@ -28,12 +28,24 @@ struct HydrogenSplatApp: App {
         }
         .commands {
             CommandGroup(replacing: .appInfo) { AboutCommand() }
-            // replacing, not after: the WindowGroup's default "New Window" also claims ⌘N
+            // replacing, not after: the WindowGroup's default "New Window" also claims ⌘N.
+            // The window works in one project at a time: these are how it is made or changed.
             CommandGroup(replacing: .newItem) {
-                Button("New Project from Clip…") { model.selection = .ingest }
+                Button("New Project…") { model.selection = .ingest }
                     .keyboardShortcut("n")
+                Button("Open Project…") { model.selection = .open }
+                    .keyboardShortcut("o")
                 Button("Reload Projects") { model.store.reload() }
                     .keyboardShortcut("r")
+            }
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { model.selection = .setup }
+                    .keyboardShortcut(",")
+            }
+            // the app's own pages, which the sidebar used to list
+            CommandGroup(after: .toolbar) {
+                Button("Console") { model.selection = .console }
+                Button("Event Replay") { model.selection = .replay }
             }
         }
 

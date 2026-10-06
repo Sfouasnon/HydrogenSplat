@@ -77,6 +77,9 @@ struct ShotStepPage: View {
         } else {
             VStack(spacing: 0) {
                 MoveCoverageLine(editor: model.moveEditor(project: project.path))
+                    // as tall as its text: the card's coloured bar takes any height it is offered,
+                    // and beside the viewer in this stack that was half the page
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 40).padding(.vertical, 10)
                 Divider()
                 ModelViewerPane(scene: model.viewerScene, project: project)

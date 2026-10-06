@@ -9,7 +9,11 @@ enum ProjectPage: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum SidebarItem: Hashable {
+/// What the window shows: the one project it is working in, or one of the app's own pages.
+/// There is no list of projects beside the work: `open` is the page that lists them.
+enum WindowPage: Hashable {
+    /// Every project in the Projects folder, to open one.
+    case open
     case setup
     case ingest
     case replay
@@ -26,11 +30,20 @@ final class AppModel: ObservableObject {
             if store.root != config.projectsRoot { store.root = config.projectsRoot }
         }
     }
-    @Published var selection: SidebarItem? = .setup {
+    @Published var selection: WindowPage? = .setup {
         didSet {
-            if case .project(let p)? = selection { attachExternalRun(path: p, lock: ProjectStore.readLock(p)) }
+            if case .project(let p)? = selection {
+                if openProject != p { openProject = p }
+                attachExternalRun(path: p, lock: ProjectStore.readLock(p))
+            }
             updateLiveStatus()
         }
+    }
+    /// The project the window is working in: the last one opened. It stays while one of the app's
+    /// own pages (Settings, Console, New Project, the project list) is in front, so there is a
+    /// way back, and it is the project the next launch opens.
+    @Published private(set) var openProject: String? = nil {
+        didSet { UserDefaults.standard.set(openProject, forKey: AppModel.openKey) }
     }
     /// The latest run per project path: the app's own, or one attached to a run started in
     /// Terminal (`attachExternalRuns`).
@@ -128,6 +141,7 @@ final class AppModel: ObservableObject {
 
     let store: ProjectStore
     private static let key = "engineConfig.v1"
+    private static let openKey = "openProject.v1"
 
     init() {
         let cfg: EngineConfig
@@ -139,7 +153,15 @@ final class AppModel: ObservableObject {
         }
         config = cfg
         store = ProjectStore(root: cfg.projectsRoot)
-        if cfg.problems.isEmpty { selection = store.projects.first.map { .project($0.path) } ?? .ingest }
+        if cfg.problems.isEmpty {
+            // back in the project the last session worked in; with none to go back to, the list
+            if let last = UserDefaults.standard.string(forKey: AppModel.openKey), store.project(at: last) != nil {
+                openProject = last
+                selection = .project(last)
+            } else {
+                selection = store.projects.isEmpty ? .ingest : .open
+            }
+        }
         // every reload (the 3 s refresh sees .hs.lock appear) looks for runs started in Terminal;
         // @Published delivers the new value before the property holds it, so use the one passed
         projectsWatch = store.$projects.sink { [weak self] ps in
@@ -168,7 +190,7 @@ final class AppModel: ObservableObject {
     /// Follow runs started in Terminal (`hs solve -p P`): a project whose lock names a stage and a
     /// live pid, while the app has no live run of its own there, gets an attached `RunSession`
     /// that tails `logs/<stage>.events.jsonl` every 2 s — so the page's run panel, the strip, the
-    /// sidebar row, the title and the Dock badge follow it like a run the app started, and its
+    /// project list, the title and the Dock badge follow it like a run the app started, and its
     /// Stop sends the pid the SIGINT a ^C would. It removes itself on `done` or when the pid dies.
     /// Called on every store reload, on the store's 3 s poll, and on selecting a project.
     func attachExternalRuns(_ projects: [ProjectSummary]? = nil) {
@@ -215,11 +237,11 @@ final class AppModel: ObservableObject {
         updateLiveStatus()
     }
 
-    /// The live run the title and the Dock follow: the selected project's, else the first by path.
+    /// The live run the title and the Dock follow: the open project's, else the first by path.
     private var followedRun: (run: RunSession, others: Int)? {
         let live = projectRuns.filter { $0.value.isRunning }
         guard !live.isEmpty else { return nil }
-        if case .project(let p)? = selection, let r = live[p] { return (r, live.count - 1) }
+        if let p = openProject, let r = live[p] { return (r, live.count - 1) }
         guard let first = live.keys.sorted().first, let r = live[first] else { return nil }
         return (r, live.count - 1)
     }

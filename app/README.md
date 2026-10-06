@@ -46,11 +46,11 @@ shows it. The frame count carries the same figure: "150 frames → 300 images, s
 An engine without `--estimate` just leaves the times off. Parsing is `HSCore/Estimate.swift`.
 
 While any project has a live run, a strip under every page reads stage · step · done/total ·
-ETA (click it to go to the project); the sidebar row and the window title carry the short form
+ETA (click it to go to the project); the project list and the window title carry the short form
 ("solve · matching 42% · 18 min") and the Dock icon the percentage. All from the run's own
 progress events (`HSCore/LiveProgress.swift`); a run started in Terminal is not followed there.
 
-**Console** (sidebar) runs any command in `zsh -l` from the repository folder, with live output
+**Console** (View menu, or the project menu in the toolbar) runs any command in `zsh -l` from the repository folder, with live output
 and Stop (Ctrl-C to the command).
 
 ## A double-clickable app

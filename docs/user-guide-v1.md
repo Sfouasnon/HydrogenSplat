@@ -9,7 +9,9 @@ In commands, `P` is the project folder; the Console runs them from the repositor
 
 ## How the app is organised
 
-The sidebar holds Setup, New Project, Console, Event Replay and the project list. A project
+The window works in one project at a time. The menu at the left of the toolbar names it and
+opens another (or File ▸ Open Project…, ⌘O, for the list); the same menu holds New Project,
+Console, Event Replay and Settings. A project
 has two pages, **Pipeline** and **Viewer** (toolbar picker, ⌘1 / ⌘2). The Pipeline page has a
 header (with a lock line when a run holds the project), a one-line strip for the latest run,
 the **rail**, the selected item's workspace and, on the right, a **CHECKS AND METRICS**
@@ -31,7 +33,7 @@ re-reads manifests and locks every 3 seconds, so a Terminal run shows up without
 
 ## New Project (Source)
 
-Sidebar ▸ **New Project** (⌘N). **Source** picks Phone or File. Phone is the Hydrogen One over
+File ▸ **New Project…** (⌘N). **Source** picks Phone or File. Phone is the Hydrogen One over
 adb; File takes everything else, and a Hydrogen clip too.
 
 ### What File takes
@@ -535,7 +537,7 @@ shows the stored record: command, error, checks, metrics, **Open log**, artifact
 
 Today only the phone pull, train and render send an ETA. **New on this branch:** every bar
 with a total gets an ETA, and a one-line strip (stage · step · fraction · ETA) stays visible
-while any run is live, repeated in the sidebar row and window title, with the percentage on
+while any run is live, repeated in the project list and window title, with the percentage on
 the Dock icon.
 
 ## Console and Event Replay

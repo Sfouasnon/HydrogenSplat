@@ -101,6 +101,16 @@ Workers never commit; commits happen per phase after the build is clean.
 ## Added after approval
 
 - **Scan** is step 3 (optional, after Frames); Look, Subject, Train, Shot are 4–7. Calibrate keeps the lens.
+- **One project at a time** (2026-10-05, `RootView.swift`, `OpenProjectView.swift`). The sidebar that
+  listed every project beside the work is gone; the step rail is the only left column. The window
+  works in one project, named in a menu at the left of the toolbar. That menu lists every project
+  (the open one ticked, one with a run going marked "running") and holds All Projects…, New
+  Project…, Console, Event Replay and Settings…. File › New Project… ⌘N, Open Project… ⌘O; the app
+  menu's Settings… ⌘, ; View › Console, Event Replay. **Open a project** is a page: every project,
+  newest first, with where it has got to, its clip and its date; one click opens it. A launch goes
+  back to the project the last session worked in (`openProject.v1` in the app's defaults), or to
+  that page when there is none. On an app page with a project open the toolbar has Back. The strip
+  under every page still shows a run in any project and opens that project on a click.
 - **Shot › Clean up** (2026-10-05, `CleanUpView.swift`) is the first of Shot's three tabs
   (1 Clean up · 2 Move · 3 Render & grade). The viewer is the Move tab's, with a clean-up panel
   beside it instead of the move panel. Everything writes a copy; the trained model is never changed,
