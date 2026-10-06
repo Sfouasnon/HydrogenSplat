@@ -275,20 +275,24 @@ struct ModelViewerPane: View {
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
             Divider()
-            HStack(spacing: 0) {
-                viewerArea
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if cleaning {
-                    Divider()
-                    CleanUpPanel(project: project, scene: scene, tool: model.eraser, chosen: chosen) { out in
-                        files = ViewerModelFile.list(project: project.path)
-                        if let f = files.first(where: { $0.ply == out }) { model.viewerFile[project.path] = f }
+            GeometryReader { geo in
+                // the clean-up panel gives way before the picture does: a third of the pane, 280 to 380 wide
+                let side = min(380, max(280, geo.size.width * 0.32))
+                HStack(spacing: 0) {
+                    viewerArea
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if cleaning {
+                        Divider()
+                        CleanUpPanel(project: project, scene: scene, tool: model.eraser, chosen: chosen) { out in
+                            files = ViewerModelFile.list(project: project.path)
+                            if let f = files.first(where: { $0.ply == out }) { model.viewerFile[project.path] = f }
+                        }
+                        .frame(width: side)
+                    } else if showMovePanel {
+                        Divider()
+                        MoveInspector(project: project, editor: model.moveEditor(project: project.path), scene: scene)
+                            .frame(width: 380)
                     }
-                    .frame(width: 380)
-                } else if showMovePanel {
-                    Divider()
-                    MoveInspector(project: project, editor: model.moveEditor(project: project.path), scene: scene)
-                        .frame(width: 380)
                 }
             }
         }
@@ -395,8 +399,32 @@ struct SplatViewerPanel: View {
     /// Single-key shortcuts, off while the move script is being typed.
     private var keys: Bool { !scene.typing }
 
+    /// One row when it fits; the capture controls over the move bar when it does not (a narrow
+    /// window, or a panel beside the viewer), so the page never grows wider than its window.
     private var controls: some View {
-        HStack(spacing: 14) {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 14) {
+                captureControls
+                Spacer(minLength: 8)
+                MoveBar(project: file.project, playback: scene.playback, keys: keys)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 14) {
+                    captureControls
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: 0) {
+                    MoveBar(project: file.project, playback: scene.playback, keys: keys)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .disabled(scene.phase != .ready)
+        .onChange(of: scene.capture) { old, _ in if !old.isEmpty { standAtCapture() } }
+        .onChange(of: scene.eye) { _, _ in standAtCapture() }
+    }
+
+    @ViewBuilder private var captureControls: some View {
             if let cams = scene.cameras {
                 HStack(spacing: 4) {
                     Button { step(-1) } label: { Image(systemName: "chevron.left") }
@@ -421,12 +449,6 @@ struct SplatViewerPanel: View {
                     .keyboardShortcut(keys ? KeyboardShortcut("o", modifiers: []) : nil)
                     .help("Free camera about the subject (O). Drag to turn, shift-drag or right-drag to slide, scroll to move in and out.")
             }
-            Spacer(minLength: 8)
-            MoveBar(project: file.project, playback: scene.playback, keys: keys)
-        }
-        .disabled(scene.phase != .ready)
-        .onChange(of: scene.capture) { old, _ in if !old.isEmpty { standAtCapture() } }
-        .onChange(of: scene.eye) { _, _ in standAtCapture() }
     }
 
     @ViewBuilder private var overlay: some View {
